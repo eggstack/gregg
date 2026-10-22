@@ -17,7 +17,7 @@ Local tests remain the primary development path. The `ci.yml` workflow provides 
 
 ## Roadmap status
 
-## Optional Slint desktop GUI: Plans 187-192 (implemented; 190 pending release qualification; 191 implemented, pending native interactive acceptance, its interaction model superseded by 192; 192 planned, 2026-10-22)
+## Optional Slint desktop GUI: Plans 187-192 (implemented; 190 pending release qualification; 191 implemented, pending native interactive acceptance, its interaction model superseded by 192; 192 implemented, pending native interactive acceptance, 2026-10-22)
 
 The existing per-config Gregg client daemon already owns all remote Systems,
 cron and EggPool polling. Plans 187-190 add an optional Slint system-tray/menu-bar
@@ -91,7 +91,7 @@ root workspace and no root job compiles it. Two earlier runs on this branch
 failed (`39726097278` on the Windows Clippy gate, `39727156228` on the Windows
 test gate); both causes are fixed in the implementation commit `0022d0b`.
 
-**Plan 192 changes the direction of that line, and it is planned.** Running the
+**Plan 192 changed the direction of that line, and it is implemented.** Running the
 committed GUI on 2026-10-22 showed that the "pulldown" was a **launcher with a
 dashboard behind it**: the tray's native menu offered a summary, a flat list of
 host jump entries and `Open Gregg`, and the `Open Gregg` entry launched a
@@ -116,22 +116,28 @@ content, the `Open Gregg` launcher entry goes, and on macOS the native menu is
 detached entirely so the pulldown carries `Reload`, `About` and `Quit`.
 
 The same run found **two defects that Plan 191's closure record did not hold**,
-and both are in Plan 192's scope: the panel was **never positioned** on the
-startup path, because Slint's `with_winit_window` "will only succeed when the
-event loop is active" and the startup path calls it before the event loop runs
-— measured on the committed build, `work_area=None`, no `set_position` at all,
-and the window at x=1640 on a 3840-wide display instead of under the menu bar
-(where it lands once the first open is deferred into the event loop); and the
-panel's **position and size are not kept across a restart**, because they live
-in `UiState` and the GUI writes no state file, although Plan 191's record and
-the GUI README both say they are remembered. Plan 191's record has been amended
-to say so, and its **footprint** figure corrected: the recorded "72–83 MB
-resident" is `ps` RSS, which on macOS is dominated by shared, clean, reclaimable
-pages, and the **physical footprint** is **26–28 MB** (11 MB with the panel
-hidden, 18 MB with it open) — a quarter of the RSS figure, with the Rust heap
-at 14 MB and the system-font machinery at about 3.2 MB. The memory also does
-**not scale with the fleet** (1 host and 25 hosts are within a megabyte of each
-other) and does **not leak** over 150 s of polling.
+and both are in Plan 192's scope and **both are fixed**: the panel was **never
+positioned** on the startup path, because Slint's `with_winit_window` "will only
+succeed when the event loop is active" and the startup path called it before the
+event loop ran — measured on the committed build, `work_area=None`, no
+`set_position` at all, and the window at x=1640 on a 3840-wide display instead
+of under the menu bar; and the panel's **position and size were not kept across
+a restart**, because they lived in `UiState` and the GUI wrote no state file,
+although Plan 191's record and the GUI README both said they were remembered.
+The first open is now **deferred into the event loop** and the placement retried
+until the native window exists, and the geometry is written to a small state file
+beside the config — `<config>.gui-state`, read bounded and validated and written
+atomically. The macOS run records the result: `pulldown=placed x=3412 y=36
+width=420 height=658 area=8,36,3824x1036`, a drag of (−200, +100) moved the
+pulldown by exactly that and wrote the file, and the next start opened at the
+remembered geometry. Plan 191's record has been amended to say so, and its
+**footprint** figure corrected: the recorded "72–83 MB resident" is `ps` RSS,
+which on macOS is dominated by shared, clean, reclaimable pages, and the
+**physical footprint** is **26–28 MB** (11 MB with the panel hidden, 18 MB with
+it open) — a quarter of the RSS figure, with the Rust heap at 14 MB and the
+system-font machinery at about 3.2 MB. The memory also does **not scale with the
+fleet** (1 host and 25 hosts are within a megabyte of each other) and does
+**not leak** over 150 s of polling.
 
 Plans 066-079 are complete. Plan 076 implemented the Unix runtime/service-manager separation, HTTP `croncheck`, config-only Unix mutation, and explicit version commands. Plan 077 completed the strict bounded status-line correction, negative-path coverage, stale test cleanup, and planning reconciliation.
 
@@ -1088,7 +1094,7 @@ excluded.
 | [`189-slint-tray-and-compact-monitor-mvp.md`](189-slint-tray-and-compact-monitor-mvp.md) | Implement Slint tray/menu and compact monitor from clientd snapshots with host, drive, network, cron and optional EggPool views | **complete**; the GUI is a three-layer split — a pure `FrontendSnapshot -> GuiViewModel` projection, a protocol owner with **no HTTP client**, and a presentation owner that mutates Slint components only on the UI thread; a native `SystemTrayIcon` (exactly one `Menu`: bounded summary, Open Monitor, Reload, About Gregg, Quit Gregg) beside an independent 560×520 monitor window; a **procedural, light, health-coloured** tray icon with no binary asset; **no polling timer** — the bridge's callback schedules the update with `invoke_from_event_loop`, so an idle GUI never redraws; the `EggPool` and cron intents are desired state on a `watch` channel, so a rejected write is retried and a reconnect republishes the **new full** state; closing the window **hides** it and leaves the tray running, and Quit never stops the client daemon; the scheduler/`EggPool` words are now **shared** functions in `gregg::cron` and `gregg::eggpool` with the TUI's output unchanged; the one-polling-plane property is proved for the GUI specifically by a counted in-process remote; the native macOS tray was exercised for real (tray present, Open Monitor raises the window to the front, Reload polls immediately, About renders the Slint royalty-free attribution, Quit leaves the daemon polling, the GUI opens no network connections); **unblocks 190**; the Windows/Linux native matrix stays with Plan 190 |
 | [`190-gui-native-qualification-packaging-and-footprint.md`](190-gui-native-qualification-packaging-and-footprint.md) | Native-platform qualification, counted TUI+GUI one-polling-plane proof, packaging, licensing, MSRV and resource measurements | **implemented, pending release qualification** — its own native-platform acceptance gate is still **unchecked**, and the outstanding work is listed in the plan's *Release qualification* section rather than carried in a parenthetical; the blocking gate is a counted harness (`apps/gregg-gui/src/evidence.rs`, recorded in `apps/gregg-gui/EVIDENCE.md`) running the real daemon against two counted remotes — one scheduler-capable, one 404ing the scheduler routes — with `/v2/status` **flat at 4 polls per window in every phase** (daemon alone, +TUI, +TUI+GUI, frontends closed), a cron intent that grows the **local document** (1903→2276 bytes) and not the remote history fetch, and one converged `EggPool` worker (`7d` asked for, `30d` never); the native 25-host measurement, window-aligned to the daemon's own start, is **identical** in all three configurations (375 status + 39 scheduler requests) — the GUI adds nothing to the remote budget; `gregg-gui` is 10,803,360 bytes stripped against a matched 9,956,032-byte Slint-only baseline (**847,328 bytes, +8.5%**, re-measured after the corrective pass: the scroll container grew both binaries and the difference stayed put), and `gregg`/`greggd` are unchanged and carry none of it; the resource decision is **accept** (≈0.5–1.5% of one core; the daemon's wakeup delta of ≈2,150 matches its own documented 20 ms per-frontend poll), and the runtime-shape A/B was **inconclusive**, so nothing was changed; the packaging decision is **source-build-only** — no installer, no bundle, no release asset, one operator path (an existing Gregg installation), no asset-name collision and no downgrade; the Slint royalty-free attribution is verified present in the **release binary**; **corrective pass 2026-10-21** — three real defects, not merely unverified targets: the Windows branch was broken (the Windows CI job was red for every commit of this line), the required no-SNI-host fallback was never implemented, and **the client daemon could not be launched on Windows at all** — the launch lock's path was derived from the endpoint, and on Windows the endpoint is a named pipe, so the lock path was in the pipe device namespace where no file can exist; the lock could never be taken and the launcher failed before it ever spawned a daemon, which stopped the TUI there as well; all three are fixed, the launcher's Windows rules now live in a `#[cfg(all(test, windows))]` module so they actually run where the rule applies, the Windows native exercise now proves the **core** launch path (`gregg daemon restart` → `status` → `stop`) before the GUI starts, and the GUI workspace is now built, linted, tested and started **natively** on Windows and Linux in CI; **the interactive Windows and Linux native runs are still not performed and still block shipment for those targets** |
 | [`191-tray-pulldown-gui-and-host-management.md`](191-tray-pulldown-gui-and-host-management.md) | Replace the GUI's separate monitor window with one tray pulldown carrying all the metrics, and add host add/remove/edit against the same config | **implemented, pending native interactive acceptance** — the interactive native acceptance gate is **unchecked**, exactly as Plan 190 leaves it, so the plan is **not closed** and the GUI is **not shippable** for Windows or Linux; the framework review retains **Slint 1.18.1** — it is the latest published release, it is the only Rust option with a first-class native tray, and the footprint is the software renderer's rather than the window's; the separate monitor window is **gone**, replaced by one borderless always-on-top panel opened from the native tray menu, carrying every pane and the host-management forms; host management goes through the **CLI's own library code** (`gregg::cli::add_host`/`remove_host` against the same `ConfigStore`), so **no protocol change** and no second poller, and an endpoint change is presented as a **replacement** that states the host's identity changes; the `std-widgets` import was **kept** with its measurement recorded (11,896,608 B against 10,803,360 B, +10.1%; the font and SVG stacks it brings did not grow at all, and the write path was narrowed from `gregg::cli::dispatch` because the broad one measured **2,864,992 B** worse by linking the daemon's HTTP and TLS stack); **CI run `39727675355` on `0022d0b` green across all ten jobs**, including the core `Windows` job and all three `GUI` legs — the GUI workspace is not a root workspace member, so no root job compiles it and those legs are the only authority for its Windows and Linux behaviour; two earlier runs on this branch failed (`39726097278` on the Windows Clippy gate, `39727156228` on the Windows test gate) and both causes are fixed; **its interaction model is superseded by Plan 192** — the tray's native menu was a *launcher* for a separate window, and Plan 192 makes the tray's **click** open the pulldown and the pulldown **carry the content**; two claims in its record did not hold and are corrected in the plan — the panel is **never positioned** on the startup path (`work_area()` returns `None` before the event loop runs), and the position and size are **not** kept across a restart — and its footprint figure is corrected: the "72–83 MB resident" is `ps` RSS, and the **physical footprint is 26–28 MB** |
-| [`192-tray-pulldown-carries-the-panel.md`](192-tray-pulldown-carries-the-panel.md) | Make the tray's click open the pulldown and the pulldown carry the panel's content, instead of the native menu launching a separate window | **planned** — the direction correction is that a native menu cannot host arbitrary Slint content, but it does **not** follow that the content must live in a separately opened window: Slint's `SystemTrayIcon` has a **`clicked`** callback and a native menu with no entries **detaches itself**, so the platform routes the tray's click to that callback instead of popping the menu — on macOS (`appkit.rs:248`), on Windows (`windows.rs:290-298`, where a right-click still opens the native menu) and on Linux (`ksni.rs:284`); the mechanism was **verified by compiling** `if cond : Menu { … }` as the `SystemTrayIcon`'s single `Menu` child, so the pulldown can be a Slint popup carrying the content, placed under the tray item, with the native menu reduced to what a native menu is good at and **detached entirely on macOS**; the plan also carries the two defects the 2026-10-22 run found — the panel is **never positioned** on the startup path, and its geometry is **not persisted** — and records the limits that remain: Slint does not expose the tray item's position, so the corner anchor is an approximation; a native menu cannot host Slint widgets; there is no click-away dismissal; and Linux's `Activate` gesture is the desktop's decision |
+| [`192-tray-pulldown-carries-the-panel.md`](192-tray-pulldown-carries-the-panel.md) | Make the tray's click open the pulldown and the pulldown carry the panel's content, instead of the native menu launching a separate window | **implemented, pending native interactive acceptance** — the interactive native acceptance gate is **unchecked**, exactly as Plan 190 and Plan 191 leave it, so the plan is **not closed** and the GUI is **not shippable** for Windows or Linux; the direction correction is that a native menu cannot host arbitrary Slint content, but it does **not** follow that the content must live in a separately opened window: Slint's `SystemTrayIcon` has a **`clicked`** callback and a native menu with no entries **detaches itself**, so the platform routes the tray's click to that callback instead of popping the menu — on macOS (`appkit.rs:248`), on Windows (`windows.rs:290-298`, where a right-click still opens the native menu) and on Linux (`ksni.rs:284`); the mechanism was **verified by compiling** `if cond : Menu { … }` as the `SystemTrayIcon`'s single `Menu` child, so the pulldown can be a Slint popup carrying the content, placed under the tray item, with the native menu reduced to what a native menu is good at and **detached entirely on macOS**; **the two defects the 2026-10-22 run found are fixed** — the pulldown is **placed on every path** (the first open is deferred into the event loop, because `with_winit_window` "will only succeed when the event loop is active", and the placement is retried until the native window exists), and its geometry is **persisted** in `<config>.gui-state`, read bounded and validated and written atomically; the macOS run records it: `pulldown=placed x=3412 y=36 width=420 height=658 area=8,36,3824x1036`, a drag of (−200, +100) moved the pulldown by exactly that and wrote the file, and the next start opened at the remembered geometry; the pulldown **reads as a dropdown** — a rounded card with a 1 px border, a hand-drawn three-layer shadow (the software renderer's `draw_box_shadow` is a stub) and a `Path`-drawn pointer toward the tray — and it is **sized to its content** (420×658 for a seven-host configuration), with **Rust owning the size** because Slint 1.18 cannot expose a layout's preferred size to a `.slint` file; the application chrome is gone — no `METRICS`/`CRON` headings, no overhanging `Close` button, no daemon-identity line, no per-row `Edit`/`Remove` buttons — and there is **no launcher entry**: the pulldown carries `Reload`, `About` and `Quit` itself, and the tray's tooltip carries the fleet summary so the tray still states the fleet's health without being opened; the **protocol is untouched** (`DaemonRequest` gains no message, the GUI opens no HTTP client, the client daemon remains the only poller) and the release binary is **11,929,712 bytes**, **+33,104 (+0.3%)** on Plan 191's 11,896,608, with no new dependency in the GUI workspace; the limits that remain are recorded rather than hidden: Slint does not expose the tray item's position, so the corner anchor is an approximation; a native menu cannot host Slint widgets; there is no click-away dismissal; Linux's `Activate` gesture is the desktop's decision; and on macOS AppKit places a window requested flush with the work area's top **26 px lower**, so the default placement opens clear of the menu bar while a remembered position is honoured exactly |
 
 Dependency order:
 
@@ -1601,7 +1607,7 @@ Preserved exclusions:
   tray icons;
 - rewriting Plans 187-190's records.
 
-## Scope record for Plan 192 — planned
+## Scope record for Plan 192 — implemented, pending native interactive acceptance
 
 Required:
 
@@ -1652,6 +1658,74 @@ Preserved exclusions:
 - a new CI job, workflow, matrix, artifact or evidence bundle;
 - a release asset, installer, bundle, packaging job or publication step;
 - rewriting the historical records of Plans 187-190.
+
+### What the implementation did with that scope
+
+Every **required** item above is met, with two of them met *by the mechanism*
+rather than by an observation, and one left **unchecked** on purpose:
+
+- the pulldown carries the content and the launcher is gone. The tray's
+  `clicked` callback opens it, and the native menu is `if root.native-menu :
+  Menu { MenuItem { title: "Quit Gregg" } }` — **detached entirely on macOS**,
+  because an attached menu swallows the click;
+- the pulldown is **placed on every path**: the first open is deferred into the
+  event loop and the placement is retried until the native window exists, so
+  `work_area()` answers and the size is clamped to it;
+- the geometry **survives a restart**, in `<config>.gui-state` — bounded to
+  4 KiB, validated on read, written atomically, and falling back to the default
+  when it is corrupt;
+- the pulldown **reads as a dropdown** and is **sized to its content**, with
+  Rust owning the size because Slint 1.18 cannot expose a layout's preferred
+  size to a `.slint` file;
+- the **application chrome is dropped**, and the host actions now live in the
+  pulldown's own affordances rather than on every row;
+- the **protocol is untouched**, the GUI still opens no HTTP client, and the
+  client daemon remains the only poller;
+- the **native tray exercises were updated** — the menu expectation is now
+  `Quit Gregg`, and the GUI's own `pulldown=placed` line is parsed and asserted
+  so the exercises check the **position** and not only that a window exists.
+  **They have not been run against this change**: they need Linux and Windows.
+
+**Left unchecked, on purpose:** the **interactive** native acceptance. No tray
+icon was clicked on any platform, so the gesture that opens the pulldown — and
+Linux's, which the desktop decides — has not been observed in a real session.
+That blocks shipment for Windows and Linux and keeps the GUI a source build,
+exactly as Plan 190 leaves it.
+
+### Deviations from that scope
+
+- **The native menu carries `Quit Gregg` on Windows and Linux**, not nothing: a
+  menu with one entry is what a native menu is good at, and it keeps a
+  right-click on the tray icon useful on the two platforms where a right-click
+  still reaches it. On macOS it is detached, because an attached menu swallows
+  the click that has to open the pulldown.
+- **The tray's tooltip carries the fleet summary** — the counts and up to five
+  host names — so the tray still states the fleet's health without being
+  opened, and the native exercise's `--expect-host-name` has a target. The
+  summary is also in the pulldown's header.
+- **The shadow is drawn by hand**, in three translucent rounded rectangles,
+  because the software renderer's `draw_box_shadow` is an empty stub and a
+  vendored patch of Slint's runtime code is excluded by the plan.
+
+### What was not performed
+
+- **No interactive native run on any platform** — no tray icon was seen, no
+  pulldown was opened by a pointer, and no GNOME session was used;
+- **the native tray exercises were not run against this change** (Linux and
+  Windows only);
+- the **macOS Intel build** was not produced, and there is still **no DPI
+  measurement** at 125 % or 150 %;
+- **Wayland was never executed** — the CI Linux leg runs under `xvfb-run`,
+  which is X11;
+- the **pre-existing core Windows handle-inheritance defect** is untouched;
+- the **default local check does not pass on this host, and did not before the
+  plan either** — `cargo test --workspace --all-targets --all-features` fails
+  13-16 tests here (the `eggpool` worker tests, the `scheduler` fleet-scaling
+  tests and `clientd::ipc::tests::a_config_inside_the_temp_directory_yields_one_location`).
+  Re-verified on a **pristine worktree at `ce25e35`**, with none of this plan's
+  changes present, and the same tests fail there; this plan changed **no file
+  under `crates/`**. Not "fixed" here: it is outside this line's scope, and
+  changing the tests to pass would mask a real environment sensitivity.
 
 ## Closed scope record for Plan 189
 

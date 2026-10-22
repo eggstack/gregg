@@ -206,39 +206,45 @@ write is retried, and a reconnect publishes the new *full* desired state.
 Closing the panel **hides** it and leaves the tray running; Quit is the only
 thing that ends the GUI, and it never ends the client daemon.
 
-**The GUI has one surface: a tray pulldown** (Plan 191). The separate monitor
-window is gone. A borderless, always-on-top panel opens from the native tray
-menu and carries every pane — the fleet summary, the host list, the selected
-host's metrics, drives, interfaces, cron, records and `EggPool` — plus the
-forms that add, remove, rename and re-point hosts. It is dismissed with `Esc`,
-the tray's Open Gregg entry, or its own Close control; there is **no
-click-away dismissal**, because Slint 1.18 exposes no focus-lost event, and
-that limit is stated in the user documentation rather than papered over. It is
-anchored to the trailing edge of the display, on the side where the desktop's
-own shell lives, clamped so it can never open off the screen, and it keeps the
-position and size the operator gave it — a borderless panel carries its own
-header strip to drag it and its own corner grip to resize it. Its colours come
-from Slint's `Palette`, so it follows the desktop's scheme, and its buttons
-and text fields come from `std-widgets`, so they have the hover and pressed
-states a popover needs.
+**The GUI has one surface: a tray pulldown** (Plans 191-192). The separate
+monitor window is gone. A borderless, always-on-top panel carries every pane —
+the fleet summary, the host list, the selected host's metrics, drives,
+interfaces, cron, records and `EggPool` — plus the forms that add, remove,
+rename and re-point hosts. It is dismissed with `Esc`, the tray's click, or
+its own close control; there is **no click-away dismissal**, because Slint 1.18
+exposes no focus-lost event, and that limit is stated in the user
+documentation rather than papered over. It is anchored to the trailing edge of
+the display, on the side where the desktop's own shell lives, clamped so it can
+never open off the screen, and it keeps the position and size the operator gave
+it — a borderless panel carries its own header strip to drag it and its own
+corner grip to resize it. Its colours come from Slint's `Palette`, so it
+follows the desktop's scheme, and its buttons and text fields come from
+`std-widgets`, so they have the hover and pressed states a popover needs.
 
-**The interaction model is moving under the tray's click — Plan 192.** The
-native tray menu above was a *launcher* for a separate window, so the content
-was not in the dropdown. A native menu cannot host arbitrary Slint content,
-but that does not mean the content must live in a *separately opened* window:
-Slint's `SystemTrayIcon` has a **`clicked`** callback, and a native menu with
-no entries **detaches itself**, so the platform routes the tray's click to
-that callback instead of popping the menu — on macOS, on Windows (a right-click
-still opens the native menu) and on Linux. So: **the tray's click opens the
-pulldown, and the pulldown carries the content**; the `Open Gregg` launcher
-entry goes, and on macOS there is no native menu at all, so the pulldown
-carries `Reload`, `About` and `Quit`. The pulldown is still a Slint window,
-because a native menu cannot host Slint widgets, and it is still anchored to
-the trailing corner, because Slint 1.18 does not expose the tray item's
-position. Two traps to know: Slint's `with_winit_window` "will only succeed
-when the event loop is active", so the first open must be deferred into the
-event loop or the panel is never positioned or clamped; and the position and
-size live in `UiState` in memory, so they are forgotten on every restart.
+**The tray's click opens the pulldown, and the pulldown carries the content**
+(Plan 192). The native tray menu is **not** the dropdown: it is the context
+menu, and on macOS it is **detached entirely**, because an attached menu
+swallows the click that has to open the pulldown. The mechanism is Slint's
+`SystemTrayIcon.clicked` — a native menu with no entries **detaches itself**,
+so the platform routes the tray's click to that callback instead of popping the
+menu — on macOS, on Windows (a right-click still opens the native menu) and on
+Linux. There is **no launcher entry**: the pulldown carries `Reload`, `About`
+and `Quit` itself, and the whole host list. The pulldown is still a Slint
+window, because a native menu cannot host Slint widgets, and it is still
+anchored to the trailing corner, because Slint 1.18 does not expose the tray
+item's position.
+
+Two placement traps to know, both closed by Plan 192 and both real defects
+before it. Slint's `with_winit_window` "will only succeed when the event loop
+is active", so the **first open must be deferred into the event loop** or the
+panel is never positioned, never clamped to the work area, and its size is
+never clamped either. And the geometry is **persisted**: it lives in a small
+state file beside the config — `<config>.gui-state` — read bounded (4 KiB)
+and validated and written atomically, so it survives a restart and a corrupt
+file falls back to the default instead of failing the GUI. The size is
+computed by **Rust**, because Slint 1.18 cannot expose a layout's preferred
+size to a `.slint` file: `placement::metrics` holds the numbers and a test
+asserts them against the `.slint` literals so the two cannot drift.
 
 **The GUI may write the configuration file, and only through the CLI's own
 code** (Plan 191). The panel's add, remove and rename go through
@@ -279,8 +285,8 @@ Windows build of `gregg` stayed broken for a whole line of work.
 `NSStatusItem` menu does not activate the app that owns it, and a background
 app cannot bring its own window to the front with `orderFront:`. A GUI
 launched the way a real one is launched — a login item, a launcher, an agent —
-is a background app from its first moment, so "Open Gregg" would silently
-show nothing. `apps/gregg-gui/src/platform.rs` therefore activates the
+is a background app from its first moment, so opening the pulldown would
+silently show nothing. `apps/gregg-gui/src/platform.rs` therefore activates the
 application before raising the panel; it is the only platform-specific code in
 the GUI, it is macOS-only (`objc2`/`objc2-app-kit`, `NSApplication` feature
 only), and it is a no-op on Windows and Linux.

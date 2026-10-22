@@ -230,24 +230,26 @@ apps/gregg-gui/target/release/gregg-gui --config ~/.config/gregg/gregg.toml \
     --gregg ./target/release/gregg
 ```
 
-The tray is the always-visible entry: a health-coloured icon, a bounded fleet
-summary, and Open Gregg, Reload, About Gregg and Quit Gregg. Open Gregg raises a
-single borderless, always-on-top **pulldown panel** — there is no separate
-monitor window — showing the fleet, the selected host's metrics, drives and
-interfaces, its scheduler jobs and the `EggPool` plane, with the host and job
-lists scrolling inside a panel of fixed size. The panel can also **add, remove,
-rename and re-point** the hosts in the config file. Dismissing the panel hides
-it and leaves the tray running; quitting the GUI never stops the client daemon.
+The tray is the always-visible entry: a health-coloured icon whose tooltip
+carries the fleet summary, and whose **click opens the pulldown**. The pulldown
+is a single borderless, always-on-top panel — there is no separate monitor
+window — carrying the fleet, the selected host's metrics, drives and
+interfaces, its scheduler jobs and the `EggPool` plane, plus `Reload`, `About`
+and `Quit`, with the host and job lists scrolling inside a panel sized to its
+content. The panel can also **add, remove, rename and re-point** the hosts in
+the config file. Dismissing the panel hides it and leaves the tray running;
+quitting the GUI never stops the client daemon.
 
-That interaction model is **being changed** (Plan 192, planned): the native
-tray menu is a *launcher* for a separate window, so the content is not in the
-dropdown. A native menu cannot host arbitrary Slint content, but the content
-does not have to live in a *separately opened* window either — Slint's
-`SystemTrayIcon` has a **`clicked`** callback, and a native menu with no
-entries detaches itself so the platform routes the tray's click to that
-callback instead of popping the menu. The direction is that **the tray's click
-opens the pulldown and the pulldown carries the content**, with no launcher
-entry and, on macOS, no native menu at all.
+The native tray menu is the **context** menu, not the dropdown — on macOS it is
+detached entirely, and elsewhere it carries only `Quit Gregg`. A native menu
+cannot host arbitrary Slint content, but that does not mean the content has to
+live in a *separately opened* window either: Slint's `SystemTrayIcon` has a
+**`clicked`** callback, and a native menu with no entries detaches itself so
+the platform routes the tray's click to that callback instead of popping the
+menu. So the tray's **click opens the pulldown and the pulldown carries the
+content**, with no launcher entry. The pulldown is anchored to the trailing
+corner of the display, on the side where the desktop's own shell lives, and its
+position and size are remembered across restarts.
 
 On a desktop with **no system tray** — a plain GNOME session has no
 `StatusNotifierItem` host — the tray cannot appear at all. The GUI notices,

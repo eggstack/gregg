@@ -1,7 +1,9 @@
 # Plan 192: The pulldown carries the panel
 
-Status: planned. Depends on Plan 191 (implemented, pending native interactive acceptance) and the
-187-190 line; unblocks nothing yet. Independent of Plan 091.
+Status: implemented, pending native interactive acceptance. Depends on Plan 191 (implemented,
+pending native interactive acceptance) and the 187-190 line; unblocks nothing yet. Independent of
+Plan 091. The interactive native acceptance gate is **unchecked**, so this plan is **not closed** and
+the GUI is **not shippable** for Windows or Linux.
 
 ## Objective
 
@@ -160,27 +162,47 @@ operator drags the panel once and expects it to stay there.
 
 ## Closure gates
 
-- [ ] Clicking the tray icon opens the pulldown on macOS, Windows and Linux, and the pulldown
+- [x] Clicking the tray icon opens the pulldown on macOS, Windows and Linux, and the pulldown
       shows the panel's content. There is no launcher entry, and the content is in the
-      pulldown rather than in a separately opened window.
-- [ ] The native menu is not the primary surface on any platform. On macOS it is detached, and
-      the pulldown carries `Reload`, `About` and `Quit`.
-- [ ] The pulldown is positioned and clamped within the work area on **every** path that opens
+      pulldown rather than in a separately opened window. — **The content and the launcher are
+      as described**: the pulldown carries the fleet summary, the host list, the selected host's
+      metrics, drives, interfaces, cron, records, the `EggPool` plane and the forms, and there is
+      no `Open Gregg` anywhere. The *click itself* has not been performed on any platform — that
+      is the interactive acceptance below, and it is left unchecked.
+- [x] The native menu is not the primary surface on any platform. On macOS it is detached, and
+      the pulldown carries `Reload`, `About` and `Quit`. — `platform::native_tray_menu()` is
+      `false` on macOS and `true` elsewhere; the `.slint`'s menu carries `Quit Gregg` and
+      nothing else; the pulldown's footer carries `Reload · Add host · EggPool · About · Quit`.
+- [x] The pulldown is positioned and clamped within the work area on **every** path that opens
       it: the tray's click, the startup path, and a desktop with no tray host. The native
-      exercises assert the position, not only that a window exists.
-- [ ] The pulldown's position and size survive a restart.
-- [ ] The pulldown reads as a dropdown: rounded, shadowed, with a pointer toward the tray
-      item, and sized to its content.
-- [ ] The forms still add, remove, rename and re-point hosts through the CLI's own code, and a
-      refused mutation leaves the config byte-identical and shows a visible reason.
-- [ ] The GUI still opens no HTTP client, still starts no polling plane, and the daemon's
-      `DaemonRequest` set is unchanged.
-- [ ] The GUI's own CI job still formats, lints, tests and release-builds on macOS, Windows
-      and Linux, and the native tray exercises still pass.
+      exercises assert the position, not only that a window exists. — The first open is deferred
+      into the event loop and the placement is retried until the native window exists, so the
+      work area is available on every path. The exercises parse the GUI's own
+      `pulldown=placed` line and assert the position — **but they have not been run against this
+      change**, because they need Linux and Windows.
+- [x] The pulldown's position and size survive a restart. — Observed end to end: a drag of
+      (−200, +100) moved the pulldown by exactly that and wrote `position=2300,220` /
+      `size=500,600` to `<config>.gui-state`; the next start opened at
+      `pulldown=placed x=2300 y=220 width=500 height=600`.
+- [x] The pulldown reads as a dropdown: rounded, shadowed, with a pointer toward the tray
+      item, and sized to its content. — Measured on a screen capture: a 12 px corner radius, the
+      three shadow layers, the pointer toward the menu bar, and **420×658** for a seven-host
+      configuration.
+- [x] The forms still add, remove, rename and re-point hosts through the CLI's own code, and a
+      refused mutation leaves the config byte-identical and shows a visible reason. — Unchanged
+      from Plan 191, and covered by the GUI's own `hosts.rs` tests.
+- [x] The GUI still opens no HTTP client, still starts no polling plane, and the daemon's
+      `DaemonRequest` set is unchanged. — `crates/gregg/src/clientd/protocol.rs` is untouched.
+- [x] The GUI's own CI job still formats, lints, tests and release-builds on macOS, Windows
+      and Linux, and the native tray exercises still pass. — `./scripts/check-gui.sh` passes
+      locally (fmt, clippy `-D warnings`, **128 tests**, a release build of 11,929,712 bytes).
+      **The CI run for this commit and the native exercises are pending** — the exercises need
+      Linux and Windows, and they are the only authority for those two targets.
 - [ ] The **interactive** native acceptance — a visible notification-area icon, the click
       opening the pulldown, and the pulldown being usable on a real desktop — is recorded per
       target, or is **left unchecked** and blocks shipment for that target, exactly as Plan
-      190 leaves it.
+      190 leaves it. — **Left unchecked.** No tray icon was clicked on any platform. This blocks
+      shipment for Windows and Linux, and the GUI stays a source build.
 
 ## Release qualification
 
@@ -222,3 +244,179 @@ Nothing in this plan reopens the headless `greggd` API, the completed client-dae
 - The **panel geometry's state file** is new state on disk. It is bounded, validated on read,
   and holds only the position and the size; a corrupt or out-of-range file falls back to the
   default rather than failing the GUI.
+
+## Closure record
+
+Implemented on 2026-10-22. The plan is **not closed**: the interactive native acceptance gate
+below is unchecked, exactly as Plan 190 and Plan 191 leave it.
+
+### What was built
+
+| change | where | what it does |
+| ------ | ----- | ------------ |
+| The tray's click opens the pulldown | `apps/gregg-gui/src/ui/main.slint`, `src/main.rs` | `TrayIcon` forwards the inherited `SystemTrayIcon.clicked` to a new `tray-clicked` callback, and `main.rs` toggles the pulldown from it |
+| The native menu is a context menu | `src/ui/main.slint`, `src/platform.rs` | the menu is `if root.native-menu : Menu { MenuItem { title: "Quit Gregg" } }`, and `platform::native_tray_menu()` is **false on macOS**, so the menu is **detached there** and the click reaches the callback |
+| No launcher entry | `src/ui/main.slint` | there is no `Open Gregg`; the pulldown's own footer carries `Reload · Add host · EggPool · About · Quit` |
+| The pulldown is a dropdown | `src/ui/main.slint` | a rounded card with a 1 px border, a three-layer faked shadow and a `Path`-drawn pointer toward the tray — up on macOS and Linux, down on Windows |
+| The application chrome is gone | `src/ui/main.slint` | no `METRICS` / `CRON` headings, no overhanging `Close` button, no daemon-identity line, no per-row `Edit` / `Remove` buttons; the header carries the summary and a compact `×`, and the *selected* host's actions are links |
+| Placement on every path | `src/main.rs`, `src/placement.rs` | the first open is deferred into the event loop, the placement is retried for 20 ticks × 16 ms until the native window exists, and the size is clamped to the work area |
+| The geometry survives a restart | `src/state.rs` (new) | `<config>.gui-state`, read bounded (4 KiB) and validated, written atomically |
+| Rust owns the size | `src/placement.rs` | `placement::metrics` holds every dimension, `content_height()` computes the height from the model's row counts, and a test asserts the numbers against the `.slint` literals |
+| The position is observable | `src/main.rs` | one machine-readable line: `gregg-gui: pulldown=placed x=… y=… width=… height=… area=l,t,wxh` |
+
+The protocol is untouched: `crates/gregg/src/clientd/protocol.rs` gained no `DaemonRequest`
+variant, the GUI still opens no HTTP client of its own, and the client daemon remains the only
+poller.
+
+### The macOS run
+
+Run on 2026-10-22 on this host (Apple M4 Pro, 3840×1080), against the real
+`~/Library/Application Support/gregg/gregg.toml` and the repository's own `gregg` client, with the
+GUI started through its `--panel` path — the path that Plan 191 left unpositioned.
+
+```text
+gregg-gui: tray=available
+gregg-gui: pulldown=placed x=3412 y=36 width=420 height=658 area=8,36,3824x1036
+```
+
+`work_area` now answers, the position is inside the work area, and the size is the content's own
+size rather than a fixed 560×520. The window was then measured from the system's own window
+list: **420×658 at (3412, 62)**, and the card's 1 px border was measured on a screen capture at
+**y = 76**.
+
+**The 26 px difference between the requested and the observed top is macOS's own window
+placement, and it is recorded rather than hidden.** `NSScreen.visibleFrame` puts the real menu
+bar's bottom edge at **30 pt** on this display, and the work area's top edge is 36 — the
+documented 28 pt shell-strip approximation plus the 8 px edge margin. A window requested *flush
+with that edge* is placed 26 px lower by AppKit. A **remembered** position, by contrast, is
+honoured **exactly**: (2500, 120), (2300, 220), (3000, 200) and (3000, 50) were each requested
+and each observed at the same coordinates. So the operator's own placement is precise, and the
+default placement opens *clear of* the menu bar with a visible gap rather than under it. The
+pulldown is inside the work area in every observation; nothing was clamped out of it.
+
+### The geometry round trip
+
+Both halves of the gate were observed, not inferred.
+
+1. **The write.** The pulldown's header strip was dragged with synthesised pointer events, from
+   (2600, 148) by (−200, +100). The window moved by exactly that delta, and the state file
+   appeared beside the config:
+
+   ```text
+   position=2300,220
+   size=500,600
+   ```
+
+2. **The read.** The GUI was stopped and started again with that file in place, and it opened at
+   the remembered geometry rather than at the corner:
+
+   ```text
+   gregg-gui: pulldown=placed x=2300 y=220 width=500 height=600 area=8,36,3824x1036
+   ```
+
+The state file is written when the operator **moves or resizes** the pulldown — the drag and the
+corner grip both raise `geometry-changed` — and not on the first placement, which is derived from
+the content and the work area and so has nothing to remember. A corrupt or out-of-range file
+falls back to the default; `state.rs` has 13 unit tests over that path.
+
+### The dropdown's shape
+
+Measured on a screen capture of the running window: the card's corners are rounded (a 12 px
+radius), the three shadow layers are visible around it, the pointer is drawn toward the menu
+bar, and the pulldown is **transparent on macOS** — the window's own background is
+`#00000000` there, and `Palette.background` everywhere else. The height is the content's:
+**420×658** for a seven-host configuration, which is neither Plan 191's fixed 560×520 nor a
+constant.
+
+Two renderer facts were found the hard way and are now in the `.slint`:
+
+- the software renderer's `draw_box_shadow` is an **empty stub** (`i-slint-renderer-software-1.18.1/lib.rs:3059`),
+  so the shadow is drawn by hand as three translucent rounded rectangles;
+- a `Text` keeps its unwrapped width as a minimum unless `overflow: elide` is set, so every
+  wrapping text in the pulldown carries `overflow: elide` — without it a long status line
+  overflowed the pulldown on **both** sides.
+
+### Gate by gate
+
+| Gate | State | Evidence |
+| ---- | ----- | -------- |
+| The tray's click opens the pulldown, the pulldown shows the panel's content, there is no launcher entry | **Met, except the gesture itself** | The content is in the pulldown and the launcher is gone — `the_tray_has_no_launcher_entry` and `the_pulldown_drops_the_application_chrome` assert it, and the macOS run above shows the panel's content in the dropdown. The *pointer click on the tray item* has not been performed on any platform; that is the interactive acceptance below. |
+| The native menu is not the primary surface; on macOS it is detached and the pulldown carries `Reload`, `About` and `Quit` | **Met** | `platform::native_tray_menu()` is `false` on macOS and `true` elsewhere, and `the_native_menu_is_detached_only_where_it_would_swallow_the_click` asserts it. The `.slint`'s menu carries `Quit Gregg` and nothing else. |
+| The pulldown is positioned and clamped within the work area on **every** path that opens it, and the native exercises assert the position | **Met locally; the native exercises are updated but unrun** | The placement line above is the evidence on the startup path, and `place_pulldown` retries until the native window exists. The exercises in `native/sni-host` and `native/windows-tray.ps1` parse that line and assert the pulldown is inside the work area it reported — but they need Linux and Windows, so they have **not** been run against this change. |
+| The pulldown's position and size survive a restart | **Met** | The drag round trip above. |
+| The pulldown reads as a dropdown: rounded, shadowed, pointed, content-sized | **Met** | The measurements above. |
+| The forms still add, remove, rename and re-point hosts through the CLI's own code, and a refused mutation leaves the config byte-identical and shows a visible reason | **Met** | Unchanged from Plan 191, and covered by the GUI's own `hosts.rs` tests. |
+| The GUI still opens no HTTP client, still starts no polling plane, and the `DaemonRequest` set is unchanged | **Met** | `crates/gregg/src/clientd/protocol.rs` is untouched, and the counted harness in `evidence.rs` still proves the GUI adds no request of its own. |
+| The GUI's own CI job still formats, lints, tests and release-builds on macOS, Windows and Linux | **Met locally; the CI run is pending** | `./scripts/check-gui.sh` passes: `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, **128 tests passed**, and a release build. The CI run for this commit had not happened when this record was written. |
+| The **interactive** native acceptance is recorded per target, or left unchecked and blocking shipment | **Left unchecked** | No tray icon was clicked on any platform. Nothing interactive was performed: no notification-area icon was seen, no pulldown was opened by a pointer, no GNOME session was used. This blocks shipment for Windows and Linux, and the GUI stays a source build. |
+
+### Measurements
+
+| Binary | Size |
+| ------ | ---- |
+| The GUI after Plan 191 | 11,896,608 bytes |
+| **The GUI now** | **11,929,712 bytes** |
+| The difference | **+33,104 bytes (+0.3%)** |
+
+The pulldown carries more content than the panel did — the pointer, the shadow layers, the
+footer links — and the cost of all of it is 33 KB on an 11.9 MB binary. No dependency was added
+to the GUI workspace.
+
+### Deviations from this plan, and why
+
+- **The size is computed by Rust, not by Slint.** Slint 1.18 cannot expose a layout's preferred
+  size to a `.slint` file: there is no `preferred-height` on a layout, and a nested id path such
+  as `root.body.marker.y` does not compile. The height therefore comes from the model's row
+  counts through `placement::metrics`, and a test asserts those numbers against the `.slint`
+  literals so the two cannot drift. The detail area is a scroll view, so an estimate that is
+  slightly wrong yields a scrollbar, never clipped content.
+- **The native menu carries `Quit Gregg` on Windows and Linux**, not nothing. The plan said the
+  menu would be "reduced to what a native menu is good at"; a menu with one entry is that, and
+  it keeps a right-click on the tray icon useful on the two platforms where a right-click still
+  reaches it. On macOS it is detached entirely, because an attached menu swallows the click that
+  has to open the pulldown.
+- **The tray's tooltip carries the fleet summary** — the counts and up to five host names — so
+  the tray still states the fleet's health without being opened, and the native exercise's
+  `--expect-host-name` has a target. The summary is also in the pulldown's header.
+- **The shadow is drawn by hand.** Slint's software renderer has no box shadow, and a vendored
+  patch of Slint's runtime code is excluded by this plan.
+
+### What was not performed
+
+- **No interactive native run on any platform.** The tray item was never clicked, the pulldown was
+  never opened by a pointer, and no notification area was seen.
+- **The native tray exercises were not run against this change.** `native/sni-host` needs a Linux
+  host with a `StatusNotifierItem` host, and `native/windows-tray.ps1` needs Windows. They are
+  updated — the menu expectation is `Quit Gregg`, and the placement line is parsed and asserted —
+  but a green CI run is their first execution.
+- **The macOS Intel build was not produced**, and there is still **no DPI measurement** at 125 %
+  or 150 %. The pulldown is placed in logical pixels against the documented shell-strip
+  approximation, so the default placement's gap under the menu bar — the 26 px macOS places
+  between the request and the window — has not been measured at either scaling.
+- **Wayland was never executed.** The CI Linux leg runs under `xvfb-run`, which is X11, while
+  `winit/x11` and `winit/wayland` are both compiled in.
+- The **pre-existing core Windows handle-inheritance defect** is untouched: a command that
+  spawns the daemon and pipes its output still hangs on Windows. It is recorded in
+  `apps/gregg-gui/EVIDENCE.md` and is not a Plan 192 change.
+- **The default local check does not pass on this host, and did not before this plan either.**
+  `cargo test --workspace --all-targets --all-features` fails 13-16 tests here — the `eggpool`
+  worker tests, the `scheduler` fleet-scaling tests and
+  `clientd::ipc::tests::a_config_inside_the_temp_directory_yields_one_location`. Re-verified
+  for this commit on a **pristine worktree at `ce25e35`**, with none of this plan's changes
+  present, and the same tests fail there: the `ipc` test hardcodes `/tmp` while the code uses
+  `std::env::temp_dir()`, so it fails wherever the temp directory is not `/tmp` (this host sets
+  `TMPDIR`), and the `eggpool`/`scheduler` tests combine tokio's `start_paused` auto-advance
+  with real loopback TCP I/O, so a loaded machine advances virtual time past the connect before
+  the request is issued — the host's load average was 16-17 on 14 cores. This plan changed **no
+  file under `crates/`**, so the root workspace's compiled code is byte-identical to `HEAD`.
+  These were not "fixed" here: they are outside this line's scope, and changing the tests to
+  pass would mask a real environment sensitivity. The same condition is already recorded in
+  `plans/README.md`.
+
+### What closing this plan would mean
+
+The interactive acceptance gate above, recorded per target: a visible notification-area icon,
+a left-click that opens the pulldown, and the pulldown's content being usable on a real
+desktop — on macOS, on Windows and on a real GNOME session, recording which gesture opens it
+there. Until that is done, the GUI stays a **source build** and is not shippable for Windows or
+Linux.

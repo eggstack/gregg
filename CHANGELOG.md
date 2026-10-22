@@ -56,8 +56,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   surface** — a borderless, always-on-top panel that opens from the native tray
   menu and carries the fleet summary, the host list, the selected host's
   metrics, drives and interfaces, its scheduler jobs and retained records, and
-  the `EggPool` plane. The panel is dismissed with `Esc`, the tray's Open Gregg
-  entry, or its own Close control; there is **no click-away dismissal**,
+  the `EggPool` plane. The panel is dismissed with `Esc`, the tray's click, or
+  its own close control; there is **no click-away dismissal**,
   because Slint 1.18 exposes no focus-lost event, and that limit is stated in
   the documentation rather than papered over. The panel is anchored to the
   trailing edge of the display, on the side where the desktop's own shell
@@ -82,6 +82,39 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   the client daemon remains the only poller, and no protocol message was added
   or changed.
 
+- **The desktop frontend's tray click opens the pulldown, and the pulldown
+  carries the content (Plan 192):** the tray's native menu was a **launcher**,
+  and the content it launched lived in a separate window. It no longer is. Slint's
+  `SystemTrayIcon` has a **`clicked`** callback, and a native menu with no
+  entries **detaches itself**, so the platform routes the tray's click to that
+  callback instead of popping the menu. The GUI uses that: **the tray's click
+  opens the pulldown**, and the pulldown carries the fleet summary, the host
+  list, the selected host's metrics, drives and interfaces, its scheduler jobs
+  and retained records, the `EggPool` plane and the host forms — plus `Reload`,
+  `About` and `Quit`, because on macOS there is no native menu at all. There is
+  **no launcher entry**. The native menu is the *context* menu now: it carries
+  `Quit Gregg` on Windows and Linux, and it is detached entirely on macOS.
+
+  The pulldown **reads as a dropdown**: a rounded card with a hairline border, a
+  soft shadow and a pointer toward the tray item, with the application chrome
+  dropped — no `METRICS` and `CRON` headings, no overhanging `Close` button, no
+  daemon-identity line, and no `Edit` and `Remove` buttons crowding every host
+  row. It is **sized to its content** rather than to a fixed rectangle, and its
+  position and size now **survive a restart**: they are kept in a small state
+  file beside the configuration, read with a bound and validated, and written
+  atomically. The GUI also prints one machine-readable line,
+  `gregg-gui: pulldown=placed x=… y=… width=… height=… area=…`, so the native
+  tray exercises check the **position** and not only that a window exists.
+
+  Two defects found while reproducing this are fixed with it: the pulldown was
+  **never positioned on the startup path**, because Slint's `with_winit_window`
+  "will only succeed when the event loop is active" — the first open is now
+  deferred into the event loop, so the work area is available and the size is
+  clamped to it; and the position and size were **not kept across a restart**,
+  because they lived in memory and the GUI wrote no state file. The protocol is
+  untouched: the GUI remains a frontend over the same client daemon, opens no
+  HTTP client of its own, and `DaemonRequest` gains no message.
+
 - **The optional desktop frontend can open its panel at startup:** the new
   `--panel` option opens the pulldown instead of waiting for the tray. The
   tray still works either way, and the native exercises use it so that a panel
@@ -90,14 +123,14 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - **The desktop frontend's interaction model is changing: the tray's click will
-  open the pulldown, and the pulldown will carry the content (Plan 192,
-  planned).** Nothing changes yet — this records the direction. As built, the
-  tray's native menu is a **launcher**: it offers a summary, a flat list of
-  host jump entries and `Open Gregg`, and `Open Gregg` opens a *separate*
-  window that carries the content. So the content is not in the dropdown, and
-  the window holding it reads as a small application rather than a popover.
-  A native menu cannot host arbitrary Slint content — true — but the content
-  does not have to live in a *separately opened* window either: Slint's
+  open the pulldown, and the pulldown will carry the content (Plan 192).** This
+  is now **implemented** — see the entry above. The direction it records: as
+  built, the tray's native menu was a **launcher**: it offered a summary, a flat
+  list of host jump entries and `Open Gregg`, and `Open Gregg` opened a
+  *separate* window that carries the content. So the content is not in the
+  dropdown, and the window holding it reads as a small application rather than a
+  popover. A native menu cannot host arbitrary Slint content — true — but the
+  content does not have to live in a *separately opened* window either: Slint's
   `SystemTrayIcon` has a **`clicked`** callback, and a native menu with no
   entries **detaches itself**, so the platform routes the tray's click to that
   callback instead of popping the menu (on macOS, on Windows, where a
@@ -111,8 +144,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   way: the GUI remains a frontend over the same client daemon, opens no HTTP
   client of its own, and `DaemonRequest` gains no message.
 
-  The same review found two defects in the current build, both of which are in
-  the plan's scope: the panel was **never positioned on the startup path**,
+  The review that found this also found two defects in the build, both of which
+  are fixed with it: the panel was **never positioned on the startup path**,
   because Slint's `with_winit_window` "will only succeed when the event loop
   is active" and the startup path calls it before the event loop runs — so
   `work_area()` returned `None` and the panel was neither positioned nor

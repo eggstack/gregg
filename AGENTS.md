@@ -71,32 +71,38 @@ cron and EggPool panes — or the buttons — out of the panel. It is dismissed 
 dismissal**, because Slint 1.18 exposes no focus-lost event, and that limit is
 stated in the documentation rather than papered over.
 
-**The pulldown is moving under the tray's click — Plan 192.** The interaction
-model above is what Plan 191 built and what Plan 192 **replaces**: the native
-tray menu was a *launcher* for a separate window, so the content was not in the
-dropdown. A native menu cannot host arbitrary Slint content, but that does not
-mean the content must live in a *separately opened* window: Slint's
-`SystemTrayIcon` has a **`clicked`** callback, and a native menu with no entries
-**detaches itself**, so the platform routes the tray's click to that callback
-instead of popping the menu — on macOS, on Windows (where a right-click still
-opens the native menu) and on Linux. The direction is therefore: **the tray's
-click opens the pulldown, and the pulldown carries the content**; the `Open
-Gregg` launcher entry goes, and on macOS there is no native menu at all, so the
-pulldown carries `Reload`, `About` and `Quit`. Do not build against the
+**The pulldown moves under the tray's click — Plan 192.** The interaction
+model above is what Plan 191 built; Plan 192 **replaced** it, and this is the
+shape now: **the tray's click opens the pulldown, and the pulldown carries the
+content.** The native tray menu is **not** the dropdown — it is the context
+menu, and on macOS it is **detached entirely**, because an attached menu
+swallows the click that has to open the pulldown. The mechanism is Slint's
+`SystemTrayIcon.clicked`: a native menu with no entries **detaches itself**, so
+the platform routes the tray's click to that callback instead of popping the
+menu — on macOS, on Windows (where a right-click still opens the native menu)
+and on Linux. There is **no launcher entry**; the pulldown carries `Reload`,
+`About` and `Quit` itself, and the whole host list. Do not build against the
 launcher model. The pulldown is still a Slint window, because a native menu
 cannot host Slint widgets, and it is still anchored to the platform's trailing
 corner, because Slint 1.18 does not expose the tray item's position.
 
-**Two traps in the GUI's placement and geometry.** Slint's
+**The pulldown is placed, and its geometry survives a restart — Plan 192.** The
+first open is **deferred into the event loop**, because Slint's
 `with_winit_window` "will only succeed when the event loop is active", so
-`placement::work_area()` returns `None` before the event loop runs: the first
-open has to be **deferred into the event loop** (a thread plus
-`invoke_from_event_loop`, as the bridge already does), or the panel is never
-positioned, never clamped to the work area, and its size is never clamped
-either. And the panel's position and size live in `UiState`, in memory: the GUI
-writes **no state file**, so they are forgotten on every restart even though the
-README and the plan say they are kept. Plan 192 fixes both; until then, do not
-assume the panel is placed or that its geometry survives.
+`placement::work_area()` returns `None` before the loop runs: an open that is
+not deferred is never positioned, never clamped to the work area, and its size
+is never clamped either. The position and size are written to a small state
+file beside the config — `<config>.gui-state`, mirroring the `<config>.lock`
+convention — read **bounded** (4 KiB) and validated, and written atomically; a
+corrupt or out-of-range file falls back to the default rather than failing the
+GUI. **Rust owns the pulldown's size**, because Slint 1.18 cannot expose a
+layout's preferred size to a `.slint` file: the height comes from the model's
+row counts through `placement::metrics`, and a test asserts those numbers
+against the `.slint` literals so the two cannot drift. The detail area is a
+scroll view, so a wrong estimate yields a scrollbar, never clipped content.
+The GUI prints one machine-readable line — `pulldown=placed x=… y=… width=…
+height=… area=…` — so the native exercises assert the **position**, not only
+that a window exists.
 
 **The GUI may write the configuration file, and only through the CLI's own
 code.** The panel's add, remove and rename go through `gregg::cli::add_host`
