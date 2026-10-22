@@ -661,6 +661,104 @@ Windows and Linux behaviour, because the workspace is not a member of the
 root workspace and no root job compiles it. The `GUI (macos-15)` leg is the
 one that builds the patched macOS backend.
 
+### The fleet view became a table of blocks, and the selection became a quiet tint (2026-10-22)
+
+The section above describes the fleet view as it was after the second revision:
+**one line per host** under a row of column headings. That is **superseded**.
+The fleet view is now the TUI's condensed fleet row **turned on its side**: every
+host is a **block of its own**.
+
+**What the fleet view is**, measured on a window capture of the running build
+(`screencapture -x -R<x> <y> 606 478`, macOS 15, arm64, the desktop's own dark
+appearance):
+
+```text
+Deadpool  IO 40.7%  9.87/11.42/12.26  16C  912.96MHz
+CPU   [████████████████████░░░░░░░░░░░░░░]   7%
+MEM   [██████████████████████████░░░░░░░░░░]  91%
+SWP   [███████░░░░░░░░░░░░░░░░░░░░░░░░░░░░]  24%
+DISK  [███████████████████████████████░░░░░░]  93%
+NET   [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░]   0%
+MacbookPro  5.22/6.58/8.24  14C
+CPU   [██████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░]  45%
+```
+
+- **The header line names the host and carries what is not a used share**: the
+  I/O wait, the load, the core count and the frequency, in the TUI's own words
+  and the TUI's own order. A host that reports no I/O wait and no frequency
+  carries neither (`MacbookPro  5.22/6.58/8.24  14C`): a missing reading is
+  omitted, never shown as a zero.
+- **The five rows under it are the five used shares**, and each row carries
+  **only its share** — the bar and the percentage, nothing else.
+- A host that is **not online has no rows at all**: its header says why it is
+  offline and nothing else.
+
+**The geometry, measured on the capture** (the panel's own chrome is at
+x=14..592, the content starts at x=26):
+
+| thing | measured | designed |
+| --- | --- | --- |
+| the label column | x=26..90 | 64 px |
+| the bar's left edge | x=96 | 26 + 64 + 6 |
+| the bar's fill | x=97..287 (7 %), x=97..411 (26 %), x=97..500 (41 %) | the left edge, by share |
+| the row pitch | 13 px | 13 px |
+| the block | 81 px | 16 + 5 × 13 |
+| the panel | 606 × 478 | 606 wide, the host list bounded at 348 px |
+
+**The selection was a real defect, and it is fixed.** The selected block was
+tinted with `Palette.selection-background`, and its contents were drawn in
+`Palette.selection-foreground`. Measured on macOS, that foreground is
+**black** — the selection background is the accent blue `(0, 127, 214)` — so the
+selected host's name, its labels, its percentages and **every bar fill** were
+drawn black on blue: a bar drawn in it reads as a hole rather than as a
+measurement. The selection is now a **quiet tint** — the foreground at 7 %,
+`(53, 53, 53)` against the card's `(39, 39, 39)` — with the host's **name in the
+accent colour**, and **the bars are the same on a selected block as on any
+other**: the fill is `Palette.accent-background` `(104, 208, 255)` and the track
+is the foreground's own 15 %.
+
+**Both colour schemes were captured natively.** The light scheme was captured by
+turning the system's dark mode off and back on again (`osascript`, appearance
+preferences), which was **reverted** before the commit; the dark scheme is the
+desktop's own. The light scheme's card is `(224, 224, 224)` and the bars are
+the same accent blue on a light track.
+
+**The `offline (invalid)` hosts are fixed, and the fix was verified against the
+live daemon.** Two macOS hosts reported `offline (invalid)` while the TUI showed
+them correctly. The cause was in the *producer*: the deployed `greggd` 1.0.13
+reads `ifa_data` through the 64-bit `if_data64` layout, so the 32-bit
+`ifi_baudrate` is picked up from the low half and `ifi_ipackets` from the high
+half — `en0` arrives with a capacity of `1326367260874488128` bits per second
+instead of its real `304200000`. The v2 protocol bounds a capacity, and the
+client's validator rejected the **whole snapshot** for it.
+
+The client now **omits** an unrepresentable optional capacity rather than
+failing the snapshot, and accepts the payload only if the *repaired* payload
+validates. After restarting the client daemon with the fixed binary, the
+daemon's own published snapshot reports all seven hosts `Online`:
+
+```text
+Deadpool     192.168.182.143  Online   net agg cap rx=11000000000 tx=11000000000
+MacbookPro   127.0.0.1        Online   net agg cap rx=None tx=None
+Raspi 10     192.168.182.10   Online   net agg cap rx=11000000000 tx=11000000000
+Plex         192.168.182.4    Online   net agg cap rx=None tx=None
+Le Potato20  192.168.182.20   Online   net agg cap rx=None tx=None
+Le Potato21  192.168.182.21   Online   net agg cap rx=None tx=None
+Raspi 8      192.168.182.8    Online   net agg cap rx=None tx=None
+```
+
+The two hosts' network **shares** now read as *not measured* (`—`) in the fleet
+view, and every other reading on them is shown.
+
+**The cost:** the release binary is **12,012,560 bytes**, **−49,568 (−0.4 %)** on
+the 12,062,128 of the revision above.
+
+**What was not done:** the interactive native acceptance is still outstanding, as
+it was for Plan 192 — no tray icon was clicked and no pulldown was opened by a
+pointer. The macOS Intel build was not produced locally, there is still no DPI
+measurement at 125 % or 150 %, and Wayland was never executed. The Windows and
+Linux legs are authority in the GUI CI job, not here.
+
 ### The native exercises, on CI run `39811582623`
 
 The GUI workspace is not a member of the root workspace, so no root job

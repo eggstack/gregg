@@ -59,16 +59,16 @@ use model::{ConnectionState, GuiViewModel, Selection};
 
 slint::include_modules!();
 
-/// One measured column, as the fleet's table shows it.
+/// One measured row, as the fleet's block shows it.
 ///
-/// A cell with no reading carries a negative fraction, so its bar is empty
+/// A row with no reading carries a negative fraction, so its bar is empty
 /// rather than full: an empty bar says "not measured", and a full one would
 /// say "measured as everything".
-fn fleet_cell(cell: &model::FleetCell) -> FleetCell {
-    FleetCell {
-        pct_text: cell.pct_text.clone().into(),
-        fraction: cell.fraction,
-        extra: cell.extra.clone().into(),
+fn fleet_row(row: &model::FleetRow) -> FleetRow {
+    FleetRow {
+        label: row.label.clone().into(),
+        pct_text: row.pct_text.clone().into(),
+        fraction: row.fraction,
     }
 }
 
@@ -888,6 +888,11 @@ fn content_for(state: &UiState, panel: &Pulldown) -> placement::Content {
         .map_or(0, |eggpool| eggpool.values.len());
     placement::Content {
         hosts: model.systems.len(),
+        online_hosts: model
+            .systems
+            .iter()
+            .filter(|card| card.block.online)
+            .count(),
         selected: model.selected_id.is_some(),
         metrics,
         details: drives.len() + interfaces.len(),
@@ -1148,36 +1153,28 @@ fn render(state: &mut UiState, panel: &slint::Weak<Pulldown>, tray: &slint::Weak
         return;
     };
 
-    // The fleet's rows: one line per host, with a bar for each of the five
-    // used shares. The strip is the model's own, so the compact row and the
-    // TUI's condensed row cannot disagree about a number.
-    let hosts: Vec<FleetRow> = model
+    // The fleet's blocks: one per host, each a header line and the five used
+    // shares under it, one bar each. The block is the model's own, so the
+    // compact fleet and the TUI's condensed row cannot disagree about a
+    // number.
+    let hosts: Vec<FleetHost> = model
         .systems
         .iter()
         .map(|card| {
-            let strip = &card.strip;
-            FleetRow {
-                id: strip.id.clone().into(),
-                name: strip.name.clone().into(),
-                io_token: strip.io_token.clone().into(),
-                load: strip.load.clone().into(),
-                status: strip.status.clone().into(),
-                online: strip.online,
+            let block = &card.block;
+            let rows: Vec<FleetRow> = block.rows.iter().map(fleet_row).collect();
+            FleetHost {
+                id: block.id.clone().into(),
+                name: block.name.clone().into(),
+                detail: block.detail.clone().into(),
+                online: block.online,
                 selected: model.selected_id.as_deref() == Some(card.id.as_str()),
-                cpu: fleet_cell(&strip.cpu),
-                memory: fleet_cell(&strip.memory),
-                swap: fleet_cell(&strip.swap),
-                disk: fleet_cell(&strip.disk),
-                network: fleet_cell(&strip.network),
+                rows: slint::ModelRc::from(rows.as_slice()),
             }
         })
         .collect();
     let hosts = slint::ModelRc::from(hosts.as_slice());
     panel.set_hosts(hosts.clone());
-
-    // The heading of the swap-or-commit column is the fleet's, not one host's:
-    // a fleet may hold both kinds of host.
-    panel.set_swap_heading(model::swap_heading(&model.systems).into());
 
     let metrics: Vec<MetricRow> = model
         .selected
@@ -1310,7 +1307,7 @@ fn render(state: &mut UiState, panel: &slint::Weak<Pulldown>, tray: &slint::Weak
     // and the form's height are the two parts of it that are the content's,
     // and the rest is computed from them.
     let content = content_for(state, &panel);
-    panel.set_host_list_height(placement::host_list_height(content.hosts));
+    panel.set_host_list_height(placement::host_list_height(&content));
     panel.set_form_height(placement::metrics::FORM_HEIGHT);
     resize_panel(state, &panel);
 }

@@ -327,14 +327,16 @@ without touching the cache, and is therefore its own publication reason.
 ## Optional desktop GUI
 
 `apps/gregg-gui` is an **optional** Slint frontend: a system tray entry and a
-pulldown panel for the same fleet this TUI shows. The pulldown's **fleet** is
-one line per host, with a usage bar for each of the five used shares — `CPU`,
-`MEM`, `SWP`/`COMMIT`, `DISK` and `NET` — the way this TUI's condensed fleet
-row reads, and the selected host's own numbers are behind the pulldown's own
-`Detail` control. It is a second way to *look* at the fleet, never a second
-way to *poll* it — it attaches to the same per-config client daemon over the
-same local channel, so a TUI and a GUI window cost the fleet exactly what one
-window costs.
+pulldown panel for the same fleet this TUI shows. The pulldown's **fleet** gives
+every host a **block of its own** — a header line that names the host and
+carries the readings that are not used shares (the I/O wait, the load, the core
+count and the frequency) in this TUI's own words, and under it a usage bar for
+each of the five used shares — `CPU`, `MEM`, `SWP`/`COMMIT`, `DISK` and `NET` —
+each bar taking the full width of the panel less its percentage. The selected
+host's own numbers are behind the pulldown's own `Detail` control. It is a
+second way to *look* at the fleet, never a second way to *poll* it — it
+attaches to the same per-config client daemon over the same local channel, so a
+TUI and a GUI window cost the fleet exactly what one window costs.
 
 ```bash
 cargo build --manifest-path apps/gregg-gui/Cargo.toml --release

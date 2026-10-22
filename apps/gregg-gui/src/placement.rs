@@ -99,21 +99,30 @@ pub mod metrics {
     /// The tray warning's line.
     pub const TRAY_WARNING_LINE: f32 = 18.0;
 
-    /// The fleet table's headings.
-    pub const HEADING_HEIGHT: f32 = 14.0;
-
-    /// One host row in the fleet table.
+    /// The height of one host's header line in the fleet view.
     ///
-    /// A row is one line: the host's name, its I/O-wait token and a bar for
-    /// each of the five used shares.
-    pub const HOST_ROW: f32 = 19.0;
+    /// The header is the host's name and the readings that are not used
+    /// shares: the I/O wait, the load, the core count and the frequency.
+    pub const HOST_HEADER: f32 = 16.0;
 
-    /// The most host rows the host list may show at once.
+    /// The height of one measured row in a host's block.
+    ///
+    /// A row is a label, a bar and the bar's share, so it is one line.
+    pub const FLEET_ROW: f32 = 13.0;
+
+    /// The height of one host's block: its header and its five rows.
+    pub const HOST_BLOCK: f32 = HOST_HEADER + 5.0 * FLEET_ROW;
+
+    /// The gap between two hosts' blocks.
+    pub const HOST_BLOCK_GAP: f32 = 6.0;
+
+    /// The most the host list may be tall.
     ///
     /// The list is bounded so that a large fleet cannot push the pulldown off
-    /// the desktop. The bound is a number of *rows* and not a number of
-    /// pixels, so the last row is a whole row and not half of one.
-    pub const HOST_LIST_MAX_ROWS: usize = 6;
+    /// the desktop. The bound is a number of pixels, so the list scrolls when
+    /// the fleet is larger than the bound, and a block at the edge may be
+    /// half in view — which is the scroll's own sign that there is more.
+    pub const HOST_LIST_MAX_HEIGHT: f32 = 4.0 * (HOST_BLOCK + HOST_BLOCK_GAP);
 
     /// The selected host's own actions row.
     pub const SELECTED_ROW: f32 = 18.0;
@@ -162,6 +171,11 @@ pub mod metrics {
 pub struct Content {
     /// How many hosts the fleet has.
     pub hosts: usize,
+    /// How many of them answered their last poll.
+    ///
+    /// An online host's block is a header and five rows; a host that is not
+    /// online has a header alone, because it has no readings to show.
+    pub online_hosts: usize,
     /// Whether a host is selected.
     pub selected: bool,
     /// How many measured rows the selected host has.
@@ -190,11 +204,18 @@ pub struct Content {
 
 /// The height of the bounded host list.
 ///
-/// The bound is a number of rows, so the list is always a whole number of
-/// rows tall and the last row is never half of one.
+/// The list is the fleet's blocks: an online host's block is a header line and
+/// five rows, and a host that is not online has a header line alone. The
+/// height is bounded, so a large fleet scrolls instead of pushing the
+/// pulldown off the desktop.
 #[must_use]
-pub fn host_list_height(hosts: usize) -> f32 {
-    hosts.min(metrics::HOST_LIST_MAX_ROWS) as f32 * metrics::HOST_ROW
+pub fn host_list_height(content: &Content) -> f32 {
+    let online = content.online_hosts.min(content.hosts);
+    let offline = content.hosts - online;
+    let height = online as f32 * metrics::HOST_BLOCK
+        + offline as f32 * metrics::HOST_HEADER
+        + content.hosts.saturating_sub(1) as f32 * metrics::HOST_BLOCK_GAP;
+    height.min(metrics::HOST_LIST_MAX_HEIGHT)
 }
 
 /// The height of the detail below the host list.
@@ -248,8 +269,8 @@ pub fn content_height(content: &Content) -> f32 {
         }
         height += detail_height(content);
     } else {
-        // The fleet view: the table's headings and the rows under them.
-        height += metrics::BLOCK_GAP + metrics::HEADING_HEIGHT + host_list_height(content.hosts);
+        // The fleet view: the blocks, one per host.
+        height += host_list_height(content);
     }
     height
 }
@@ -674,10 +695,12 @@ mod tests {
         let empty = content_height(&Content::default());
         let one = content_height(&Content {
             hosts: 1,
+            online_hosts: 1,
             ..Content::default()
         });
         let many = content_height(&Content {
             hosts: 20,
+            online_hosts: 20,
             ..Content::default()
         });
         assert!(one > empty, "one host is taller than none");
@@ -688,13 +711,35 @@ mod tests {
     }
 
     #[test]
+    fn an_offline_host_is_shorter_than_an_online_one() {
+        // A host that is not online has a header line alone: it has no
+        // readings to show, so it takes no room for rows it cannot fill.
+        let online = content_height(&Content {
+            hosts: 1,
+            online_hosts: 1,
+            ..Content::default()
+        });
+        let offline = content_height(&Content {
+            hosts: 1,
+            online_hosts: 0,
+            ..Content::default()
+        });
+        assert!(
+            online > offline,
+            "an offline host's block is its header line and nothing more"
+        );
+    }
+
+    #[test]
     fn the_height_is_bounded_by_the_host_list() {
         let a_fleet = content_height(&Content {
             hosts: 200,
+            online_hosts: 200,
             ..Content::default()
         });
         let the_bound = content_height(&Content {
             hosts: 10,
+            online_hosts: 10,
             ..Content::default()
         });
         assert_eq!(
@@ -757,10 +802,9 @@ mod tests {
     }
 
     #[test]
-    fn the_default_width_is_the_table_and_its_chrome() {
-        // The fleet table's columns decide how wide the pulldown is, and the
-        // pulldown is the table plus the card's chrome. If a column is
-        // widened and the width is not, the table is clipped.
+    fn the_bar_takes_the_rest_of_the_row() {
+        // The bar reaches the panel's own edge: it takes everything the row
+        // does not spend on the label, the share and the gaps between them.
         let slint = include_str!("ui/main.slint");
         let literal = |name: &str| -> f32 {
             let needle = format!("{name}: ");
@@ -777,30 +821,26 @@ mod tests {
                 .unwrap_or_else(|_| panic!("`{name}` is not a number"))
         };
 
-        let bar = literal("col-bar-width");
-        let gap = literal("metric-gap");
-        let pct = literal("col-pct-width");
-        let column_gap = literal("col-gap");
-        // The host column, then the CPU column (bar, share, frequency), then
-        // the four columns that are a bar and a share, then the load.
-        let table = literal("col-host-width")
-            + column_gap
-            + bar
-            + gap
-            + pct
-            + gap
-            + literal("col-freq-width")
-            + column_gap
-            + 4.0 * (bar + gap + pct + column_gap)
-            + literal("col-load-width");
+        let content = metrics::DEFAULT_WIDTH
+            - 2.0 * metrics::MARGIN
+            - 2.0 * metrics::PANE_PADDING
+            - literal("scrollbar-reserve");
+        let label = literal("fleet-label-width");
+        let pct = literal("fleet-pct-width");
+        let gap = literal("fleet-gap");
+        let bar = content - label - pct - 3.0 * gap;
 
-        assert_eq!(
-            table,
-            metrics::DEFAULT_WIDTH
-                - 2.0 * metrics::MARGIN
-                - 2.0 * metrics::PANE_PADDING
-                - literal("scrollbar-reserve"),
-            "the pulldown's width is the fleet table and the card's chrome"
+        assert!(bar > 0.0, "the bar has room in the row");
+        assert!(
+            bar > content / 2.0,
+            "the bar is the row's own width, not a column of it"
+        );
+        assert!(
+            slint.contains(
+                "fleet-bar-width: root.list-content-width - root.fleet-label-width \
+                 - root.fleet-pct-width - 3 * root.fleet-gap"
+            ),
+            "the bar's width is the row less the label, the share and the gaps"
         );
     }
 
@@ -817,14 +857,13 @@ mod tests {
             ("the spacing", "spacing: 6px"),
             ("the header", "height: 36px"),
             ("the footer", "height: 18px"),
-            ("the host row", "host-row-height: 19px"),
-            ("the table's headings", "heading-height: 14px"),
-            ("the host column", "col-host-width: 136px"),
-            ("the bar's width", "col-bar-width: 24px"),
-            ("the bar's height", "col-bar-height: 6px"),
-            ("the share's width", "col-pct-width: 26px"),
-            ("the frequency's width", "col-freq-width: 58px"),
-            ("the load's width", "col-load-width: 34px"),
+            ("the host's header line", "host-header-height: 16px"),
+            ("the gap between two hosts", "host-block-gap: 6px"),
+            ("the fleet's row", "fleet-row-height: 13px"),
+            ("the fleet's bar", "fleet-bar-height: 6px"),
+            ("the label's width", "fleet-label-width: 64px"),
+            ("the share's width", "fleet-pct-width: 32px"),
+            ("the fleet's gap", "fleet-gap: 6px"),
             ("the job row", "height: 22px"),
             ("the metric row", "metric-row-height: 18px"),
             ("the metric bar", "metric-bar-height: 6px"),
@@ -844,8 +883,11 @@ mod tests {
         assert_eq!(metrics::BODY_SPACING, 6.0);
         assert_eq!(metrics::HEADER, 36.0);
         assert_eq!(metrics::FOOTER, 18.0);
-        assert_eq!(metrics::HOST_ROW, 19.0);
-        assert_eq!(metrics::HEADING_HEIGHT, 14.0);
+        assert_eq!(metrics::HOST_HEADER, 16.0);
+        assert_eq!(metrics::FLEET_ROW, 13.0);
+        assert_eq!(metrics::HOST_BLOCK, 81.0);
+        assert_eq!(metrics::HOST_BLOCK_GAP, 6.0);
+        assert_eq!(metrics::HOST_LIST_MAX_HEIGHT, 348.0);
         assert_eq!(metrics::JOB_ROW, 22.0);
         assert_eq!(metrics::STATUS_LINE, 18.0);
         assert_eq!(metrics::MESSAGE_LINE, 30.0);

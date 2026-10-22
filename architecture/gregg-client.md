@@ -849,6 +849,17 @@ design is retained intentionally.
   `Display` heuristics; body-stage typed timeouts map to `Timeout`
   while ordinary post-header body failures stay `NetworkError`
 - `PollOutcome` classifies 12 outcome variants (2 success: `Online`/`OnlineV2`, 10 failure/cancellation)
+- **An unrepresentable optional capacity is omitted, not fatal.** A v2 payload
+  whose only fault is a network capacity the protocol cannot represent — a
+  producer that mis-casts a collector structure publishes a packet counter as
+  a link capacity — is **repaired**: the capacity is dropped and the payload is
+  accepted only if the *repaired* payload validates. Every other fault is
+  still rejected, so a repair can never smuggle an invalid payload through.
+  This is the collectors' own rule for a family they cannot measure: omit it,
+  and never fabricate a zero for it. Without it, one unrepresentable capacity
+  failed the whole snapshot and a reachable host read as `offline (invalid)`,
+  while the rest of the fleet — and every other reading on that host — was
+  sound.
 
 **Normalization** (`normalized.rs`):
 - v1 and v2 wire formats → `NormalizedSnapshot` with capability flags

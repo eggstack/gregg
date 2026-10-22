@@ -233,13 +233,15 @@ apps/gregg-gui/target/release/gregg-gui --config ~/.config/gregg/gregg.toml \
 The tray is the always-visible entry: a health-coloured icon whose tooltip
 carries the fleet summary, and whose **click opens the pulldown**. The pulldown
 is a single borderless, always-on-top panel — there is no separate monitor
-window — with **two views**: the **fleet**, which is one line per host with a
+window — with **two views**: the **fleet**, which gives every host a **block of
+its own** — a header line that names the host and carries the readings that are
+not used shares (`IO`, the load, the core count, the frequency), and under it a
 **usage bar** for each of the five used shares (`CPU`, `MEM`, `SWP`/`COMMIT`,
-`DISK`, `NET`), the way the TUI's condensed fleet row reads; and the
-**detail**, which is the selected host's metrics, drives and interfaces, its
-scheduler jobs and the `EggPool` plane, and which the pulldown's own footer
-opens. The panel also carries `Reload`, `About` and `Quit`, and can **add,
-remove, rename and re-point** the hosts in the config file. Dismissing the
+`DISK`, `NET`), each bar taking the full width of the panel less its
+percentage; and the **detail**, which is the selected host's metrics, drives and
+interfaces, its scheduler jobs and the `EggPool` plane, and which the pulldown's
+own footer opens. The panel also carries `Reload`, `About` and `Quit`, and can
+**add, remove, rename and re-point** the hosts in the config file. Dismissing the
 panel hides it and leaves the tray running; quitting the GUI never stops the
 client daemon.
 

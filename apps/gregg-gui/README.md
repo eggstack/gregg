@@ -27,10 +27,11 @@ Plans 188, 189, 191 and 192 are implemented. What exists:
   open the pulldown;
 - **one tray pulldown** (`Pulldown`): a borderless, always-on-top, rounded
   card with a soft shadow and a pointer toward the tray item. It has **two
-  views**: the **fleet**, which is one line per host with a bar for each of
-  the five used shares, and the **detail**, which is the selected host's
-  metrics, drives and interfaces, its scheduler jobs and records, and the
-  `EggPool` plane. The pulldown's own footer moves between them, and it also
+  views**: the **fleet**, which gives every host a **block of its own** — a
+  header line that names the host and carries the readings that are not used
+  shares, and under it a bar for each of the five used shares — and the
+  **detail**, which is the selected host's metrics, drives and interfaces, its
+  scheduler jobs and records, and the `EggPool` plane. The pulldown's own footer moves between them, and it also
   carries the fleet summary, the host add/remove/edit forms, and the
   application's own `Reload`, `About` and `Quit`. There is **no separate
   monitor window**. The list that grows with the fleet is **scrollable with a
@@ -272,7 +273,7 @@ outcomes, and the exact shape of the line a CI job asserts on.
 | Tray | Right-click → `Quit Gregg` | Ends the GUI. The client daemon keeps running. |
 | Pulldown | Click a host row | Selects that host. The selection is keyed by the stable system id, so a host that reorders does not move the selection. |
 | Pulldown | Click a scheduler job | Opens that job's retained records. Only an open job asks the daemon for history; closing the view releases the intent. |
-| Pulldown | `Detail` (or `Fleet`, in the detail) | Moves between the two views: the fleet's one line per host, and the selected host's own numbers. |
+| Pulldown | `Detail` (or `Fleet`, in the detail) | Moves between the two views: the fleet's blocks, one per host, and the selected host's own numbers. |
 | Pulldown | `Reload` | The `Ctrl-R` boundary: the daemon re-reads its configuration and polls immediately. |
 | Pulldown | `Add host` | Opens the form that adds a host. |
 | Pulldown | `EggPool` | Opens and closes the `EggPool` plane. The intent is sent only while it is open. |
@@ -328,10 +329,10 @@ A dropdown has a shape, and this one draws its own.
   and a fleet of twenty is a taller one, up to the bounds the panes have. The
   height is *computed* rather than measured, because Slint 1.18 cannot report
   a layout's preferred size back to a `.slint` file. The **width** is the
-  fleet table's width plus the card's chrome — 606 px — because the table's
-  columns are measured rather than guessed, and a pulldown narrower than the
-  table would clip the columns rather than lay them out. The operator may
-  make it wider; it does not get narrower than the table.
+  card's own chrome plus the width a fleet row needs — 606 px — because a
+  bar takes the whole row and a pulldown narrower than the row would clip the
+  bar rather than lay it out. The operator may make it wider; it does not get
+  narrower than the row.
 - The pulldown opens in the **trailing corner of the work area** — the
   platform's convention — and the operator's own placement is **remembered
   across restarts** in `<config>.gui-state` beside the configuration. The read
@@ -344,43 +345,50 @@ A dropdown has a shape, and this one draws its own.
   the operator chose is honoured **exactly**, so this affects the first open
   only.
 
-### The fleet table
+### The fleet's blocks
 
-The pulldown's **fleet view** is the TUI's condensed fleet row with **bars** in
-it: one line per host, and the whole fleet readable at a glance.
+The pulldown's **fleet view** is the TUI's condensed fleet row **turned on its
+side**: every host is a block of its own, so the fleet is a table of blocks
+rather than a table of rows.
 
 ```
- HOST              CPU             MEM        SWP       DISK       NET     LOAD
- Deadpool IO 1.5%  ▓▓░ 12% 3.00GHz  ▓▓▓ 25%  ▓░ 9%  ▓▓▓▓ 81%  ░ 0%  0.50
- MacbookPro        offline (invalid)
+Deadpool  IO 40.7%  9.87/11.42/12.26  16C  912.96MHz
+CPU   [████████████████████░░░░░░░░░░░░░░]   7%
+MEM   [██████████████████████████░░░░░░░░░░]  91%
+SWP   [███████░░░░░░░░░░░░░░░░░░░░░░░░░░░░]  24%
+DISK  [███████████████████████████████░░░░░░]  93%
+NET   [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░]   0%
 ```
 
-- The **columns are the TUI's condensed table's**, with the swap-or-commit
-  column added: `HOST`, `CPU`, `MEM`, `SWP` (or `COMMIT`), `DISK`, `NET` and
-  `LOAD`. The headings sit above the rows and do not scroll with them, so
-  every row's bar starts at the same place and the columns line up down the
-  whole fleet.
-- **A bar is a used share of a capacity.** The five columns that are one —
-  `CPU`, `MEM`, `SWP`/`COMMIT`, `DISK` and `NET` — carry a bar. `LOAD`, `FREQ`
-  and `IO` are **not** used shares, so they carry no bar: I/O wait in
-  particular is a fraction of *time*, and a bar that meant something else
-  would misread. They are carried beside the row instead: the **I/O wait
-  follows the host's name** (the TUI's own `IO 1.5%` token) and the
-  **frequency follows the CPU percentage** (the TUI's own CPU row carries it
-  there).
-- The row **names the host and not where it is**: the endpoint is not in the
+- **The header line names the host and carries what is not a used share**: the
+  I/O wait, the load, the core count and the frequency, in the TUI's own words
+  and the TUI's own order — `Deadpool  IO 40.7%  9.87/11.42/12.26  16C
+  912.96MHz`. A reading that is not a used share has no bar, so it can never be
+  drawn as one: I/O wait in particular is a fraction of *time*, and a bar that
+  meant something else would misread.
+- **The five rows under it are the TUI's five used shares** — `CPU`, `MEM`,
+  `SWP` (or `COMMIT`), `DISK` and `NET` — and each row carries **only its
+  share**: the bar takes the full width of the panel less the percentage, and
+  the percentage is the last thing in the row. The bar carries the precision
+  and the number carries the glance.
+- The **shares are compact** — `7%`, not `6.8%` — the way the TUI's condensed
+  table writes them.
+- A row with **no reading** draws an **empty bar** and an em dash: the share
+  is negative, so an empty bar says *not measured* and never *measured as
+  zero*.
+- The block **names the host and not where it is**: the endpoint is not in the
   fleet view, the way the TUI's condensed row does not carry it either. The
   detail view names the host's endpoint.
-- A host that is **not online** has no columns at all: its row says why it is
-  offline and nothing else. That is the TUI's own rule — an offline
-  condensed row is the name and the status, and a dash in every column would
-  only say it a second way.
-- The **shares are compact** — `12%`, not `12.5%` — the way the TUI's
-  condensed table writes them. The bar carries the precision and the number
-  carries the glance.
-- A row with **no reading** draws an **empty bar**, not a full one: the
-  share is negative, so an empty bar says *not measured* and never *measured
-  as zero*.
+- A host that is **not online** has no rows at all: its header says why it is
+  offline and nothing else. That is the TUI's own rule — an offline condensed
+  row is the name and the status, and five rows of dashes would only say it a
+  second way.
+- The **selected host** is marked by a quiet tint and by its name in the
+  accent colour. It is deliberately *not* the platform's selection colour:
+  that colour is a saturated accent, and the palette's own foreground for it
+  is black on macOS, which turns a bar into what reads as a hole.
+- The list is **bounded**: a fleet can be large, and the pulldown is a
+  popover. The host list scrolls when the fleet is larger than the bound.
 
 ### The detail pane
 
@@ -783,14 +791,16 @@ makes the difference attributable.
 | ------ | ---- |
 | The GUI before Plan 191 (the separate monitor window) | 10,803,360 bytes (10.3 MiB) |
 | The GUI after Plan 191 (the tray pulldown, with host management) | 11,896,608 bytes (11.3 MiB) |
-| **The GUI now** (the pulldown with the revised chrome, the metric bars, the vendored `softbuffer` patch, and the two-view fleet table) | **12,062,128 bytes** (11.5 MiB) |
-| **Difference** (before Plan 191 → now) | **+1,258,768 bytes (+11.7%)** |
+| **The GUI now** (the pulldown with the revised chrome, the metric bars, the vendored `softbuffer` patch, and the fleet view as a table of blocks) | **12,012,560 bytes** (11.5 MiB) |
+| **Difference** (before Plan 191 → now) | **+1,209,200 bytes (+11.2%)** |
 | The same GUI calling `gregg::cli::dispatch` (the rejected alternative) | 14,761,600 bytes |
 
 So the pulldown and the host-management forms cost about **1.04 MiB** more
 than the monitor window they replaced. The revised chrome and the metric bars
-cost **+66,224 bytes (+0.6%)** on top of Plan 191, the two-view fleet table
-costs **+99,296 bytes (+0.8%)**, and the vendored `softbuffer` patch costs
+cost **+66,224 bytes (+0.6%)** on top of Plan 191, the fleet view as a table of
+blocks costs **−49,568 bytes (−0.4%)** on top of the two-view fleet table it
+replaced — the block's rows are five `Text`s and one bar each instead of five
+bar columns and their headings — and the vendored `softbuffer` patch costs
 **nothing measurable**: it changes one word in a pixel-format declaration that
 was already in the binary.
 

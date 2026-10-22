@@ -68,6 +68,35 @@ the GUI is **not shippable** for Windows or Linux.
 > CI run **`39846098748`** on `7e56a3c` is **green on all ten jobs**, including the three `GUI`
 > legs — the only authority for this workspace's Windows and Linux behaviour.
 
+> **Amendment, 2026-10-22 (third) — the fleet view is a table of blocks, and the
+> selection is a quiet tint.**
+> The direction this plan set — *the pulldown reads as a dropdown* — is unchanged and is still the
+> goal. What changed is the **shape of the fleet view**, which the second amendment recorded as
+> "one line per host under a row of column headings". That is now **superseded**: the fleet view is
+> the TUI's condensed fleet row **turned on its side**.
+>
+> - Every host is a **block of its own**. A block is a **header line** — the host's name and the
+>   readings that are **not** used shares, in the TUI's own words and the TUI's own order, e.g.
+>   `Deadpool  IO 40.7%  9.87/11.42/12.26  16C  912.96MHz` — and the **five used shares** under it:
+>   `CPU`, `MEM`, `SWP`/`COMMIT`, `DISK` and `NET`, one row each.
+> - Each row carries **only its share**: the bar takes the **full width of the row** less the
+>   percentage, and the percentage is the last thing in the row. A reading that is not a used share
+>   has no bar, so it can never be drawn as one — the I/O wait in particular is a fraction of *time*.
+> - A host that is not online has **no rows at all**: its header says why it is offline and nothing
+>   else, which is the TUI's own rule.
+> - The **selected host** is marked with a quiet tint and by its name in the accent colour, and
+>   deliberately **not** with the platform's selection colour. That colour is a saturated accent, and
+>   the palette's own foreground for it is **black on macOS**: a bar drawn in it reads as a hole
+>   rather than as a measurement. A bar is a measurement, and a measurement looks the same wherever
+>   it is, so the bars are the same on a selected block as on any other.
+>
+> The pulldown's height still follows the view it is carrying, and the host list is still bounded
+> and scrolling: the pulldown is a popover, and a fleet can be large.
+>
+> The amendment changes the pulldown's *shape*, not its *behaviour*: the tray's click still opens
+> the pulldown, the pulldown still carries the content, there is still no launcher entry, and the
+> protocol is still untouched.
+
 ## Objective
 
 Make the **tray's click open the pulldown**, and make the pulldown **carry the panel's contents**

@@ -327,6 +327,25 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A reachable host read as `offline (invalid)` because one of its optional
+  network capacities could not be represented.** The v2 protocol bounds a
+  network capacity, and the client's validator rejected a whole snapshot when
+  one exceeded it. An old producer can publish exactly that: a collector that
+  reads a 32-bit interface structure through the 64-bit one hands a *packet
+  counter* to the link capacity, so `en0` arrives with a capacity of
+  `1326367260874488128` bits per second instead of its real `304200000`. The
+  host had answered, and every other reading in the snapshot was sound, but the
+  capacity failed the snapshot and the host was reported as invalid — in the
+  desktop frontend, while an older client showed the same host correctly.
+
+  An unrepresentable optional capacity is now **omitted rather than fatal**:
+  the capacity is dropped, and the payload is accepted only if the *repaired*
+  payload validates. Every other fault is still rejected, so a repair can
+  never smuggle an invalid payload through. This is the collectors' own rule
+  for a family they cannot measure — omit it, and never fabricate a zero for
+  it. The host is now reported online, its network share reads as *not
+  measured* (`—`), and the rest of the fleet is unaffected.
+
 - **The desktop frontend's usage bars filled from the middle of their track
   instead of from the left.** Slint centres a child that has a size and no
   explicit `x`/`y` inside a parent that is not a layout — the compiler's

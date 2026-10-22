@@ -138,92 +138,83 @@ pub struct MetricRow {
     pub summary: String,
 }
 
-/// One measured column of a host's status strip.
+/// One measured row of a host's block.
 ///
-/// The columns are the ones that mean a **used share**: the CPU, the memory,
-/// the swap or the commit, the disk and the network. A reading that is not a
-/// used share — a load, a frequency, an I/O wait — has no column here, so it
-/// cannot be drawn as a bar that means something else.
+/// It is a label, a bar and the bar's share: the row carries the used share
+/// and nothing else, because the share is what the bar says, and the extra
+/// detail would only crowd it out.
 #[derive(Debug, Clone, PartialEq)]
-pub struct FleetCell {
+pub struct FleetRow {
+    /// The short label, e.g. `CPU` or `MEM`.
+    pub label: String,
     /// The share as text, e.g. `39%`.
     ///
     /// An em dash when the platform reported no share at all: a missing
     /// reading is not a reading of zero.
     pub pct_text: String,
-    /// The share of the column that is used, in `0..=1`.
+    /// The share of the row that is used, in `0..=1`.
     ///
     /// Negative when there is no reading at all, so that an empty bar says
     /// "not measured" rather than "measured as zero".
     pub fraction: f32,
-    /// The text that follows the share, when the column has one.
-    ///
-    /// Only the CPU column has one: the frequency, right after the CPU
-    /// percentage.
-    pub extra: String,
 }
 
-impl FleetCell {
-    /// A column with no reading at all.
-    fn empty() -> Self {
+impl FleetRow {
+    /// A row with no reading at all.
+    fn empty(label: &str) -> Self {
         Self {
+            label: label.to_owned(),
             pct_text: MISSING.to_owned(),
             fraction: -1.0,
-            extra: String::new(),
         }
     }
 
-    /// A column for a measured row.
-    fn of(row: &MetricRow) -> Self {
+    /// A row for a measured share.
+    fn of(label: &str, row: &MetricRow) -> Self {
         match row.pct {
             Some(pct) => Self {
+                label: label.to_owned(),
                 // The compact form, the way the TUI's condensed fleet row
                 // writes it: the bar carries the precision, the number is a
                 // glance.
                 pct_text: format!("{pct:.0}%"),
                 fraction: pct / 100.0,
-                extra: String::new(),
             },
-            None => Self::empty(),
+            None => Self::empty(label),
         }
     }
 }
 
-/// One host's condensed status strip: the fleet view's one row.
+/// One host's block in the fleet view.
 ///
-/// It is the TUI's condensed row with bars in place of bare percentages: the
-/// name carries the I/O-wait token, the CPU column carries the percentage and
-/// then the frequency, and the load carries the one-minute average.
+/// The block is the TUI's condensed row, unrolled: a header line and the five
+/// used shares under it, one bar each.
+///
+/// The **header** names the host and carries the readings that are not used
+/// shares — the I/O wait, the load, the core count and the frequency — in the
+/// TUI's own words, e.g. `IO 1.2%  6.76/4.32/3.19  16C  4.70GHz`. A reading
+/// that is not a used share has no bar, so it can never be drawn as one.
+///
+/// A host that is **not online** has no rows at all: it has no readings, and
+/// five rows of dashes would only say so a second way. Its header says why it
+/// is offline instead.
 #[derive(Debug, Clone, PartialEq)]
-pub struct FleetStrip {
-    /// The host's stable id. A row's action names the host by this.
+pub struct FleetBlock {
+    /// The host's stable id. A block's action names the host by this.
     pub id: String,
-    /// The display name. The endpoint is not here: the compact fleet row
-    /// names the host and not where it is.
+    /// The display name. The endpoint is not here: the block names the host
+    /// and not where it is.
     pub name: String,
-    /// The inline I/O-wait token, e.g. `IO 1.2%`.
+    /// The header line's detail, beside the name.
     ///
-    /// Empty when the platform does not report one: the token is omitted
-    /// rather than shown as `IO 0.0%`.
-    pub io_token: String,
-    /// The one-minute load average, e.g. `6.76`.
-    ///
-    /// Empty when the platform does not report a load.
-    pub load: String,
-    /// The host's state in words, for a host that is not online.
-    pub status: String,
+    /// For an online host it is the readings that are not used shares; for a
+    /// host that is not online it is the reason, e.g. `offline (invalid)`.
+    pub detail: String,
     /// Whether the host answered its last poll.
     pub online: bool,
-    /// The CPU column.
-    pub cpu: FleetCell,
-    /// The memory column.
-    pub memory: FleetCell,
-    /// The swap-or-commit column.
-    pub swap: FleetCell,
-    /// The disk column.
-    pub disk: FleetCell,
-    /// The network column.
-    pub network: FleetCell,
+    /// The measured rows: the CPU, the memory, the swap or the commit, the
+    /// disk and the network.
+    pub rows: Vec<FleetRow>,
 }
 
 /// One drive's row in the selected host's detail.
@@ -289,8 +280,8 @@ pub struct SystemCard {
     pub status: String,
     /// A one-line summary for a compact list.
     pub headline: String,
-    /// The host's condensed status strip: the fleet view's one row.
-    pub strip: FleetStrip,
+    /// The host's block in the fleet view: a header line and five bars.
+    pub block: FleetBlock,
     /// The measured rows.
     pub metrics: Vec<MetricRow>,
     /// The selected host's drive detail. Empty for other hosts.
@@ -400,10 +391,14 @@ pub fn project(
     now_unix_ms: u64,
 ) -> GuiViewModel {
     let counts = FleetCounts::from_systems(&snapshot.systems);
+    // The swap-or-commit heading is the fleet's, so it is settled before the
+    // cards are built: a host that reports neither takes the fleet's heading
+    // for its row, and the fleet's heading is what the other hosts report.
+    let swap_heading = swap_heading(&snapshot.systems);
     let systems: Vec<SystemCard> = snapshot
         .systems
         .iter()
-        .map(|system| card(system, now_unix_ms))
+        .map(|system| card(system, now_unix_ms, &swap_heading))
         .collect();
 
     // The selection is repaired against *this* document, so a host that
@@ -474,12 +469,12 @@ impl FleetCounts {
 }
 
 /// Build one host's card.
-fn card(system: &SystemSnapshotDto, now_unix_ms: u64) -> SystemCard {
+fn card(system: &SystemSnapshotDto, now_unix_ms: u64, swap_heading: &str) -> SystemCard {
     let name = display_name(system);
     let state = host_state(system);
     let metrics = system.latest.as_ref().map(metric_rows).unwrap_or_default();
     let headline = headline(&metrics);
-    let strip = status_strip(system, &name, &state, &metrics);
+    let block = fleet_block(system, &name, &state, &metrics, swap_heading);
     let age = system
         .last_success_at_unix_ms
         .map(|then| age_text(now_unix_ms.saturating_sub(then)));
@@ -493,7 +488,7 @@ fn card(system: &SystemSnapshotDto, now_unix_ms: u64) -> SystemCard {
         status: status_text(&state),
         state,
         headline,
-        strip,
+        block,
         metrics,
         drives: Vec::new(),
         interfaces: Vec::new(),
@@ -501,22 +496,24 @@ fn card(system: &SystemSnapshotDto, now_unix_ms: u64) -> SystemCard {
     }
 }
 
-/// The heading the fleet's swap-or-commit column carries.
+/// The heading the fleet's swap-or-commit row carries.
 ///
 /// Swap and the Windows commit are alternatives, and one fleet may hold both.
-/// The heading says which one the column is, and says both when the fleet is
-/// mixed, so the column is never labelled with the wrong one.
+/// The heading says which one the row is, and says both when the fleet is
+/// mixed, so that a row is never labelled with the wrong one.
 #[must_use]
-pub fn swap_heading(systems: &[SystemCard]) -> String {
+pub fn swap_heading(systems: &[SystemSnapshotDto]) -> String {
     let mut swap = false;
     let mut commit = false;
-    for card in systems {
-        for row in &card.metrics {
-            match row.key {
-                "swap" => swap = true,
-                "commit" => commit = true,
-                _ => {}
-            }
+    for system in systems {
+        let Some(latest) = system.latest.as_ref() else {
+            continue;
+        };
+        if latest.swap.is_some() {
+            swap = true;
+        }
+        if latest.commit.is_some() {
+            commit = true;
         }
     }
     match (swap, commit) {
@@ -526,52 +523,33 @@ pub fn swap_heading(systems: &[SystemCard]) -> String {
     }
 }
 
-/// A host's condensed status strip.
+/// A host's block in the fleet view.
 ///
-/// The strip is the TUI's condensed row with the fleet's five used shares in
-/// it: the name carries the I/O-wait token, the CPU column carries the
-/// percentage and then the frequency, and the load carries the one-minute
-/// average. A host that is not online has no readings, so its columns are
-/// empty and its row says why it is offline instead.
-fn status_strip(
+/// The block is the TUI's condensed row, unrolled: the name, the I/O-wait
+/// token, the load, the core count and the frequency are the header line, and
+/// the five used shares are the rows under it, one bar each.
+fn fleet_block(
     system: &SystemSnapshotDto,
     name: &str,
     state: &HostState,
     metrics: &[MetricRow],
-) -> FleetStrip {
+    swap_heading: &str,
+) -> FleetBlock {
     let find = |key: &str| metrics.iter().find(|row| row.key == key);
 
-    // A host that is not online has no readings at all: its row says why it
-    // is offline, and a dash in every column would only say it a second way.
+    // A host that is not online has no readings at all: its block says why it
+    // is offline, and five rows of dashes would only say it a second way.
     // This is the TUI's own rule — an offline condensed row is the host's
     // name and its status, and nothing else.
-    let blank = !matches!(state, HostState::Online);
-    let cell = |key: &str| {
-        let cell = find(key).map_or_else(FleetCell::empty, FleetCell::of);
-        if blank {
-            FleetCell {
-                pct_text: String::new(),
-                fraction: -1.0,
-                ..cell
-            }
-        } else {
-            cell
-        }
-    };
-
-    // The frequency follows the CPU percentage, the way the TUI's own CPU row
-    // carries it.
-    let mut cpu = cell("cpu");
-    if let Some(frequency) = find("frequency") {
-        cpu.extra = frequency.value.clone();
+    if !matches!(state, HostState::Online) {
+        return FleetBlock {
+            id: system.id.clone(),
+            name: name.to_owned(),
+            detail: status_text(state),
+            online: false,
+            rows: Vec::new(),
+        };
     }
-
-    // Swap and the Windows commit are alternatives: the column is whichever
-    // one this host reported.
-    let swap = match find("swap") {
-        Some(_) => cell("swap"),
-        None => cell("commit"),
-    };
 
     // The I/O-wait token is the TUI's own: `IO 1.2%`, and nothing at all when
     // the platform does not report one.
@@ -583,26 +561,70 @@ fn status_strip(
         _ => String::new(),
     };
 
-    // The load is the one-minute average: a compact row has room for one
-    // number, and the TUI's condensed view carries the same one.
+    // The load is the TUI's own triple: the one-minute, the five-minute and
+    // the fifteen-minute average.
     let load = system
         .latest
         .as_ref()
         .and_then(|latest| latest.load.as_ref())
-        .map_or_else(String::new, |load| format!("{:.2}", load.one));
+        .map_or_else(String::new, format_load);
 
-    FleetStrip {
+    // The core count and the frequency. A platform that reports no frequency
+    // omits it rather than claiming a zero.
+    let cores = system
+        .latest
+        .as_ref()
+        .map_or_else(String::new, |latest| format!("{}C", latest.logical_cores));
+    let frequency = system
+        .latest
+        .as_ref()
+        .and_then(|latest| latest.cpu_frequency_hz)
+        .map_or_else(String::new, format_frequency);
+
+    // The header line is the name and then the readings that are not used
+    // shares. The tokens are joined the way the TUI's own header joins them,
+    // and a token that is not measured is left out rather than shown as a
+    // zero.
+    let detail = [io_token, load, cores, frequency]
+        .into_iter()
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>()
+        .join("  ");
+
+    let row = |label: &str, key: &str| match find(key) {
+        Some(metric) => FleetRow::of(label, metric),
+        None => FleetRow::empty(label),
+    };
+
+    // Swap and the Windows commit are alternatives: the row is whichever one
+    // this host reported, and the fleet's own heading when it reported
+    // neither, so that the row is never labelled with the wrong one.
+    let swap_label = if find("swap").is_some() {
+        "SWP"
+    } else if find("commit").is_some() {
+        "COMMIT"
+    } else {
+        swap_heading
+    };
+
+    FleetBlock {
         id: system.id.clone(),
         name: name.to_owned(),
-        io_token,
-        load,
-        status: status_text(state),
-        online: matches!(state, HostState::Online),
-        cpu,
-        memory: cell("memory"),
-        swap,
-        disk: cell("disk"),
-        network: cell("network"),
+        detail,
+        online: true,
+        rows: vec![
+            row("CPU", "cpu"),
+            row("MEM", "memory"),
+            match find("swap") {
+                Some(_) => row("SWP", "swap"),
+                None => match find("commit") {
+                    Some(_) => row("COMMIT", "commit"),
+                    None => FleetRow::empty(swap_label),
+                },
+            },
+            row("DISK", "disk"),
+            row("NET", "network"),
+        ],
     }
 }
 
@@ -1524,15 +1546,14 @@ mod tests {
         assert!(iowait.pct_text.is_empty());
     }
 
-    /// The compact fleet row carries the five used shares, and only those.
+    /// A host's block carries the five used shares, and only those.
     ///
-    /// The strip is the TUI's condensed row with bars in it, so the columns
-    /// are the TUI's five used shares — CPU, memory, swap-or-commit, disk
-    /// and network — and the readings that are not used shares (the load, the
-    /// frequency, the I/O wait) are carried beside them instead of in a
-    /// column of their own.
+    /// The block is the TUI's condensed row unrolled: the header carries the
+    /// readings that are not used shares (the I/O wait, the load, the core
+    /// count and the frequency), and the rows under it are the TUI's five used
+    /// shares — CPU, memory, swap-or-commit, disk and network — one bar each.
     #[test]
-    fn a_fleet_row_carries_the_five_used_shares() {
+    fn a_fleet_block_carries_the_five_used_shares() {
         let mut latest = normalized();
         latest.network = Some(NormalizedNetwork {
             aggregate_rx_bytes_per_sec: 1024,
@@ -1547,33 +1568,37 @@ mod tests {
             &connected(),
             1_000,
         );
-        let strip = &model.systems[0].strip;
+        let block = &model.systems[0].block;
 
-        assert_eq!(strip.cpu.pct_text, "12%", "the CPU share is compact");
-        assert!((strip.cpu.fraction - 0.125).abs() < 1e-6);
-        assert_eq!(strip.memory.pct_text, "25%");
-        assert_eq!(strip.swap.pct_text, "0%");
-        assert_eq!(strip.disk.pct_text, "50%");
-        assert!(strip.network.fraction >= 0.0, "the network has a share");
+        let labels: Vec<&str> = block.rows.iter().map(|row| row.label.as_str()).collect();
+        assert_eq!(labels, ["CPU", "MEM", "SWP", "DISK", "NET"]);
+        assert_eq!(block.rows[0].pct_text, "12%", "the CPU share is compact");
+        assert!((block.rows[0].fraction - 0.125).abs() < 1e-6);
+        assert_eq!(block.rows[1].pct_text, "25%");
+        assert_eq!(block.rows[2].pct_text, "0%");
+        assert_eq!(block.rows[3].pct_text, "50%");
+        assert!(block.rows[4].fraction >= 0.0, "the network has a share");
     }
 
-    /// The frequency follows the CPU percentage, and the I/O-wait token
-    /// follows the host's name.
+    /// The header carries the readings that are not used shares.
     ///
-    /// This is the TUI's own arrangement: the CPU row carries the frequency
-    /// after its share, and the header carries the I/O wait beside the name.
+    /// This is the TUI's own arrangement: the I/O wait, the load, the core
+    /// count and the frequency are in the header, and the header names the
+    /// host.
     #[test]
-    fn the_frequency_and_the_io_token_sit_where_the_tui_puts_them() {
+    fn the_header_carries_what_is_not_a_used_share() {
         let model = project(
             &snapshot_of(vec![with_snapshot(0, normalized())]),
             &Selection::default(),
             &connected(),
             1_000,
         );
-        let strip = &model.systems[0].strip;
-        assert_eq!(strip.io_token, "IO 1.5%", "the TUI's own IO token");
-        assert_eq!(strip.cpu.extra, "3.00GHz", "the frequency is the CPU's");
-        assert_eq!(strip.load, "0.50", "the load is the one-minute average");
+        let block = &model.systems[0].block;
+        assert_eq!(block.name, "host-0");
+        assert_eq!(
+            block.detail, "IO 1.5%  0.50/0.40/0.30  8C  3.00GHz",
+            "the TUI's own tokens, in the TUI's own order"
+        );
     }
 
     /// A platform that does not report I/O wait has no token at all.
@@ -1590,32 +1615,32 @@ mod tests {
             &connected(),
             1_000,
         );
-        assert_eq!(model.systems[0].strip.io_token, "");
+        assert_eq!(model.systems[0].block.detail, "0.50/0.40/0.30  8C  3.00GHz");
     }
 
-    /// The compact row names the host and not where it is.
+    /// The block names the host and not where it is.
     ///
-    /// The endpoint is the detail view's business; the fleet row is a glance
-    /// at the fleet.
+    /// The endpoint is the detail view's business; the block is a glance at
+    /// the fleet.
     #[test]
-    fn a_fleet_row_names_the_host_and_not_the_endpoint() {
+    fn a_fleet_block_names_the_host_and_not_the_endpoint() {
         let model = project(
             &snapshot_of(vec![with_snapshot(0, normalized())]),
             &Selection::default(),
             &connected(),
             1_000,
         );
-        let strip = &model.systems[0].strip;
-        assert!(!strip.name.contains(':'), "the row carries no endpoint");
-        assert!(!strip.name.contains("11310"), "the row carries no port");
+        let block = &model.systems[0].block;
+        assert!(!block.name.contains(':'), "the block carries no endpoint");
+        assert!(!block.name.contains("11310"), "the block carries no port");
     }
 
-    /// A host that is not online has no columns at all.
+    /// A host that is not online has no rows at all.
     ///
-    /// Its row says why it is offline, and a dash in every column would only
+    /// Its header says why it is offline, and five rows of dashes would only
     /// say it a second way. This is the TUI's own rule.
     #[test]
-    fn an_offline_host_has_no_columns_and_says_why() {
+    fn an_offline_host_has_no_rows_and_says_why() {
         let mut system = with_snapshot(0, normalized());
         system.reachability = Reachability::Offline;
         system.offline_reason = Some(OfflineReason {
@@ -1628,34 +1653,20 @@ mod tests {
             &connected(),
             1_000,
         );
-        let strip = &model.systems[0].strip;
-        assert!(!strip.online);
-        assert_eq!(strip.status, "offline (refused)");
-        for cell in [
-            &strip.cpu,
-            &strip.memory,
-            &strip.swap,
-            &strip.disk,
-            &strip.network,
-        ] {
-            assert_eq!(cell.pct_text, "", "an offline row has no columns");
-            assert!(cell.fraction < 0.0, "an offline row draws no bar");
-        }
+        let block = &model.systems[0].block;
+        assert!(!block.online);
+        assert_eq!(block.detail, "offline (refused)");
+        assert!(block.rows.is_empty(), "an offline host draws no bars");
     }
 
-    /// The heading of the swap-or-commit column is the fleet's.
+    /// The heading of the swap-or-commit row is the fleet's.
     ///
     /// Swap and the Windows commit are alternatives, and one fleet may hold
-    /// both, so the column says which one it is.
+    /// both, so the row says which one it is.
     #[test]
-    fn the_swap_column_is_headed_by_what_the_fleet_reports() {
-        let swap = project(
-            &snapshot_of(vec![with_snapshot(0, normalized())]),
-            &Selection::default(),
-            &connected(),
-            1_000,
-        );
-        assert_eq!(swap_heading(&swap.systems), "SWP");
+    fn the_swap_row_is_headed_by_what_the_fleet_reports() {
+        let snapshot = snapshot_of(vec![with_snapshot(0, normalized())]);
+        assert_eq!(swap_heading(&snapshot.systems), "SWP");
 
         let mut latest = normalized();
         latest.swap = None;
@@ -1664,18 +1675,34 @@ mod tests {
             limit_bytes: 2_000,
             usage_pct: 50.0,
         });
-        let commit = project(
-            &snapshot_of(vec![with_snapshot(0, latest)]),
-            &Selection::default(),
-            &connected(),
-            1_000,
-        );
+        let commit = snapshot_of(vec![with_snapshot(0, latest)]);
         assert_eq!(swap_heading(&commit.systems), "COMMIT");
     }
 
     /// A fleet that holds both kinds of host says so.
     #[test]
-    fn a_mixed_fleet_says_that_its_third_column_is_both() {
+    fn a_mixed_fleet_says_that_its_third_row_is_both() {
+        let mut latest = normalized();
+        latest.swap = None;
+        latest.commit = Some(CommitMetrics {
+            used_bytes: 1_000,
+            limit_bytes: 2_000,
+            usage_pct: 50.0,
+        });
+        let snapshot = snapshot_of(vec![
+            with_snapshot(0, normalized()),
+            with_snapshot(1, latest),
+        ]);
+        assert_eq!(swap_heading(&snapshot.systems), "SWP/COMMIT");
+    }
+
+    /// Each host's own row says which one it reported.
+    ///
+    /// A Linux host's row says `SWP` and a Windows host's row says `COMMIT`,
+    /// even in a fleet that holds both, so that no row is ever labelled with
+    /// the wrong one.
+    #[test]
+    fn each_host_says_which_of_the_two_it_reported() {
         let mut latest = normalized();
         latest.swap = None;
         latest.commit = Some(CommitMetrics {
@@ -1692,7 +1719,8 @@ mod tests {
             &connected(),
             1_000,
         );
-        assert_eq!(swap_heading(&model.systems), "SWP/COMMIT");
+        assert_eq!(model.systems[0].block.rows[2].label, "SWP");
+        assert_eq!(model.systems[1].block.rows[2].label, "COMMIT");
     }
 
     #[test]
