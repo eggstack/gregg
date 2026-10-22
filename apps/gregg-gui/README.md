@@ -47,6 +47,18 @@ Windows and Linux runs were never performed and the macOS matrix is partial
 Linux**, and it is **not shipped for any target** — it stays a source build.
 The plan's *Release qualification* section lists what is outstanding.
 
+**Planned next step — Plan 191.** The product direction is a **single tray
+pulldown**: one borderless, always-on-top panel opened from the native tray
+menu, carrying all the metrics, cron and `EggPool` surfaces the compact
+monitor window carries today, with the separate monitor window dropped. The
+same plan adds host **add / remove / edit** to that panel, which the GUI
+cannot do today: it writes the config through the **CLI's own library code**
+against the same `ConfigStore`, so no protocol change and no second poller is
+involved. Plan 191 also **retains Slint 1.18.1** after reviewing the
+alternatives — it is the latest published release and the only Rust option
+with a first-class native tray, and the measured footprint is the software
+renderer's rather than the window's. See `plans/191-tray-pulldown-gui-and-host-management.md`.
+
 ## Running it
 
 ```bash
