@@ -471,12 +471,60 @@ the pulldown carries `overflow: elide` — without it a long status line
 overflowed the pulldown on **both** sides.
 
 **What was not done:** no tray icon was clicked on any platform, so the
-**interactive** native acceptance is still outstanding, and the native tray
-exercises — which need Linux and Windows — were **updated** but not run against
-this change. The macOS Intel build was not produced, there is still no DPI
-measurement at 125 % or 150 %, and Wayland was never executed. The GUI's
-release binary is **11,929,712 bytes**, **+33,104 (+0.3%)** on Plan 191's
-11,896,608, with no new dependency in this workspace.
+**interactive** native acceptance is still outstanding. The macOS Intel build
+was not produced locally, there is still no DPI measurement at 125 % or 150 %,
+and Wayland was never executed. The GUI's release binary is **11,929,712
+bytes**, **+33,104 (+0.3%)** on Plan 191's 11,896,608, with no new dependency in
+this workspace.
+
+### The native exercises, on CI run `39811582623`
+
+The GUI workspace is not a member of the root workspace, so no root job
+compiles it; the three `GUI` legs are the only authority for its Windows and
+Linux behaviour. Run **`39811582623`** is **green on all ten jobs** — the core
+`Linux`, `macOS`, `macOS Intel`, `Windows`, `Scripts`, `MSRV` and `FreeBSD`
+jobs, and the three `GUI` legs.
+
+The **Linux** leg runs the native tray exercise against a **real
+`StatusNotifierItem` host**, and what it printed is this plan's own claims,
+observed rather than asserted:
+
+```text
+sni-host: obs ToolTip.title="Gregg — 1 online, 0 pending, 0 offline — gui-fixture"
+sni-host: obs Menu.labels=["Quit Gregg"]
+sni-host: PASS tray-tooltip-carries-the-fleet-status the tooltip is "Gregg — 1 online, 0 pending, 0 offline — gui-fixture"
+sni-host: PASS tray-tooltip-carries-the-fleet the tooltip mentions "gui-fixture"
+sni-host: PASS tray-menu-is-the-context-menu a menu label mentions "Quit Gregg"
+sni-host: PASS pulldown-is-placed-inside-the-work-area Placement { x: 852.0, y: 36.0, width: 420.0, height: 256.0, area_left: 8.0, area_top: 36.0, area_width: 1264.0, area_height: 980.0 }
+sni-host: PASS gui-survives-without-a-tray the GUI is still running three seconds after reporting `tray=unavailable`
+linux-tray: PASS both Linux tray passes
+```
+
+The menu is **`["Quit Gregg"]`** — the launcher is gone and the menu is the
+context menu; the **tooltip** carries the fleet status and the host name; and
+the pulldown was **placed inside the work area it reported**, which is the
+placement gate proven on a real desktop.
+
+The **Windows** leg proves the same placement claim on the platform where the
+anchor is the **bottom**-trailing corner, and its own core launch path:
+
+```text
+windows-tray: the GUI printed: gregg-gui: pulldown=placed x=596 y=460 width=420 height=256 area=8,8,1008x708
+windows-tray: the pulldown is inside the work area it reported
+windows-tray: the GUI created 4 native top-level window(s)
+windows-tray: the client daemon is running
+windows-tray: the fleet fixture served 8 request(s): the daemon is polling
+windows-tray: PASS every Windows tray check
+```
+
+`y=460` is `8 + 708 − 256` — the bottom of the work area, where the Windows
+taskbar is — so the anchor is right on that platform too.
+
+Neither leg claims that the **notification-area icon was rendered**: the
+Windows runner is session 0 with no `explorer.exe`, and the Linux leg drives
+the SNI protocol rather than a desktop shell. That is the interactive
+acceptance, and it is still outstanding.
+
 
 
 ## The fixture

@@ -178,8 +178,10 @@ operator drags the panel once and expects it to stay there.
       exercises assert the position, not only that a window exists. — The first open is deferred
       into the event loop and the placement is retried until the native window exists, so the
       work area is available on every path. The exercises parse the GUI's own
-      `pulldown=placed` line and assert the position — **but they have not been run against this
-      change**, because they need Linux and Windows.
+      `pulldown=placed` line and assert the position, and **both legs passed** in CI run
+      `39811582623` — Linux placed the pulldown at (852, 36) inside a 1264×980 work area, and
+      Windows at (596, 460) inside 1008×708, which is the bottom of that work area, where the
+      Windows taskbar is.
 - [x] The pulldown's position and size survive a restart. — Observed end to end: a drag of
       (−200, +100) moved the pulldown by exactly that and wrote `position=2300,220` /
       `size=500,600` to `<config>.gui-state`; the next start opened at
@@ -195,9 +197,11 @@ operator drags the panel once and expects it to stay there.
       `DaemonRequest` set is unchanged. — `crates/gregg/src/clientd/protocol.rs` is untouched.
 - [x] The GUI's own CI job still formats, lints, tests and release-builds on macOS, Windows
       and Linux, and the native tray exercises still pass. — `./scripts/check-gui.sh` passes
-      locally (fmt, clippy `-D warnings`, **128 tests**, a release build of 11,929,712 bytes).
-      **The CI run for this commit and the native exercises are pending** — the exercises need
-      Linux and Windows, and they are the only authority for those two targets.
+      locally (fmt, clippy `-D warnings`, **128 tests**, a release build of 11,929,712 bytes),
+      and CI run **`39811582623`** is **green on all ten jobs** — the core `Linux`, `macOS`,
+      `macOS Intel`, `Windows`, `Scripts`, `MSRV` and `FreeBSD` jobs, and the three `GUI` legs
+      (`macos-15`, `windows-2022`, `ubuntu-latest`), including the native tray exercises on
+      Linux and Windows.
 - [ ] The **interactive** native acceptance — a visible notification-area icon, the click
       opening the pulldown, and the pulldown being usable on a real desktop — is recorded per
       target, or is **left unchecked** and blocks shipment for that target, exactly as Plan
@@ -336,18 +340,74 @@ Two renderer facts were found the hard way and are now in the `.slint`:
   wrapping text in the pulldown carries `overflow: elide` — without it a long status line
   overflowed the pulldown on **both** sides.
 
+### The CI runs
+
+Run **`39811582623`**, against the implementation commit `e26a273`, is **green on all ten jobs**:
+the core `Linux`, `macOS`, `macOS Intel`, `Windows`, `Scripts`, `MSRV` and `FreeBSD` jobs, and
+the three `GUI` legs (`macos-15`, `windows-2022`, `ubuntu-latest`). The `GUI` legs are the only
+authority for this workspace's Windows and Linux behaviour, because the workspace is not a member
+of the root workspace and no root job compiles it.
+
+**The Linux leg is the one that matters most here**, because it runs the native tray exercise
+against a **real `StatusNotifierItem` host**. What it printed:
+
+```text
+sni-host: obs Title="Gregg"
+sni-host: obs ToolTip.title="Gregg — 1 online, 0 pending, 0 offline — gui-fixture"
+sni-host: obs Menu.labels=["Quit Gregg"]
+sni-host: PASS tray-tooltip-carries-the-fleet-status the tooltip is "Gregg — 1 online, 0 pending, 0 offline — gui-fixture"
+sni-host: PASS tray-tooltip-carries-the-fleet the tooltip mentions "gui-fixture"
+sni-host: PASS tray-menu-is-the-context-menu a menu label mentions "Quit Gregg"
+sni-host: PASS pulldown-is-placed-inside-the-work-area Placement { x: 852.0, y: 36.0, width: 420.0, height: 256.0, area_left: 8.0, area_top: 36.0, area_width: 1264.0, area_height: 980.0 }
+sni-host: PASS gui-is-still-running the GUI is still running with a live tray
+sni-host: PASS all-checks mode=WithHost
+linux-tray: pass 2: no StatusNotifierItem host is present
+sni-host: PASS gui-reported-tray-unavailable the GUI printed `gregg-gui: tray=unavailable reason="no StatusNotifierItem host on this desktop"`
+sni-host: PASS gui-survives-without-a-tray the GUI is still running three seconds after reporting `tray=unavailable`
+sni-host: PASS all-checks mode=NoHost
+linux-tray: PASS both Linux tray passes
+```
+
+Three things in that transcript are this plan's own claims, observed natively:
+
+- the menu is **`["Quit Gregg"]`** — the launcher is gone and the menu is the context menu;
+- the **tooltip** carries the fleet status *and* the host name, so the tray states the fleet's
+  health without being opened;
+- the pulldown was **placed inside the work area it reported** — x=852, y=36, 420×256 in a
+  1264×980 work area — which is the placement gate, proven on a real desktop rather than
+  asserted.
+
+The **Windows leg** proves the same placement claim on the platform where the anchor is the
+**bottom**-trailing corner, and its own core launch path:
+
+```text
+windows-tray: the GUI printed: gregg-gui: pulldown=placed x=596 y=460 width=420 height=256 area=8,8,1008x708
+windows-tray: the pulldown is inside the work area it reported
+windows-tray: the GUI created 4 native top-level window(s)
+windows-tray: the client daemon is running
+windows-tray: the fleet fixture served 8 request(s): the daemon is polling
+windows-tray: PASS every Windows tray check
+```
+
+`y=460` is `8 + 708 − 256` — the bottom of the work area, which is where the Windows taskbar is
+— so the anchor is right on that platform too.
+
+Neither leg claims that the **notification-area icon was rendered**: the Windows runner is
+session 0 with no `explorer.exe`, and the Linux leg drives the SNI protocol rather than a
+desktop shell. That is the interactive acceptance below, and it is still unchecked.
+
 ### Gate by gate
 
 | Gate | State | Evidence |
 | ---- | ----- | -------- |
 | The tray's click opens the pulldown, the pulldown shows the panel's content, there is no launcher entry | **Met, except the gesture itself** | The content is in the pulldown and the launcher is gone — `the_tray_has_no_launcher_entry` and `the_pulldown_drops_the_application_chrome` assert it, and the macOS run above shows the panel's content in the dropdown. The *pointer click on the tray item* has not been performed on any platform; that is the interactive acceptance below. |
 | The native menu is not the primary surface; on macOS it is detached and the pulldown carries `Reload`, `About` and `Quit` | **Met** | `platform::native_tray_menu()` is `false` on macOS and `true` elsewhere, and `the_native_menu_is_detached_only_where_it_would_swallow_the_click` asserts it. The `.slint`'s menu carries `Quit Gregg` and nothing else. |
-| The pulldown is positioned and clamped within the work area on **every** path that opens it, and the native exercises assert the position | **Met locally; the native exercises are updated but unrun** | The placement line above is the evidence on the startup path, and `place_pulldown` retries until the native window exists. The exercises in `native/sni-host` and `native/windows-tray.ps1` parse that line and assert the pulldown is inside the work area it reported — but they need Linux and Windows, so they have **not** been run against this change. |
+| The pulldown is positioned and clamped within the work area on **every** path that opens it, and the native exercises assert the position | **Met** | The first open is deferred into the event loop and the placement is retried until the native window exists, so the work area is available on every path. The exercises parse the GUI's own `pulldown=placed` line and assert the position — and both legs **passed** in CI run `39811582623`: Linux placed it at (852, 36) inside a 1264×980 work area, Windows at (596, 460) inside 1008×708. |
 | The pulldown's position and size survive a restart | **Met** | The drag round trip above. |
 | The pulldown reads as a dropdown: rounded, shadowed, pointed, content-sized | **Met** | The measurements above. |
 | The forms still add, remove, rename and re-point hosts through the CLI's own code, and a refused mutation leaves the config byte-identical and shows a visible reason | **Met** | Unchanged from Plan 191, and covered by the GUI's own `hosts.rs` tests. |
 | The GUI still opens no HTTP client, still starts no polling plane, and the `DaemonRequest` set is unchanged | **Met** | `crates/gregg/src/clientd/protocol.rs` is untouched, and the counted harness in `evidence.rs` still proves the GUI adds no request of its own. |
-| The GUI's own CI job still formats, lints, tests and release-builds on macOS, Windows and Linux | **Met locally; the CI run is pending** | `./scripts/check-gui.sh` passes: `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, **128 tests passed**, and a release build. The CI run for this commit had not happened when this record was written. |
+| The GUI's own CI job still formats, lints, tests and release-builds on macOS, Windows and Linux, and the native tray exercises still pass | **Met** | `./scripts/check-gui.sh` passes locally (fmt, clippy `-D warnings`, **128 tests**, a release build of 11,929,712 bytes), and CI run **`39811582623`** is **green on all ten jobs** — including all three `GUI` legs and the native tray exercises on Linux and Windows. |
 | The **interactive** native acceptance is recorded per target, or left unchecked and blocking shipment | **Left unchecked** | No tray icon was clicked on any platform. Nothing interactive was performed: no notification-area icon was seen, no pulldown was opened by a pointer, no GNOME session was used. This blocks shipment for Windows and Linux, and the GUI stays a source build. |
 
 ### Measurements
@@ -384,13 +444,11 @@ to the GUI workspace.
 ### What was not performed
 
 - **No interactive native run on any platform.** The tray item was never clicked, the pulldown was
-  never opened by a pointer, and no notification area was seen.
-- **The native tray exercises were not run against this change.** `native/sni-host` needs a Linux
-  host with a `StatusNotifierItem` host, and `native/windows-tray.ps1` needs Windows. They are
-  updated — the menu expectation is `Quit Gregg`, and the placement line is parsed and asserted —
-  but a green CI run is their first execution.
-- **The macOS Intel build was not produced**, and there is still **no DPI measurement** at 125 %
-  or 150 %. The pulldown is placed in logical pixels against the documented shell-strip
+  never opened by a pointer, and no notification area was seen. The CI legs drive the tray
+  *protocol* — the `StatusNotifierItem` on Linux, the native window on Windows — not a desktop
+  shell, so they prove the mechanism and the placement, not the gesture.
+- The **macOS Intel build was not produced locally**, and there is still **no DPI measurement** at
+  125 % or 150 %. The pulldown is placed in logical pixels against the documented shell-strip
   approximation, so the default placement's gap under the menu bar — the 26 px macOS places
   between the request and the window — has not been measured at either scaling.
 - **Wayland was never executed.** The CI Linux leg runs under `xvfb-run`, which is X11, while

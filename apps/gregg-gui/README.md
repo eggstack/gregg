@@ -459,9 +459,12 @@ has a job of its own. The `gui` job in `.github/workflows/ci.yml` runs on
 - on **Linux**, runs a native tray exercise against a **real
   `StatusNotifierItem` host**: `apps/gregg-gui/native/sni-host` owns
   `org.kde.StatusNotifierWatcher`, starts the GUI, and asserts that the GUI
-  registered an item whose tooltip and menu carry the live fleet state — and
-  then, in a second pass on a bus with **no** host, asserts that the GUI
-  reports `tray=unavailable` and keeps running;
+  registered an item whose **tooltip carries the live fleet status** — the
+  counts and the host names — and whose menu carries `Quit Gregg`; and it
+  checks the GUI's own `pulldown=placed` line, so the exercise asserts the
+  pulldown's **position** and not only that a window exists. Then, in a
+  second pass on a bus with **no** host, it asserts that the GUI reports
+  `tray=unavailable` and keeps running;
 - on **Windows**, proves the **core** client-daemon launch path first, with
   the CLI and no GUI involved: `gregg daemon restart` takes the launch lock and
   spawns a daemon, `gregg daemon status` identifies it through the daemon's own
