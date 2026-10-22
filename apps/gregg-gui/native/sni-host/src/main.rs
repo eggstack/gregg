@@ -17,8 +17,11 @@
 //!
 //! * `--mode with-host` — the watcher name is owned, so the GUI *must* find a
 //!   tray host. The helper asserts that the GUI reports `tray=available`,
-//!   registers an item, and that the item's `ToolTip` and menu carry the live
-//!   fleet state rather than a placeholder.
+//!   registers an item, that the item's `ToolTip` carries the live fleet
+//!   state rather than a placeholder, that the item's menu is the *context*
+//!   menu — the tray's click opens the pulldown, and the pulldown carries the
+//!   fleet — and that the GUI placed the pulldown inside the work area it
+//!   reported.
 //! * `--mode no-host` — the watcher name is deliberately *not* owned, so the
 //!   GUI must find no tray host. The helper asserts that the GUI reports
 //!   `tray=unavailable` and keeps running instead of dying.
@@ -58,6 +61,13 @@ const DBUS_INTERFACE: &str = "org.freedesktop.DBus";
 
 /// The line the GUI prints when it managed to create a system tray.
 const TRAY_AVAILABLE: &str = "gregg-gui: tray=available";
+
+/// The native tray menu's one entry.
+///
+/// The tray's **click** opens the pulldown, and the pulldown carries the
+/// fleet, the metrics and the forms. The native menu is the *context* menu,
+/// and it carries the application's own way out and nothing else.
+const QUIT_ENTRY: &str = "Quit Gregg";
 /// The line the GUI prints when it could not create a system tray.
 const TRAY_UNAVAILABLE: &str = "gregg-gui: tray=unavailable";
 
@@ -246,6 +256,94 @@ fn transcript_text(transcript: &Transcript) -> String {
     } else {
         lines
     }
+}
+
+/// Where the pulldown was put, and where it was allowed to be put.
+///
+/// The GUI reports both, so that a native exercise can check the *position*
+/// and not only that a window appeared.
+#[derive(Debug, Clone, Copy)]
+struct Placement {
+    /// The pulldown's left edge.
+    x: f64,
+    /// The pulldown's top edge.
+    y: f64,
+    /// The pulldown's width.
+    width: f64,
+    /// The pulldown's height.
+    height: f64,
+    /// The work area's left edge.
+    area_left: f64,
+    /// The work area's top edge.
+    area_top: f64,
+    /// The work area's width.
+    area_width: f64,
+    /// The work area's height.
+    area_height: f64,
+}
+
+impl Placement {
+    /// Whether the pulldown is inside the work area it reported.
+    fn is_inside(&self) -> bool {
+        self.x >= self.area_left
+            && self.y >= self.area_top
+            && self.x + self.width <= self.area_left + self.area_width
+            && self.y + self.height <= self.area_top + self.area_height
+    }
+}
+
+/// Reads the pulldown's placement out of one of the GUI's output lines.
+///
+/// The line is `gregg-gui: pulldown=placed x=.. y=.. width=.. height=.. area=l,t,wxh`.
+fn parse_placement(line: &str) -> Option<Placement> {
+    if !line.contains("pulldown=placed") {
+        return None;
+    }
+    let mut x = None;
+    let mut y = None;
+    let mut width = None;
+    let mut height = None;
+    let mut area = None;
+    for field in line.split_whitespace() {
+        let Some((key, value)) = field.split_once('=') else {
+            continue;
+        };
+        match key {
+            "x" => x = value.parse().ok(),
+            "y" => y = value.parse().ok(),
+            "width" => width = value.parse().ok(),
+            "height" => height = value.parse().ok(),
+            "area" => {
+                let (left, rest) = value.split_once(',')?;
+                let (top, rest) = rest.split_once(',')?;
+                let (area_width, area_height) = rest.split_once('x')?;
+                area = Some((
+                    left.parse().ok()?,
+                    top.parse().ok()?,
+                    area_width.parse().ok()?,
+                    area_height.parse().ok()?,
+                ));
+            }
+            _ => {}
+        }
+    }
+    let (area_left, area_top, area_width, area_height) = area?;
+    Some(Placement {
+        x: x?,
+        y: y?,
+        width: width?,
+        height: height?,
+        area_left,
+        area_top,
+        area_width,
+        area_height,
+    })
+}
+
+/// The pulldown's placement, from the GUI's output.
+fn find_placement(transcript: &Transcript) -> Option<Placement> {
+    let lines = transcript.lock().ok()?;
+    lines.iter().find_map(|line| parse_placement(line))
 }
 
 /// Reads one of the GUI's output streams line by line.
@@ -623,23 +721,25 @@ async fn run_with_host(args: &Args) -> Result<(), String> {
     // has arrived. So the properties are polled, not read once.
     let state = loop {
         let candidate = read_item_state(&connection, item_bus_name.as_str()).await?;
-        let tooltip_carries = candidate.tooltip_title.contains(&args.expect_status);
+        let tooltip_carries = candidate.tooltip_title.contains(&args.expect_status)
+            && candidate.tooltip_title.contains(&args.expect_host_name);
         let menu_carries = candidate
             .labels
             .iter()
-            .any(|label| label.contains(&args.expect_host_name));
+            .any(|label| label.contains(QUIT_ENTRY));
         if tooltip_carries && menu_carries {
             break candidate;
         }
         if Instant::now() >= deadline {
             return Err(format!(
                 "the tray never carried the live fleet state: the tooltip was {:?} \
-                 (expected it to contain {:?}) and the menu labels were {:?} \
+                 (expected it to contain {:?} and {:?}) and the menu labels were {:?} \
                  (expected one to mention {:?})",
                 candidate.tooltip_title,
                 args.expect_status,
+                args.expect_host_name,
                 candidate.labels,
-                args.expect_host_name
+                QUIT_ENTRY
             ));
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -667,8 +767,33 @@ async fn run_with_host(args: &Args) -> Result<(), String> {
         format!("the tooltip is {:?}", state.tooltip_title),
     );
     pass(
-        "tray-menu-carries-the-fleet",
-        format!("a menu label mentions {:?}", args.expect_host_name),
+        "tray-tooltip-carries-the-fleet",
+        format!("the tooltip mentions {:?}", args.expect_host_name),
+    );
+    pass(
+        "tray-menu-is-the-context-menu",
+        format!("a menu label mentions {QUIT_ENTRY:?}"),
+    );
+
+    // The pulldown's *placement*, asserted rather than assumed.
+    //
+    // The GUI reports where it put the pulldown and where it was allowed to
+    // put it, so the exercise can check that the pulldown is inside the work
+    // area — which is the thing that is easy to get wrong and hard to see.
+    let placement = find_placement(&transcript).ok_or_else(|| {
+        format!(
+            "the GUI never reported where it put the pulldown; its output was:\n{}",
+            transcript_text(&transcript)
+        )
+    })?;
+    if !placement.is_inside() {
+        return Err(format!(
+            "the pulldown is not inside the work area it reported: {placement:?}"
+        ));
+    }
+    pass(
+        "pulldown-is-placed-inside-the-work-area",
+        format!("{placement:?}"),
     );
 
     if state.icon_entries == 0 && state.icon_name.trim().is_empty() {

@@ -14,8 +14,9 @@
 #      carry;
 #   2. runs the `sni-host` helper in `--mode with-host`, which owns
 #      `org.kde.StatusNotifierWatcher`, starts the GUI, and asserts that the
-#      GUI registered an item whose tooltip and menu carry the live fleet
-#      state;
+#      GUI registered an item whose tooltip carries the live fleet state,
+#      whose menu is the context menu, and whose pulldown was placed inside
+#      the work area it reported;
 #   3. runs the same helper in `--mode no-host`, in a *fresh* session bus with
 #      no tray host at all, and asserts that the GUI reports
 #      `tray=unavailable` and keeps running instead of dying.
@@ -42,8 +43,8 @@ GREGG=""
 HELPER=""
 PYTHON="python3"
 FIXTURE="${REPO_ROOT}/scripts/tests/fleet-fixture.py"
-# The name the fixture host is configured under. The tray's menu header names
-# the hosts it shows, so this is what proves the tray carries the *fleet* and
+# The name the fixture host is configured under. The tray's tooltip names the
+# hosts it shows, so this is what proves the tray carries the *fleet* and
 # not a placeholder.
 readonly HOST_NAME="gui-fixture"
 # What the tray's tooltip is expected to say about a healthy single-host

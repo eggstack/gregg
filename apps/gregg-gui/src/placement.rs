@@ -42,8 +42,199 @@
 //! remembered, and the position is re-clamped every time the panel opens, so
 //! a display that changed underneath the GUI cannot leave the panel
 //! off-screen.
+//!
+//! # How big the panel is
+//!
+//! A pulldown is a dropdown, so its height follows what it carries: a fleet
+//! of one host is a short pulldown and a fleet of twenty is a taller one.
+//!
+//! Slint 1.18 cannot report a layout's preferred size back to a `.slint`
+//! file, so the height cannot be measured in the UI. It is *computed* here,
+//! from the rows the model has, and pushed into the component. The parts of
+//! the height that are the pulldown's own chrome — the header, the footer,
+//! the padding — are written down in [`metrics`], and the `.slint` file's
+//! own numbers are checked against them, so the two cannot drift apart
+//! without a test saying so.
 
 use slint::{LogicalPosition, LogicalSize};
+
+/// The pulldown's own measurements, in logical pixels.
+///
+/// These are the heights the `.slint` file gives the pulldown's elements.
+/// They are written down here because the pulldown's height is *computed*
+/// rather than measured, and a computed height is only as good as the
+/// numbers it is computed from. `tests::the_slint_file_says_what_this_module_says`
+/// checks the two against each other.
+pub mod metrics {
+    /// The room the shadow takes around the card, on each side.
+    pub const MARGIN: f32 = 14.0;
+
+    /// The header strip's height.
+    pub const HEADER: f32 = 36.0;
+
+    /// The footer's height.
+    pub const FOOTER: f32 = 18.0;
+
+    /// The padding inside the card, on each side.
+    pub const PANE_PADDING: f32 = 12.0;
+
+    /// The gap between the body's children.
+    pub const BODY_SPACING: f32 = 6.0;
+
+    /// The gaps between the body's children in the fleet view: the status
+    /// line, the message, the tray warning and the fleet itself.
+    pub const BODY_GAPS: f32 = 3.0 * BODY_SPACING;
+
+    /// The gaps between the fleet's own children: the host list, the
+    /// selected host's actions and the detail.
+    pub const FLEET_GAPS: f32 = 2.0 * BODY_SPACING;
+
+    /// The attachment's state line.
+    pub const STATUS_LINE: f32 = 18.0;
+
+    /// The last action's message, which takes two lines.
+    pub const MESSAGE_LINE: f32 = 30.0;
+
+    /// The tray warning's line.
+    pub const TRAY_WARNING_LINE: f32 = 18.0;
+
+    /// One host row in the host list.
+    pub const HOST_ROW: f32 = 46.0;
+
+    /// The most host rows the host list may show at once.
+    ///
+    /// The list is bounded so that a large fleet cannot push the metrics,
+    /// the cron and the `EggPool` plane out of the pulldown. The bound is a
+    /// number of *rows* and not a number of pixels, so the last row is a
+    /// whole row and not half of one.
+    pub const HOST_LIST_MAX_ROWS: usize = 4;
+
+    /// The selected host's own actions row.
+    pub const SELECTED_ROW: f32 = 18.0;
+
+    /// One measured metric row.
+    pub const METRIC_ROW: f32 = 18.0;
+
+    /// One drive or interface row.
+    pub const DETAIL_ROW: f32 = 18.0;
+
+    /// One scheduler job row.
+    pub const JOB_ROW: f32 = 22.0;
+
+    /// One `EggPool` row.
+    pub const EGGPOOL_ROW: f32 = 18.0;
+
+    /// One line of retained scheduler records.
+    pub const RECORD_LINE: f32 = 14.0;
+
+    /// The attribution text, which takes four lines.
+    pub const ABOUT_LINES: f32 = 4.0;
+    pub const ABOUT_LINE: f32 = 14.0;
+
+    /// The thin rules between the panes.
+    pub const SEPARATOR: f32 = 1.0;
+
+    /// The form's height.
+    pub const FORM_HEIGHT: f32 = 220.0;
+
+    /// The pulldown's width.
+    pub const DEFAULT_WIDTH: f32 = 420.0;
+
+    /// The shortest the detail below the host list may be.
+    pub const MIN_DETAIL: f32 = 120.0;
+
+    /// The tallest the detail below the host list may be.
+    pub const MAX_DETAIL: f32 = 320.0;
+}
+
+/// What the pulldown is showing, as the height calculation sees it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Content {
+    /// How many hosts the fleet has.
+    pub hosts: usize,
+    /// Whether a host is selected.
+    pub selected: bool,
+    /// How many measured rows the selected host has.
+    pub metrics: usize,
+    /// How many drive and interface rows it has.
+    pub details: usize,
+    /// How many scheduler jobs it has.
+    pub jobs: usize,
+    /// How many `EggPool` rows are shown.
+    pub eggpool: usize,
+    /// How many lines the retained scheduler records take.
+    pub record_lines: usize,
+    /// Whether the attribution text is shown.
+    pub about: bool,
+    /// Whether the attachment's state is shown.
+    pub status: bool,
+    /// Whether the last action's message is shown.
+    pub message: bool,
+    /// Whether the tray warning is shown.
+    pub warning: bool,
+    /// Whether the form is showing instead of the fleet.
+    pub form: bool,
+}
+
+/// The height of the bounded host list.
+///
+/// The bound is a number of rows, so the list is always a whole number of
+/// rows tall and the last row is never half of one.
+#[must_use]
+pub fn host_list_height(hosts: usize) -> f32 {
+    hosts.min(metrics::HOST_LIST_MAX_ROWS) as f32 * metrics::HOST_ROW
+}
+
+/// The height of the detail below the host list.
+///
+/// The detail is one scroll container, so this is an estimate of what it
+/// holds: the estimate only decides how much of it is on screen, and the
+/// scroll container keeps the rest reachable when the estimate is short.
+#[must_use]
+fn detail_height(content: &Content) -> f32 {
+    let mut height = 3.0 * metrics::SEPARATOR;
+    height += content.metrics as f32 * metrics::METRIC_ROW;
+    height += content.details as f32 * metrics::DETAIL_ROW;
+    height += content.jobs as f32 * metrics::JOB_ROW;
+    height += content.eggpool as f32 * metrics::EGGPOOL_ROW;
+    height += content.record_lines as f32 * metrics::RECORD_LINE;
+    if content.about {
+        height += metrics::ABOUT_LINES * metrics::ABOUT_LINE;
+    }
+    height.clamp(metrics::MIN_DETAIL, metrics::MAX_DETAIL)
+}
+
+/// The pulldown's height, for the content it is carrying.
+///
+/// The pulldown is a dropdown: it is as tall as what it shows, up to the
+/// bounds its panes have.
+#[must_use]
+pub fn content_height(content: &Content) -> f32 {
+    let mut height = 2.0 * metrics::MARGIN
+        + metrics::HEADER
+        + metrics::FOOTER
+        + 2.0 * metrics::PANE_PADDING
+        + metrics::BODY_GAPS;
+    if content.status {
+        height += metrics::STATUS_LINE;
+    }
+    if content.message {
+        height += metrics::MESSAGE_LINE;
+    }
+    if content.warning {
+        height += metrics::TRAY_WARNING_LINE;
+    }
+    if content.form {
+        height += metrics::FORM_HEIGHT;
+    } else {
+        height += metrics::FLEET_GAPS + host_list_height(content.hosts);
+        if content.selected {
+            height += metrics::SELECTED_ROW;
+        }
+        height += detail_height(content);
+    }
+    height
+}
 
 /// The part of the display the panel may use.
 ///
@@ -191,10 +382,7 @@ const SHELL_INSET: f32 = 28.0;
 const EDGE_MARGIN: f32 = 8.0;
 
 /// The smallest the panel may be.
-pub const MIN_PANEL_SIZE: (f32, f32) = (360.0, 260.0);
-
-/// The panel's size when it has never been resized.
-pub const DEFAULT_PANEL_SIZE: (f32, f32) = (560.0, 520.0);
+pub const MIN_PANEL_SIZE: (f32, f32) = (360.0, 220.0);
 
 /// The work area of the display the window is on.
 ///
@@ -276,9 +464,18 @@ pub fn open_position(
 }
 
 /// The panel's size, clamped so it fits the work area and never collapses.
+///
+/// A remembered size wins: it is the size the operator chose, and a
+/// pulldown that forgets it is a pulldown that fights the operator. The
+/// content's size is what the pulldown takes when the operator has never
+/// resized it.
 #[must_use]
-pub fn panel_size(remembered: Option<(f32, f32)>, area: Option<&WorkArea>) -> LogicalSize {
-    let (mut width, mut height) = remembered.unwrap_or(DEFAULT_PANEL_SIZE);
+pub fn panel_size(
+    remembered: Option<(f32, f32)>,
+    content: (f32, f32),
+    area: Option<&WorkArea>,
+) -> LogicalSize {
+    let (mut width, mut height) = remembered.unwrap_or(content);
     if let Some(area) = area {
         width = width.min(area.width).max(MIN_PANEL_SIZE.0.min(area.width));
         height = height
@@ -417,7 +614,7 @@ mod tests {
 
     #[test]
     fn the_panel_never_collapses() {
-        let size = panel_size(Some((10.0, 10.0)), None);
+        let size = panel_size(Some((10.0, 10.0)), (420.0, 300.0), None);
         assert!(size.width >= MIN_PANEL_SIZE.0);
         assert!(size.height >= MIN_PANEL_SIZE.1);
     }
@@ -425,8 +622,126 @@ mod tests {
     #[test]
     fn the_panel_is_never_bigger_than_the_work_area() {
         let area = WorkArea::new(0.0, 0.0, 400.0, 300.0);
-        let size = panel_size(Some((2000.0, 2000.0)), Some(&area));
+        let size = panel_size(Some((2000.0, 2000.0)), (420.0, 300.0), Some(&area));
         assert!(size.width <= 400.0);
         assert!(size.height <= 300.0);
+    }
+
+    #[test]
+    fn a_remembered_size_wins_over_the_content() {
+        let size = panel_size(Some((500.0, 400.0)), (420.0, 300.0), None);
+        assert_eq!((size.width, size.height), (500.0, 400.0));
+    }
+
+    #[test]
+    fn the_content_size_is_used_when_the_operator_never_resized() {
+        let size = panel_size(None, (420.0, 300.0), None);
+        assert_eq!((size.width, size.height), (420.0, 300.0));
+    }
+
+    #[test]
+    fn the_height_follows_the_fleet() {
+        let empty = content_height(&Content::default());
+        let one = content_height(&Content {
+            hosts: 1,
+            ..Content::default()
+        });
+        let many = content_height(&Content {
+            hosts: 20,
+            ..Content::default()
+        });
+        assert!(one > empty, "one host is taller than none");
+        assert!(
+            many > one,
+            "twenty hosts are taller than one, up to the bound"
+        );
+    }
+
+    #[test]
+    fn the_height_is_bounded_by_the_host_list() {
+        let a_fleet = content_height(&Content {
+            hosts: 200,
+            ..Content::default()
+        });
+        let the_bound = content_height(&Content {
+            hosts: 10,
+            ..Content::default()
+        });
+        assert_eq!(
+            a_fleet, the_bound,
+            "a fleet past the host list's bound does not make the pulldown taller"
+        );
+    }
+
+    #[test]
+    fn the_detail_is_bounded() {
+        let few = content_height(&Content {
+            hosts: 1,
+            metrics: 1,
+            ..Content::default()
+        });
+        let many = content_height(&Content {
+            hosts: 1,
+            metrics: 500,
+            ..Content::default()
+        });
+        assert!(many > few, "more rows make the pulldown taller");
+        assert!(
+            many - few <= metrics::MAX_DETAIL,
+            "the detail's own bound still holds"
+        );
+    }
+
+    #[test]
+    fn the_form_is_shorter_than_the_fleet() {
+        let fleet = content_height(&Content {
+            hosts: 5,
+            ..Content::default()
+        });
+        let form = content_height(&Content {
+            form: true,
+            ..Content::default()
+        });
+        assert!(form < fleet, "a form does not carry the fleet");
+    }
+
+    #[test]
+    fn the_slint_file_says_what_this_module_says() {
+        // The pulldown's height is computed from the numbers in `metrics`,
+        // and the `.slint` file is what gives the pulldown its elements'
+        // heights. If the two drift apart, the pulldown is either cut off or
+        // has a gap in it, and nothing else would say so.
+        let slint = include_str!("ui/main.slint");
+        for (what, expected) in [
+            ("the margin", "margin: 14px"),
+            ("the padding", "pane-padding: 12px"),
+            ("the spacing", "spacing: 6px"),
+            ("the header", "height: 36px"),
+            ("the footer", "height: 18px"),
+            ("the host row", "height: 46px"),
+            ("the job row", "height: 22px"),
+            ("the status line", "0px : 18px"),
+            ("the message", "0px : 30px"),
+            ("the tray warning", "0px : 18px"),
+            ("the selected host row", "0px : 18px"),
+            ("the form's height", "form-height: 220px"),
+        ] {
+            assert!(
+                slint.contains(expected),
+                "the `.slint` file no longer says {what} is `{expected}`"
+            );
+        }
+        assert_eq!(metrics::MARGIN, 14.0);
+        assert_eq!(metrics::PANE_PADDING, 12.0);
+        assert_eq!(metrics::BODY_SPACING, 6.0);
+        assert_eq!(metrics::HEADER, 36.0);
+        assert_eq!(metrics::FOOTER, 18.0);
+        assert_eq!(metrics::HOST_ROW, 46.0);
+        assert_eq!(metrics::JOB_ROW, 22.0);
+        assert_eq!(metrics::STATUS_LINE, 18.0);
+        assert_eq!(metrics::MESSAGE_LINE, 30.0);
+        assert_eq!(metrics::TRAY_WARNING_LINE, 18.0);
+        assert_eq!(metrics::SELECTED_ROW, 18.0);
+        assert_eq!(metrics::FORM_HEIGHT, 220.0);
     }
 }

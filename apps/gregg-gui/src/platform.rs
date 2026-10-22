@@ -7,8 +7,8 @@
 //! `NSWindow.orderFront:` from a background app does not bring the window to
 //! the front. A GUI launched the way a real one is launched — a login item, a
 //! launcher, an agent — is a background app from its first moment, so
-//! "Open Gregg" from the tray would do **nothing at all**: the operator
-//! clicks the tray item and no panel appears.
+//! opening the pulldown from the tray would do **nothing at all**: the
+//! operator clicks the tray item and no panel appears.
 //!
 //! Slint 1.18 exposes no activation API, so the activation is done here
 //! through AppKit. Everything else in the GUI is platform-neutral, and this
@@ -184,6 +184,47 @@ pub fn tray_support_async(apply: impl FnOnce(TraySupport) + Send + 'static) {
 pub fn activate() {
     #[cfg(target_os = "macos")]
     activate_macos();
+}
+
+/// Whether this platform's tray carries a native menu.
+///
+/// The tray's **click** opens the pulldown, and on macOS a menu attached to
+/// the status item swallows that click: AppKit pops the menu instead, and
+/// the status item's own action never runs. So the menu is detached there,
+/// and the pulldown carries the application's own actions — `Quit` among
+/// them — instead.
+///
+/// Windows and Linux keep their menu, where it is the *context* menu: a
+/// right-click reaches it and a left-click does not, so the click is still
+/// the pulldown's.
+#[must_use]
+pub fn native_tray_menu() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        false
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
+/// Whether this platform can give a window a transparent background.
+///
+/// Only macOS: a frameless window there is transparent, so a rounded card
+/// and its shadow are the desktop's own colours showing through. Windows and
+/// Linux have no transparent window, so the card's corners are filled in
+/// there and the shadow reads as a soft edge.
+#[must_use]
+pub fn transparent_window() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        true
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
 }
 
 /// Activate the macOS application.

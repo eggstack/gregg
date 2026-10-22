@@ -97,11 +97,13 @@ with no host at all: the GUI reports the reason and keeps running instead of
 dying.
 
 The transcript above is what run `39650126619` actually printed, and it is
-kept verbatim. One label has changed since: the tray item that opened the
-monitor window is now **Open Gregg**, because there is no separate monitor
-window to open — it opens the pulldown panel. The exercise **records** the
-menu labels it observes rather than asserting on them, so a fresh transcript
-appears in the GUI job's log on every push.
+kept verbatim. The menu has changed twice since: the entry that opened the
+monitor window was renamed **Open Gregg** when there was no separate monitor
+window to open, and **Plan 192 removed the launcher entirely** — the native
+menu now carries `Quit Gregg` and nothing else, the summary lives in the tray's
+**tooltip**, and the tray's **click** opens the pulldown. The exercise
+**records** the menu labels it observes rather than asserting on them, so a
+fresh transcript appears in the GUI job's log on every push.
 
 *The Windows leg* starts the real GUI, waits for its `tray=` line, and proves
 with `EnumWindows` that it created a **native top-level window** for its own
@@ -371,12 +373,12 @@ native Windows job, which is the authority. The Linux leg could not be
 cross-checked at all from macOS, because the fontconfig system library is not
 available for cross-compiling.
 
-### The interaction model is superseded by Plan 192, and two claims did not hold
+### The interaction model was replaced by Plan 192, and two claims did not hold
 
 Running the committed build on 2026-10-22 showed that the tray's native menu
 was a **launcher** for a separate window, so the content was not in the
 dropdown, and the window carrying it read as a small application rather than a
-popover. **Plan 192 replaces that interaction model**: the tray's *click* opens
+popover. **Plan 192 replaced that interaction model**: the tray's *click* opens
 the pulldown, and the pulldown carries the content. The mechanism is Slint's
 `SystemTrayIcon.clicked`, and a native menu with no entries detaches itself so
 the platform routes the click there instead of popping the menu — on macOS
@@ -401,6 +403,81 @@ And the **Wayland** path has never been executed: the CI Linux leg runs under
 `xvfb-run`, which is X11, while `winit/x11` *and* `winit/wayland` are both
 compiled in. Wayland is the modern GNOME default, so the pulldown's behaviour
 there is untested.
+
+### Plan 192's own run, on macOS
+
+Run on 2026-10-22 against the real `~/Library/Application Support/gregg/gregg.toml`
+and the repository's own `gregg` client, started through the `--panel` path —
+the path Plan 191 left unpositioned.
+
+```text
+gregg-gui: tray=available
+gregg-gui: pulldown=placed x=3412 y=36 width=420 height=658 area=8,36,3824x1036
+```
+
+That is the machine-readable placement line, and it says three things at once:
+the work area **is** available now, the position is **inside** it, and the size
+is the **content's** size (420×658 for a seven-host configuration) rather than
+a fixed rectangle. The window was then measured from the system's own window
+list — **420×658 at (3412, 62)** — and the card's 1 px border was measured on
+a screen capture at **y = 76**.
+
+**The 26 px between the requested top and the observed one is macOS's own
+window placement, and it is recorded rather than hidden.** `NSScreen.visibleFrame`
+puts the real menu bar's bottom edge at **30 pt** on this display; the work
+area's top edge is 36, which is the documented 28 pt shell-strip approximation
+plus the 8 px edge margin. A window requested *flush with that edge* is placed
+26 px lower by AppKit. A **remembered** position is honoured **exactly**:
+(2500, 120), (2300, 220), (3000, 200) and (3000, 50) were each requested and
+each observed at the same coordinates. So the operator's own placement is
+precise, and the default placement opens *clear of* the menu bar with a visible
+gap rather than under it. The pulldown was inside the work area in every
+observation.
+
+**The geometry round trip was observed end to end, not inferred.** The pulldown's
+header strip was dragged with synthesised pointer events, from (2600, 148) by
+(−200, +100); the window moved by exactly that delta and the state file appeared
+beside the config:
+
+```text
+position=2300,220
+size=500,600
+```
+
+The GUI was then stopped and started again with that file in place, and it
+opened at the remembered geometry rather than at the corner:
+
+```text
+gregg-gui: pulldown=placed x=2300 y=220 width=500 height=600 area=8,36,3824x1036
+```
+
+The state file is written when the operator **moves or resizes** the pulldown —
+the drag and the corner grip both raise `geometry-changed` — and not on the
+first placement, which is derived from the content and the work area and so has
+nothing to remember. `src/state.rs` reads it bounded (4 KiB) and validated and
+writes it atomically, and falls back to the default on a corrupt or
+out-of-range file; 13 unit tests cover that path.
+
+**What was measured about the dropdown's shape:** the card's corners are rounded
+(a 12 px radius), the three shadow layers are visible around it, the pointer is
+drawn toward the menu bar, and the pulldown is **transparent on macOS** — the
+window's own background is `#00000000` there and `Palette.background` everywhere
+else. Two renderer facts are now in the `.slint`: the software renderer's
+`draw_box_shadow` is an **empty stub**
+(`i-slint-renderer-software-1.18.1/lib.rs:3059`), so the shadow is drawn by
+hand as three translucent rounded rectangles; and a `Text` keeps its unwrapped
+width as a minimum unless `overflow: elide` is set, so every wrapping text in
+the pulldown carries `overflow: elide` — without it a long status line
+overflowed the pulldown on **both** sides.
+
+**What was not done:** no tray icon was clicked on any platform, so the
+**interactive** native acceptance is still outstanding, and the native tray
+exercises — which need Linux and Windows — were **updated** but not run against
+this change. The macOS Intel build was not produced, there is still no DPI
+measurement at 125 % or 150 %, and Wayland was never executed. The GUI's
+release binary is **11,929,712 bytes**, **+33,104 (+0.3%)** on Plan 191's
+11,896,608, with no new dependency in this workspace.
+
 
 ## The fixture
 

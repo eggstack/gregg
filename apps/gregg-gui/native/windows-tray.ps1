@@ -393,6 +393,53 @@ try {
     Write-Log "the GUI printed: $trayLine"
     Write-Log "NOTE: the notification-area icon itself is NOT observable on this runner (session 0, no explorer.exe)."
 
+    # --------------------------------------------------- the pulldown's placement
+    #
+    # The GUI reports where it put the pulldown and where it was allowed to
+    # put it, so the exercise can check the *position* and not only that a
+    # window appeared. The pulldown must be inside the work area it reported.
+    $placementLine = ""
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $combined = (Read-SharedFile $stdoutFile) + "`n" + (Read-SharedFile $stderrFile)
+        foreach ($line in ($combined -split "`r?`n")) {
+            if ($line -like "gregg-gui: pulldown=placed *") {
+                $placementLine = $line.Trim()
+                break
+            }
+        }
+        if ($placementLine -ne "") {
+            break
+        }
+        if ($guiProcess.HasExited) {
+            Fail "the GUI exited with code $($guiProcess.ExitCode) before reporting its pulldown's placement"
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    if ($placementLine -eq "") {
+        Write-Host (Read-SharedFile $stdoutFile)
+        Write-Host (Read-SharedFile $stderrFile)
+        Fail "the GUI never printed a `gregg-gui: pulldown=placed` line within $TimeoutSeconds seconds"
+    }
+    Write-Log "the GUI printed: $placementLine"
+    if ($placementLine -notmatch 'x=(-?[0-9.]+) y=(-?[0-9.]+) width=([0-9.]+) height=([0-9.]+) area=(-?[0-9.]+),(-?[0-9.]+),([0-9.]+)x([0-9.]+)') {
+        Fail "the GUI's placement line does not say where the pulldown is: $placementLine"
+    }
+    $pulldownX = [double]$Matches[1]
+    $pulldownY = [double]$Matches[2]
+    $pulldownWidth = [double]$Matches[3]
+    $pulldownHeight = [double]$Matches[4]
+    $areaLeft = [double]$Matches[5]
+    $areaTop = [double]$Matches[6]
+    $areaWidth = [double]$Matches[7]
+    $areaHeight = [double]$Matches[8]
+    if ($pulldownX -lt $areaLeft -or $pulldownY -lt $areaTop -or
+        ($pulldownX + $pulldownWidth) -gt ($areaLeft + $areaWidth) -or
+        ($pulldownY + $pulldownHeight) -gt ($areaTop + $areaHeight)) {
+        Fail "the pulldown is not inside the work area it reported: $placementLine"
+    }
+    Write-Log "the pulldown is inside the work area it reported"
+
     # ------------------------------------------------------- the native window
     $windows = @()
     $deadline = (Get-Date).AddSeconds(30)

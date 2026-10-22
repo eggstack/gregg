@@ -54,8 +54,9 @@ pub const MAX_ENDPOINT_CHARS: usize = 40;
 
 /// The most hosts the tray summary will name.
 ///
-/// The full list belongs in the window; a native menu that lists every host in
-/// a large fleet is unusable and unbounded.
+/// The summary is one line, and it is the tray's hover text as well as the
+/// pulldown's header: a line that named every host in a large fleet would be
+/// unreadable in both. The full list is in the pulldown.
 pub const MAX_TRAY_HOSTS: usize = 5;
 
 /// How the GUI is connected to the client daemon.

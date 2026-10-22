@@ -10,7 +10,7 @@ depends on it, and the terminal client is unaffected by its existence.
 
 ## Status
 
-Plans 188, 189 and 191 are implemented. What exists:
+Plans 188, 189, 191 and 192 are implemented. What exists:
 
 - an independent Cargo workspace with its own lockfile;
 - a Slint UI definition (`src/ui/main.slint`) with a `Pulldown` and a
@@ -20,67 +20,38 @@ Plans 188, 189 and 191 are implemented. What exists:
 - a **pure projection** (`src/model.rs`) from a daemon document to a typed view
   model, with the truthfulness rules (absent is absent, unpolled is not
   offline, selection is keyed by stable id) testable without a desktop session;
-- a **native system-tray entry** with a fleet summary, the hosts the menu can
-  jump to, Open Gregg, Reload, About Gregg and Quit Gregg;
-- **one tray pulldown** (`Pulldown`): a borderless, always-on-top panel that
-  opens from the tray menu and carries the fleet summary, the host list, the
-  selected host's metrics, drives and interfaces, its scheduler jobs and
-  records, and the `EggPool` plane. There is **no separate monitor window**.
-  The lists that grow with the fleet — the hosts, the metrics and the
-  scheduler jobs — are **scrollable with bounded heights**, so a large fleet
-  cannot push the cron and `EggPool` panes, or the buttons, out of the panel;
-- **host management** in the panel: add, remove, rename and re-point a host.
-  The panel writes the configuration through the **CLI's own library code**
-  against the same `ConfigStore`, so the endpoint grammar, the config lock,
-  the whole-config validation and the atomic write are the CLI's, unchanged;
-- a **placement module** (`src/placement.rs`) that keeps the panel on the
-  display it opens on, and remembers where the operator put it;
+- a **native system-tray entry** whose **click opens the pulldown**. The
+  native menu is the *context* menu — a right-click reaches it — and it
+  carries `Quit Gregg` and nothing else. On macOS it is **detached entirely**,
+  because AppKit pops an attached menu on the very click that is supposed to
+  open the pulldown;
+- **one tray pulldown** (`Pulldown`): a borderless, always-on-top, rounded
+  card with a soft shadow and a pointer toward the tray item. It carries the
+  fleet summary, the host list, the selected host's metrics, drives and
+  interfaces, its scheduler jobs and records, the `EggPool` plane, the host
+  add/remove/edit forms, and the application's own `Reload`, `About` and
+  `Quit`. There is **no separate monitor window**. The lists that grow with
+  the fleet — the hosts and the detail — are **scrollable with bounded
+  heights**, so a large fleet cannot push the cron and `EggPool` panes out of
+  the pulldown;
+- a pulldown that is **sized to its content** and **placed by the platform's
+  convention**: it opens in the trailing corner of the work area, and the
+  operator's own placement is **remembered across restarts** in a small state
+  file beside the configuration;
+- **host management** in the pulldown: add, remove, rename and re-point a
+  host. The pulldown writes the configuration through the **CLI's own library
+  code** against the same `ConfigStore`, so the endpoint grammar, the config
+  lock, the whole-config validation and the atomic write are the CLI's,
+  unchanged;
+- a **placement module** (`src/placement.rs`) that keeps the pulldown on the
+  display it opens on, remembers where the operator put it, and owns the
+  pulldown's measurements;
 - a **no-tray fallback**: the GUI asks the desktop whether it has a tray,
   reports the answer in one machine-readable line, and never hides its only
   control surface when the answer is no (see [A desktop with no system
   tray](#a-desktop-with-no-system-tray));
 - an entry point (`src/main.rs`) that wires the two together and runs the
   Slint event loop.
-
-> ### The interaction model is moving — Plan 192
->
-> Everything above describes the build as it stands. **Plan 192 changes how the
-> operator gets to it.**
->
-> The tray's native menu today is a **launcher**: it offers a summary, a flat
-> list of host jump entries, and `Open Gregg`, and `Open Gregg` opens a
-> **separate** window that carries the content. So the content is not in the
-> dropdown, and the window that holds it reads as a small application rather
-> than a popover.
->
-> A native menu cannot host arbitrary Slint content — that part is true — but
-> the content does not have to live in a *separately opened* window. Slint's
-> `SystemTrayIcon` also has a **`clicked`** callback, and a native menu with no
-> entries **detaches itself**, so the platform routes the tray's click to that
-> callback instead of popping the menu: on macOS
-> (`i-slint-core-1.18.1/items/system_tray/appkit.rs:248`), on Windows
-> (`windows.rs:290-298`, where a right-click still opens the native menu), and on
-> Linux (`ksni.rs:284`, where the desktop decides the gesture).
->
-> So the direction is: **the tray's click opens the pulldown, and the pulldown
-> carries the content**. The `Open Gregg` launcher entry goes; on macOS there
-> is no native menu at all, and the pulldown carries `Reload`, `About` and
-> `Quit`. The pulldown is still a Slint window, because a native menu cannot
-> host Slint widgets, and it is still anchored to the platform's trailing
-> corner, because Slint 1.18 does not expose the tray item's position.
->
-> Two defects found while reproducing this are in the same plan's scope:
->
-> - **the panel is never positioned on the startup path.** Slint's
->   `with_winit_window` "will only succeed when the event loop is active", and
->   the startup path calls it before the event loop runs, so `work_area()`
->   returns `None`: the panel is not positioned, not clamped to the work area,
->   and its size is not clamped either. It lands wherever the window manager
->   puts it. Deferring the first open into the event loop fixes it.
-> - **the position and size are not kept across a restart.** They live in
->   `UiState`, in memory, and the GUI writes no state file — so the claim that
->   the panel "remembers where the operator put it" is true for one session and
->   false across a restart.
 
 Plan 190 owns native cross-platform qualification, the footprint measurement
 and the packaging decision. A corrective pass on 2026-10-21 fixed the
@@ -96,23 +67,64 @@ Linux**, and it is **not shipped for any target** — it stays a source build.
 The plan's *Release qualification* section lists what is outstanding.
 
 **Plan 191 is implemented.** The product direction is a **single tray
-pulldown**: one borderless, always-on-top panel opened from the native tray
-menu, carrying all the metrics, cron and `EggPool` surfaces the compact
-monitor window carried, with the separate monitor window dropped. The same
-plan adds host **add / remove / edit** to that panel, which the GUI could not
-do before: it writes the config through the **CLI's own library code** against
-the same `ConfigStore`, so no protocol change and no second poller is
-involved. Plan 191 also **retains Slint 1.18.1** after reviewing the
-alternatives — it is the latest published release and the only Rust option
-with a first-class native tray, and the measured footprint is the software
-renderer's rather than the window's. See
+pulldown**: one borderless, always-on-top panel carrying all the metrics,
+cron and `EggPool` surfaces the compact monitor window carried, with the
+separate monitor window dropped. The same plan adds host **add / remove /
+edit** to that panel, which the GUI could not do before: it writes the config
+through the **CLI's own library code** against the same `ConfigStore`, so no
+protocol change and no second poller is involved. Plan 191 also **retains
+Slint 1.18.1** after reviewing the alternatives — it is the latest published
+release and the only Rust option with a first-class native tray, and the
+measured footprint is the software renderer's rather than the window's. See
 `plans/191-tray-pulldown-gui-and-host-management.md`.
+
+**Plan 192 is implemented.** It **reverses the interaction model** Plan 191
+built. The tray's native menu was a *launcher*: it offered a summary, a flat
+list of host jump entries and `Open Gregg`, and `Open Gregg` opened a
+**separate** window that carried the content — so the content was not in the
+dropdown, and the window that held it read as a small application rather
+than a popover.
+
+A native menu cannot host arbitrary Slint content — that part is true — but
+the content does not have to live in a *separately opened* window. Slint's
+`SystemTrayIcon` also has a **`clicked`** callback, and a native menu with no
+entries **detaches itself**, so the platform routes the tray's click to that
+callback instead of popping the menu: on macOS
+(`i-slint-core-1.18.1/items/system_tray/appkit.rs:248`), on Windows
+(`windows.rs:290-298`, where a right-click still opens the native menu), and on
+Linux (`ksni.rs:284`, where the desktop decides the gesture).
+
+So the direction is now: **the tray's click opens the pulldown, and the
+pulldown carries the content**. The `Open Gregg` launcher entry and the host
+jump entries are gone; on macOS there is no native menu at all, and the
+pulldown carries `Reload`, `About` and `Quit`. The pulldown is still a Slint
+window, because a native menu cannot host Slint widgets, and it is still
+anchored to the platform's trailing corner, because Slint 1.18 does not expose
+the tray item's position.
+
+Plan 192 also closed two defects that reproducing the complaint exposed:
+
+- **the panel was never positioned on the startup path.** Slint's
+  `with_winit_window` "will only succeed when the event loop is active", and
+  the startup path called it before the event loop ran, so `work_area()`
+  returned `None`: the panel was not positioned, not clamped to the work area,
+  and its size was not clamped either. It landed wherever the window manager
+  put it. The first open is now deferred into the event loop, and the
+  placement is retried for a bounded number of ticks until the native window
+  exists.
+- **the position and size were not kept across a restart.** They lived in
+  `UiState`, in memory, and the GUI wrote no state file — so the claim that
+  the panel "remembers where the operator put it" was true for one session and
+  false across a restart. The geometry now lives in `<config>.gui-state`
+  beside the configuration, and the read is bounded and validated.
+
+See `plans/192-tray-pulldown-carries-the-panel.md`.
 
 Plan 191's own acceptance gate is **not** fully closed: the **interactive**
 native-platform runs are still outstanding, exactly as they were for Plan 190.
-The panel has been built and its logic is covered by tests on all three
-targets, but nobody has yet opened it from a real macOS menu bar, a real
-Windows notification area or a real GNOME session.
+The pulldown has been built and its logic is covered by tests on all three
+targets, but nobody has yet clicked a real macOS menu bar icon, a real
+Windows notification-area icon or a real GNOME session's tray icon.
 
 ## Running it
 
@@ -163,8 +175,8 @@ The GUI reports what happened rather than looking healthy:
 | State | What the operator sees |
 | ----- | ---------------------- |
 | Connecting | `connecting to the client daemon…` |
-| Attached | `connected to <daemon id>` |
-| The daemon could not be reached | The disconnect reason, verbatim, in the window's status line. |
+| Attached | **Nothing.** A healthy attachment has nothing to report, and a line that reports nothing is chrome. The daemon's identity is not reported either: it is a hash that means nothing to an operator looking at a pulldown. |
+| The daemon could not be reached | The disconnect reason, verbatim, in the pulldown's status line. |
 | The daemon speaks another local protocol version | An explicit *incompatible* state — **not** "disconnected", because a version mismatch is not a network problem. |
 | The daemon is shutting down | The shutdown reason, and the connection state is not stale-green. |
 | A host has never been polled | `pending` — **never** `offline`, and never `0.00`. |
@@ -184,24 +196,31 @@ AppIndicator.
   invisible.
 - The icon is drawn procedurally. No binary asset is committed, so it cannot
   go stale.
-- The menu contains a **bounded** fleet summary (the counts plus at most a
-  handful of host names), the **hosts the menu can jump to**, then Open Gregg,
-  Reload, About Gregg and Quit Gregg. The full list belongs in the panel, not
-  in a native menu.
-- On a desktop with **no tray service**, the panel is still shown on launch,
+- **The click opens the pulldown.** The pulldown is the surface: it carries
+  the fleet, the metrics, the cron, the `EggPool` plane, the forms and the
+  application's own actions.
+- The **hover text** carries a **bounded** fleet summary (the counts plus at
+  most a handful of host names), so the tray alone tells the operator what the
+  fleet is doing.
+- The **native menu** is the *context* menu: a right-click reaches it, and it
+  carries `Quit Gregg` and nothing else. On **macOS** it is **detached
+  altogether** — AppKit attaches a menu to the status item and pops it on the
+  click, which would swallow the click that is supposed to open the
+  pulldown — so on macOS the pulldown's own `Quit` is the only way out.
+- On a desktop with **no tray service**, the pulldown is still shown on launch,
   so the GUI is never an invisible background process with no way to quit.
   See [A desktop with no system
   tray](#a-desktop-with-no-system-tray) below: the GUI asks the desktop
-  whether it has a tray, and it does not hide its only panel when it has not.
+  whether it has a tray, and it does not hide its only surface when it has not.
 
 ### A desktop with no system tray
 
 On Linux the tray is a `StatusNotifierItem`, and the desktop has to run a
 **host** for it — the panel, the GNOME Shell extension, and so on. A desktop
 without one has no tray at all, and Slint fails to register **silently**: the
-icon simply never appears. That is a trap, because the panel's close control
-*dismisses* the panel, so on such a desktop closing it would leave an
-invisible, unquittable GUI with the daemon still polling.
+icon simply never appears. That is a trap, because the pulldown's close
+control *dismisses* the pulldown, so on such a desktop closing it would leave
+an invisible, unquittable GUI with the daemon still polling.
 
 So the GUI asks the desktop, and answers in one machine-readable line:
 
@@ -209,6 +228,16 @@ So the GUI asks the desktop, and answers in one machine-readable line:
 gregg-gui: tray=available
 gregg-gui: tray=unavailable reason="no StatusNotifierItem host on this desktop"
 ```
+
+And when the pulldown has been placed, one line says where it went and where it
+was allowed to go:
+
+```text
+gregg-gui: pulldown=placed x=3412 y=36 width=420 height=658 area=8,36,3824x1036
+```
+
+That is what the native tray exercises assert on: they check the **position**,
+not only that a window appeared.
 
 - **macOS and Windows** always have a tray: their native APIs always work.
 - **Linux** asks the session bus whether the
@@ -218,14 +247,14 @@ gregg-gui: tray=unavailable reason="no StatusNotifierItem host on this desktop"
   answer: the operator keeps a window that quits instead of a window that
   vanishes.
 
-With no tray, the panel says so in a line of its own, and **closing the panel
-ends the GUI** instead of hiding it. With a tray, closing hides the panel and
-the tray brings it back, exactly as before.
+With no tray, the pulldown says so in a line of its own, and **closing the
+pulldown ends the GUI** instead of hiding it. With a tray, closing hides the
+pulldown and the tray's click brings it back, exactly as before.
 
-The decision is taken when the panel is closed, not at startup: a tray host
+The decision is taken when the pulldown is closed, not at startup: a tray host
 can start after the desktop session is up, and Slint retries the registration
-whenever the icon is set again. The panel's warning line is refreshed when
-the panel comes back, so it cannot keep claiming there is no tray after one
+whenever the icon is set again. The pulldown's warning line is refreshed when
+the pulldown comes back, so it cannot keep claiming there is no tray after one
 appears.
 
 The classification, the close decision and the status line are **pure
@@ -237,53 +266,91 @@ outcomes, and the exact shape of the line a CI job asserts on.
 
 | Where | Action | Effect |
 | ----- | ------ | ------ |
-| Tray | A host entry | Opens the panel with that host selected. |
-| Tray | Open Gregg | Opens the panel, or closes it if it is already open. |
-| Tray | Reload | The `Ctrl-R` boundary: the daemon re-reads its configuration and polls immediately. |
-| Tray | About Gregg | Opens the panel and shows the licence attribution in it. |
-| Tray | Quit Gregg | Ends the GUI. The client daemon keeps running. |
-| Panel | Click a host row | Selects that host. The selection is keyed by the stable system id, so a host that reorders does not move the selection. |
-| Panel | Click a scheduler job | Opens that job's retained records. Only an open job asks the daemon for history; closing the view releases the intent. |
-| Panel | Reload / Add host / EggPool / About / Quit buttons | The same actions as the tray items. The `EggPool` button opens and closes the `EggPool` plane, and the intent is sent only while it is open. |
-| Panel | A host row's **Edit** button | Opens the form that renames the host, or that re-points it at another endpoint. |
-| Panel | A host row's **Remove** button | Removes the host from the configuration. |
-| Panel | **Add host** | Opens the form that adds a host. |
-| Panel | **Close** (in the header strip) | **Hides** the panel, and the tray brings it back. On a desktop with **no tray** it **ends the GUI** instead — a hidden panel with no tray is an application you can no longer reach. |
-| Panel | **Esc** | The same as Close. |
-| Panel | The header strip | **Drags** the panel. The panel has no window frame, so it has no title bar to drag. |
-| Panel | The grip in the bottom-right corner | **Resizes** the panel. |
-| Panel | Quit button | Ends the GUI. The client daemon keeps running. |
+| Tray | **Click the icon** | Opens the pulldown, or dismisses it if it is already open. |
+| Tray | Right-click → `Quit Gregg` | Ends the GUI. The client daemon keeps running. |
+| Pulldown | Click a host row | Selects that host. The selection is keyed by the stable system id, so a host that reorders does not move the selection. |
+| Pulldown | Click a scheduler job | Opens that job's retained records. Only an open job asks the daemon for history; closing the view releases the intent. |
+| Pulldown | `Reload` | The `Ctrl-R` boundary: the daemon re-reads its configuration and polls immediately. |
+| Pulldown | `Add host` | Opens the form that adds a host. |
+| Pulldown | `EggPool` | Opens and closes the `EggPool` plane. The intent is sent only while it is open. |
+| Pulldown | `About` | Shows the licence attribution in the pulldown. |
+| Pulldown | `Quit` | Ends the GUI. The client daemon keeps running. |
+| Pulldown | The selected host's `Edit` | Opens the form that renames the host, or that re-points it at another endpoint. |
+| Pulldown | The selected host's `Remove` | Removes the host from the configuration. |
+| Pulldown | **×** (in the header strip) | **Hides** the pulldown, and the tray brings it back. On a desktop with **no tray** it **ends the GUI** instead — a hidden pulldown with no tray is an application you can no longer reach. |
+| Pulldown | **Esc** | The same as ×. |
+| Pulldown | The header strip | **Drags** the pulldown. It has no window frame, so it has no title bar to drag. |
+| Pulldown | The grip in the bottom-right corner | **Resizes** it. |
 
-Every action is reachable by pointer, and the panel never becomes the only way
-to quit.
+The host's own actions are **the pulldown's affordances**, aimed at the
+*selected* host. They are not on every row: a button on every row crowds the
+row and blurs into the selection tint.
 
-### How the panel is dismissed
+Every action is reachable by pointer, and the pulldown never becomes the only
+way to quit.
 
-**`Esc`, the tray's Open Gregg entry, and the panel's own Close control.** That
-is the whole list.
+### The pulldown's shape and size
+
+A dropdown has a shape, and this one draws its own.
+
+- It is a **rounded card** with a **one-pixel outline** and a **soft shadow**
+  behind it. Slint's software renderer does not implement drop shadows — its
+  `draw_box_shadow` is an empty stub — so the shadow is drawn: three rounded
+  rectangles behind the card, each a little larger and fainter than the last.
+- A **pointer** points at the tray item: a triangle on the card's edge, drawn
+  twice — once in the card's outline colour and a little larger, once in the
+  card's own colour on top — so it has an edge even where the window cannot be
+  transparent. It points **up** where the tray is at the top of the screen
+  (macOS, Linux) and **down** where the tray is at the bottom (Windows).
+- On **macOS** the window is transparent, so the rounded corners and the
+  shadow are the desktop's own colours showing through. **Windows and Linux**
+  have no transparent window, so the background is the card's own colour and
+  the shadow reads as a soft edge instead. That is a platform limit, not a
+  choice.
+- The **size follows the content**: a fleet of one host is a short pulldown
+  and a fleet of twenty is a taller one, up to the bounds the panes have. The
+  height is *computed* rather than measured, because Slint 1.18 cannot report
+  a layout's preferred size back to a `.slint` file.
+- The pulldown opens in the **trailing corner of the work area** — the
+  platform's convention — and the operator's own placement is **remembered
+  across restarts** in `<config>.gui-state` beside the configuration. The read
+  is bounded and validated: a file that is missing, too large or malformed
+  means the operator has not left a placement yet, and the pulldown opens
+  where the convention says.
+- On **macOS** the default placement opens a little clear of the menu bar
+  rather than flush under it: AppKit places a window whose content is
+  requested flush with the work area's top edge **26 px lower**. A placement
+  the operator chose is honoured **exactly**, so this affects the first open
+  only.
+
+### How the pulldown is dismissed
+
+**`Esc`, the tray's click, and the pulldown's own × control.** That is the
+whole list.
 
 There is **no click-away dismissal**, and that is a real limitation rather than
 an oversight. Slint 1.18 exposes no "the window lost focus" event: a window
-cannot be told that the click landed somewhere else, so a panel cannot close
-itself when the operator clicks the desktop behind it. The panel is also
+cannot be told that the click landed somewhere else, so a pulldown cannot close
+itself when the operator clicks the desktop behind it. The pulldown is also
 `always-on-top`, so it stays over whatever is behind it.
 
 The consequences are worth stating plainly:
 
-- a panel left open stays open until it is dismissed deliberately;
-- `Esc` works, because the panel's own focus scope handles the key, and the
+- a pulldown left open stays open until it is dismissed deliberately;
+- `Esc` works, because the pulldown's own focus scope handles the key, and the
   key reaches it even when a text field has the focus.
 
-On a desktop with **no tray**, `Esc` and Close end the GUI instead, because a
-hidden panel with no tray is an application the operator can no longer reach.
+On a desktop with **no tray**, `Esc` and the × end the GUI instead, because a
+hidden pulldown with no tray is an application the operator can no longer
+reach.
 
 ### Host management
 
-The panel can **add**, **remove**, **rename** and **re-point** the hosts in the
-configuration file.
+The pulldown can **add**, **remove**, **rename** and **re-point** the hosts in
+the configuration file.
 
 It writes that file through the **CLI's own library code** — `gregg::cli::dispatch`
-against the same `ConfigStore` the daemon reads — so the panel inherits the
+against the same `ConfigStore` the daemon reads — so the pulldown inherits the
 CLI's exact behaviour rather than a second copy of its rules:
 
 | Rule | Where it comes from |
@@ -296,13 +363,13 @@ CLI's exact behaviour rather than a second copy of its rules:
 | Two writers cannot interleave | the store's lock, the same one the CLI takes |
 
 A **refused** mutation leaves the configuration **byte-identical** and says why
-in the panel. A successful one asks the daemon to re-read its configuration at
-its own reload boundary, and the daemon republishes.
+in the pulldown. A successful one asks the daemon to re-read its configuration
+at its own reload boundary, and the daemon republishes.
 
 **Changing a host's endpoint is a replacement, not an edit.** The endpoint is
 part of a host's identity, so the host gets a new stable id and its selection
-and history do not follow it. The panel says so before it applies one, and the
-confirming button is labelled **Replace endpoint** rather than Save, so the
+and history do not follow it. The pulldown says so before it applies one, and
+the confirming button is labelled **Replace endpoint** rather than Save, so the
 replacement is the operator's explicit choice. The new endpoint is added
 **before** the old one is removed, so a refusal — a malformed endpoint, or one
 that is already configured — happens before anything is removed.
@@ -311,18 +378,18 @@ that is already configured — happens before anything is removed.
 host's identity, because the endpoint — the thing the identity is made of —
 did not move. An empty name field clears the configured name.
 
-The panel is a **second writer of the configuration file**, never a second
+The pulldown is a **second writer of the configuration file**, never a second
 writer of fleet state. The client daemon remains the only poller and the only
 owner of the fleet's state.
 
 ### Application activation
 
-On macOS the application **activates itself** before it raises the pulldown
-panel. This is not decoration: a tray application is a *background*
+On macOS the application **activates itself** before it raises the pulldown.
+This is not decoration: a tray application is a *background*
 application, macOS does not activate the app that owns an `NSStatusItem` menu,
 and a background app cannot bring its own window to the front. Without the
-activation, "Open Gregg" from the tray does nothing at all when the GUI was
-launched the way a real one is launched — a login item, a launcher, an agent.
+activation, the tray's click does nothing at all when the GUI was launched the
+way a real one is launched — a login item, a launcher, an agent.
 
 Slint 1.18 exposes no activation API, so `src/platform.rs` calls
 `NSApplication activateIgnoringOtherApps:` through the `objc2`/`objc2-app-kit`
@@ -769,12 +836,13 @@ apps/gregg-gui/
 ├── build.rs              # slint_build::compile("src/ui/main.slint")
 ├── dependency-tree.txt   # the full resolved tree
 ├── src/
-│   ├── main.rs           # entry point: the panel, the tray, wiring, the render push
+│   ├── main.rs           # entry point: the pulldown, the tray, wiring, the render push
 │   ├── bridge.rs         # the client-daemon attachment, the intents, the frame pump
 │   ├── model.rs          # the pure FrontendSnapshot -> GuiViewModel projection
 │   ├── hosts.rs          # the configuration mutations, behind an injectable seam
-│   ├── placement.rs      # where the panel opens, and how far it may be moved
-│   ├── platform.rs       # the per-desktop bits: macOS application activation
+│   ├── placement.rs      # where the pulldown opens, how big it is, how far it may be moved
+│   ├── platform.rs       # the per-desktop bits: macOS application activation, the tray's menu
+│   ├── state.rs          # where the operator left the pulldown, between runs
 │   └── ui/
 │       └── main.slint    # the Pulldown and the SystemTrayIcon
 └── vendor/
@@ -782,7 +850,7 @@ apps/gregg-gui/
     └── annotate-snippets/
 ```
 
-### The four layers
+### The layers
 
 - **`model.rs` is pure.** One daemon document in, one view model out. No
   threads, no channels, no Slint. Every rule the GUI keeps — absent is absent,
@@ -803,9 +871,17 @@ apps/gregg-gui/
 - **`hosts.rs` owns the configuration mutations.** It describes what the
   operator asked for and performs it through the CLI's own library code,
   behind a seam a test can replace. It never writes a file by itself.
-- **`placement.rs` owns where the panel opens.** The work area, the anchor and
-  the clamping are pure functions, so they are tested without a desktop
-  session.
+- **`placement.rs` owns where the pulldown opens and how big it is.** The work
+  area, the anchor and the clamping are pure functions, so they are tested
+  without a desktop session. Slint 1.18 cannot report a layout's preferred
+  size to a `.slint` file, so the pulldown's height is *computed* from the
+  rows the model has; the numbers the computation uses are written down in
+  `placement::metrics`, and a test checks them against the `.slint` file so
+  the two cannot drift apart.
+- **`state.rs` owns where the operator left the pulldown.** The geometry is
+  written to `<config>.gui-state` beside the configuration, and the read is
+  bounded and validated: a file that is missing, too large or malformed means
+  the operator has not left a placement yet.
 
 ## Slint 1.18 notes worth knowing
 
@@ -814,9 +890,17 @@ apps/gregg-gui/
   component does not share `Globals` with a window-rooted one — each instance
   gets its own copy of every global, so shared state has to be pushed into
   each of them explicitly.
-- A `SystemTrayIcon` must contain **exactly one `Menu` child**, the menu may
-  not be inside an `if` or a `for`, and no other child element types are
-  allowed in it.
+- A `SystemTrayIcon` must contain **exactly one `Menu` child**, and no other
+  child element types are allowed in it. The menu **may** be inside an `if`:
+  Slint 1.18 lowers a conditional menu to a shadow tree that is switched on
+  and off with the condition (`i-slint-compiler-1.18.1/passes/lower_menus.rs`),
+  and a menu with **no entries** makes the platform detach it — which is how
+  the macOS status item is left with no menu, and so with a click that reaches
+  the tray's `clicked` callback.
+- The tray's `clicked` callback belongs to the `SystemTrayIcon` **item**, and a
+  derived component does not re-export an inherited item's callback to the
+  language binding: there is no `on_clicked` in Rust. Declare a callback of
+  your own and forward the inherited one to it (`TrayIcon.tray-clicked`).
 - A tray-rooted component has **no `run()`** and no window accessor; it is
   shown with `show()`/`hide()` (which set its `visible` property), and it
   keeps the event loop alive on its own.

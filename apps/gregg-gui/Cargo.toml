@@ -98,8 +98,8 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", 
 # application does not bring the window to the front, and an `NSStatusItem`
 # menu does not activate the app that owns it. A tray application launched the
 # way a real one is launched — a login item, a launcher, a login-item agent —
-# is a background application from its first moment, so "Open Gregg" from
-# the tray would do nothing at all. The fix is `NSApplication
+# is a background application from its first moment, so opening the pulldown
+# from the tray would do nothing at all. The fix is `NSApplication
 # activateIgnoringOtherApps:`, which Slint 1.18 does not expose.
 #
 # The feature set is minimal (`default-features = false`): only `NSApplication`

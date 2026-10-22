@@ -39,7 +39,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use slint::{ComponentHandle, SharedString};
 
@@ -48,6 +48,7 @@ mod hosts;
 mod model;
 mod placement;
 mod platform;
+mod state;
 
 #[cfg(test)]
 mod evidence;
@@ -74,6 +75,17 @@ Gregg is MIT licensed; see the project repository.";
 
 /// How many scheduler records the GUI asks the daemon to publish.
 const CRON_DISPLAY_HISTORY: usize = 5;
+
+/// How many times the pulldown's placement is retried.
+///
+/// The work area is read from the pulldown's native window, and the native
+/// window is created by the event loop. A handful of ticks is enough for the
+/// loop to resume it, and the bound keeps a window that never appears from
+/// turning into an endless retry.
+const PLACEMENT_ATTEMPTS: u8 = 20;
+
+/// The gap between two placement attempts.
+const PLACEMENT_RETRY: Duration = Duration::from_millis(16);
 
 /// What the panel is showing.
 ///
@@ -182,10 +194,10 @@ fn usage() -> String {
      The GUI is a frontend: it attaches to the per-config client daemon and\n\
      renders what that daemon already polls. It never polls the fleet itself.\n\
      \n\
-     The GUI is a tray pulldown: the panel opens from the system tray's menu,\n\
-     and it carries the fleet, the metrics and the forms that add, remove and\n\
-     edit hosts. Press Esc, use the tray's Open Gregg entry again, or use the\n\
-     panel's Close button to dismiss it."
+     The GUI is a tray pulldown: clicking the tray's icon opens the pulldown,\n\
+     and the pulldown carries the fleet, the metrics and the forms that add,\n\
+     remove and edit hosts. Click the tray's icon again, or press Esc, to\n\
+     dismiss it."
         .to_owned()
 }
 
@@ -295,10 +307,25 @@ fn main() {
     let panel = Pulldown::new().expect("the panel component is constructible");
     let tray = TrayIcon::new().expect("the tray component is constructible");
     tray.set_tray_icon(tray_icon(TrayHealth::Pending));
+    // macOS carries no native menu: a menu attached to the status item
+    // swallows the click that opens the pulldown.
+    tray.set_native_menu(platform::native_tray_menu());
+    panel.set_transparent_window(platform::transparent_window());
+    panel.set_pointer_at_top(matches!(
+        placement::Anchor::for_platform(),
+        placement::Anchor::TopRight
+    ));
     panel.set_tray_warning(platform::tray_warning_text(&tray_support).into());
+
+    // Where the operator left the pulldown is remembered across restarts: it
+    // is read from a small file beside the configuration.
+    let geometry_path = state::path_for(&options.config);
+    let geometry = state::load(&geometry_path);
 
     let state: Arc<Mutex<UiState>> = Arc::new(Mutex::new(UiState {
         connection: ConnectionState::Connecting,
+        panel_position: geometry.position,
+        panel_size: geometry.size,
         ..UiState::default()
     }));
 
@@ -603,57 +630,39 @@ fn main() {
             .set_size(slint::LogicalSize::new(width, height));
     });
 
-    // ------------------------------------------------------- the tray's menu
+    // The placement is remembered across restarts: the operator's position
+    // and size are written to a small file beside the configuration, and read
+    // back at startup.
     let callback_state = Arc::clone(&state);
-    let callback_panel = panel.as_weak();
-    tray.on_toggle_panel(move || {
-        let Ok(mut state) = callback_state.lock() else {
+    let callback_path = geometry_path.clone();
+    panel.on_geometry_changed(move || {
+        let Ok(state) = callback_state.lock() else {
             return;
         };
-        if state.panel_visible {
-            state.panel_visible = false;
-            if let Some(panel) = callback_panel.upgrade() {
-                let _ = panel.hide();
-            }
+        let geometry = state::PanelGeometry {
+            position: state.panel_position,
+            size: state.panel_size,
+        };
+        if geometry.is_empty() {
             return;
         }
-        state.panel_visible = true;
-        if let Some(panel) = callback_panel.upgrade() {
-            show_pulldown(&panel, &mut state);
+        if let Err(error) = state::store(&callback_path, geometry) {
+            eprintln!("gregg-gui: cannot remember the pulldown's placement: {error}");
         }
     });
 
-    let callback_bridge = Arc::clone(&bridge);
-    tray.on_refresh_requested(move || {
-        callback_bridge.request_reload();
-    });
-
+    // ------------------------------------------------------- the tray's click
+    // The tray's **click** opens the pulldown, and the pulldown carries the
+    // content: the fleet, the metrics, the cron, the records, the `EggPool`
+    // plane and the forms. The native menu is the context menu where there is
+    // one, and it carries `Quit` and nothing else.
     let callback_state = Arc::clone(&state);
     let callback_panel = panel.as_weak();
-    tray.on_about_requested(move || {
-        if let Some(panel) = callback_panel.upgrade() {
-            panel.set_about_text(SLINT_ATTRIBUTION.into());
-        }
-        let Ok(mut state) = callback_state.lock() else {
+    tray.on_tray_clicked(move || {
+        let Some(panel) = callback_panel.upgrade() else {
             return;
         };
-        state.panel_visible = true;
-        if let Some(panel) = callback_panel.upgrade() {
-            show_pulldown(&panel, &mut state);
-        }
-    });
-
-    let callback_state = Arc::clone(&state);
-    let callback_panel = panel.as_weak();
-    tray.on_host_jump(move |id| {
-        let Ok(mut state) = callback_state.lock() else {
-            return;
-        };
-        state.selection.selected_id = Some(id.to_string());
-        state.panel_visible = true;
-        if let Some(panel) = callback_panel.upgrade() {
-            show_pulldown(&panel, &mut state);
-        }
+        toggle_pulldown(&panel, &callback_state);
     });
 
     tray.on_quit_requested(move || {
@@ -668,12 +677,21 @@ fn main() {
     // `--panel` opens it whatever the desktop has: an operator who launches
     // the GUI that way wants to see it, and the native exercises need a
     // panel on screen to prove the windowing works on that platform.
+    //
+    // The first open waits for the event loop. The pulldown's placement is
+    // read from the display its *native* window is on, and the native window
+    // does not exist until the event loop has resumed it — so an open before
+    // the loop starts is a panel the window manager places by guesswork, and
+    // it lands under the menu bar.
     if options.panel || platform::tray_support() != platform::TraySupport::Available {
-        let Ok(mut state) = state.lock() else {
-            return;
-        };
-        state.panel_visible = true;
-        show_pulldown(&panel, &mut state);
+        let weak = panel.as_weak();
+        let state = Arc::clone(&state);
+        slint::Timer::single_shot(Duration::ZERO, move || {
+            let Some(panel) = weak.upgrade() else {
+                return;
+            };
+            show_pulldown(&panel, &state);
+        });
     }
 
     // The first drain happens after the event loop is running, so a message
@@ -690,42 +708,24 @@ fn main() {
     }
 }
 
-/// Bring the pulldown up, and say what the desktop's tray is now.
+/// Bring the pulldown up, and place it on the display.
 ///
 /// The application is activated *before* the panel is shown. On macOS a
 /// background application cannot bring its own window to the front, and a
-/// tray application is a background application — so without this, "Open
-/// Gregg" from the tray does nothing at all when the GUI was launched the
-/// way a real one is launched.
-///
-/// The panel is placed inside the display it opens on, and it keeps the
-/// position and the size the operator last gave it.
+/// tray application is a background application — so without this, the
+/// pulldown does not come to the front when the tray's click opens it.
 ///
 /// The tray state is re-probed when the panel comes back: a
 /// `StatusNotifierItem` host can start after the GUI did, and the panel must
 /// not keep claiming there is no tray when there is one by now. The probe
 /// runs off the UI thread, so a slow session bus never freezes the panel.
-fn show_pulldown(panel: &Pulldown, state: &mut UiState) {
+fn show_pulldown(panel: &Pulldown, state: &Arc<Mutex<UiState>>) {
     platform::activate();
-
-    // The size and the position are the operator's, if they have been set.
-    let area = placement::work_area(panel.window());
-    let size = placement::panel_size(state.panel_size, area.as_ref());
-    if state.panel_size != Some((size.width, size.height)) {
-        state.panel_size = Some((size.width, size.height));
+    if let Ok(mut state) = state.lock() {
+        state.panel_visible = true;
     }
-    panel.window().set_size(size);
-
-    if let Some(position) = placement::open_position(
-        state.panel_position,
-        (size.width, size.height),
-        area.as_ref(),
-    ) {
-        state.panel_position = Some((position.x, position.y));
-        panel.window().set_position(position);
-    }
-
     let _ = panel.show();
+    place_pulldown(panel, state, PLACEMENT_ATTEMPTS);
 
     let weak = panel.as_weak();
     platform::tray_support_async(move |support| {
@@ -736,6 +736,122 @@ fn show_pulldown(panel: &Pulldown, state: &mut UiState) {
             }
         });
     });
+}
+
+/// Place the pulldown, and give it the size its content calls for.
+///
+/// The work area is read from the pulldown's **native** window, and the
+/// native window appears on the event loop's own terms: it is created when
+/// the event loop resumes the window, which is after `show()`. So the
+/// placement is retried for a bounded number of ticks, and a pulldown whose
+/// native window never appears is left to the window manager — which places
+/// it, if not where the platform's convention says.
+fn place_pulldown(panel: &Pulldown, state: &Arc<Mutex<UiState>>, attempts_left: u8) {
+    let Ok(mut guard) = state.lock() else {
+        return;
+    };
+    let area = placement::work_area(panel.window());
+    let content = (
+        placement::metrics::DEFAULT_WIDTH,
+        placement::content_height(&content_for(&guard, panel)),
+    );
+    let size = placement::panel_size(guard.panel_size, content, area.as_ref());
+    panel.window().set_size(size);
+    if let Some(position) = placement::open_position(
+        guard.panel_position,
+        (size.width, size.height),
+        area.as_ref(),
+    ) {
+        guard.panel_position = Some((position.x, position.y));
+        panel.window().set_position(position);
+        if let Some(area) = area.as_ref() {
+            // The placement, in one machine-readable line.
+            //
+            // It says where the pulldown was put and where it may be put, so
+            // that a native exercise can check the *position* and not only
+            // that a window appeared.
+            println!(
+                "gregg-gui: pulldown=placed x={} y={} width={} height={} area={},{},{}x{}",
+                position.x,
+                position.y,
+                size.width,
+                size.height,
+                area.left,
+                area.top,
+                area.width,
+                area.height
+            );
+        }
+    }
+    if area.is_none() && attempts_left > 0 {
+        let weak = panel.as_weak();
+        let state = Arc::clone(state);
+        // The next tick is after the event loop has resumed the window.
+        slint::Timer::single_shot(PLACEMENT_RETRY, move || {
+            let Some(panel) = weak.upgrade() else {
+                return;
+            };
+            place_pulldown(&panel, &state, attempts_left - 1);
+        });
+    }
+}
+
+/// Show the pulldown, or hide it if it is already up.
+fn toggle_pulldown(panel: &Pulldown, state: &Arc<Mutex<UiState>>) {
+    let Ok(mut guard) = state.lock() else {
+        return;
+    };
+    if guard.panel_visible {
+        guard.panel_visible = false;
+        drop(guard);
+        let _ = panel.hide();
+        return;
+    }
+    drop(guard);
+    show_pulldown(panel, state);
+}
+
+/// What the pulldown is showing, as the height calculation sees it.
+///
+/// The lines the pulldown shows are read from the pulldown itself: they are
+/// what is on screen, and the height has to answer for what is on screen.
+fn content_for(state: &UiState, panel: &Pulldown) -> placement::Content {
+    let Some(snapshot) = state.snapshot.as_ref() else {
+        return placement::Content::default();
+    };
+    let model = model::project(snapshot, &state.selection, &state.connection, now_unix_ms());
+    let metrics = model.selected.as_ref().map_or(0, |card| card.metrics.len());
+    let (drives, interfaces) = model
+        .selected_id
+        .as_deref()
+        .map(|selected| model::detail_rows(snapshot, selected))
+        .unwrap_or_default();
+    let jobs = model.cron.as_ref().map_or(0, |cron| cron.jobs.len());
+    let record_lines = model.cron.as_ref().map_or(0, |cron| {
+        cron.records
+            .iter()
+            .map(|record| record.lines().count().max(1))
+            .sum::<usize>()
+    });
+    let eggpool = model
+        .eggpool
+        .as_ref()
+        .filter(|_| state.eggpool_visible)
+        .map_or(0, |eggpool| eggpool.values.len());
+    placement::Content {
+        hosts: model.systems.len(),
+        selected: model.selected_id.is_some(),
+        metrics,
+        details: drives.len() + interfaces.len(),
+        jobs,
+        eggpool,
+        record_lines,
+        about: !panel.get_about_text().is_empty(),
+        status: !panel.get_status_text().is_empty(),
+        message: !panel.get_panel_message().is_empty(),
+        warning: !panel.get_tray_warning().is_empty(),
+        form: state.form_mode != FormMode::Metrics,
+    }
 }
 
 /// The host a panel action names, as the form's target.
@@ -1076,28 +1192,25 @@ fn render(state: &mut UiState, panel: &slint::Weak<Pulldown>, tray: &slint::Weak
     panel.set_status_text(SharedString::from(connection_text(&state.connection)));
 
     // The tray shows the fleet health, not the connection state: the tray is
-    // what the operator glances at.
-    tray.set_summary_text(model.tray_summary.clone().into());
+    // what the operator glances at. The fleet itself is in the pulldown.
     tray.set_status_text(SharedString::from(tray_status(&model)));
 
-    // The tray's menu can jump straight to a host, so it carries the fleet
-    // too. A native menu is not a scrollable viewport, so the list is
-    // bounded: the panel is the surface that carries the whole fleet.
-    let menu_hosts: Vec<HostRow> = model
-        .systems
-        .iter()
-        .take(model::MAX_TRAY_HOSTS)
-        .map(|card| HostRow {
-            id: card.id.clone().into(),
-            name: card.name.clone().into(),
-            endpoint: card.endpoint.clone().into(),
-            status: card.status.clone().into(),
-            headline: card.headline.clone().into(),
-            online: card.is_online(),
-            selected: model.selected_id.as_deref() == Some(card.id.as_str()),
-        })
-        .collect();
-    tray.set_hosts(slint::ModelRc::from(menu_hosts.as_slice()));
+    // The selected host's own actions are in the pulldown, aimed at the
+    // selection and not at a row's place in the list.
+    let (selected_id, selected_label) = match model.selected_id.as_deref() {
+        Some(selected) => {
+            let label = model
+                .systems
+                .iter()
+                .find(|card| card.id == selected)
+                .map(|card| format!("{}  {}", card.name, card.endpoint))
+                .unwrap_or_default();
+            (selected.to_owned(), label)
+        }
+        None => (String::new(), String::new()),
+    };
+    panel.set_selected_host_id(selected_id.clone().into());
+    panel.set_selected_host_label(selected_label.into());
 
     // The icon carries the health too, so the fleet's state is readable
     // without opening the menu. It is only re-rendered when the health
@@ -1113,30 +1226,55 @@ fn render(state: &mut UiState, panel: &slint::Weak<Pulldown>, tray: &slint::Weak
         state.tray_health = Some(health);
         tray.set_tray_icon(tray_icon(health));
     }
+
+    // The pulldown's size follows what it carries. The host list's height
+    // and the form's height are the two parts of it that are the content's,
+    // and the rest is computed from them.
+    let content = content_for(state, &panel);
+    panel.set_host_list_height(placement::host_list_height(content.hosts));
+    panel.set_form_height(placement::metrics::FORM_HEIGHT);
+    if state.panel_visible {
+        // A pulldown that is on screen grows and shrinks with its content.
+        // The operator's own size wins, though: a placement they chose is
+        // not something a new host may overrule.
+        let area = placement::work_area(panel.window());
+        let size = placement::panel_size(
+            state.panel_size,
+            (
+                placement::metrics::DEFAULT_WIDTH,
+                placement::content_height(&content),
+            ),
+            area.as_ref(),
+        );
+        panel.window().set_size(size);
+    }
 }
 
 /// The connection state, in one line.
+///
+/// A healthy attachment says nothing: there is nothing to report, and a line
+/// that reports nothing is chrome. The daemon's identity is not reported
+/// either — it is a hash that means nothing to an operator looking at a
+/// pulldown.
 fn connection_text(connection: &ConnectionState) -> String {
     match connection {
         ConnectionState::Connecting => "connecting to the client daemon…".to_owned(),
-        ConnectionState::Connected { daemon_id, .. } => format!("connected to {daemon_id}"),
+        ConnectionState::Connected { .. } => String::new(),
         ConnectionState::Disconnected { reason } => format!("disconnected: {reason}"),
         ConnectionState::Incompatible { reason } => format!("incompatible daemon: {reason}"),
     }
 }
 
 /// The tray's tooltip: the fleet's health, in one line.
+///
+/// It carries the summary — the counts *and* the names of the hosts the
+/// summary can fit — so that the tray alone tells the operator what the
+/// fleet is doing, and the pulldown is opened for the detail.
 fn tray_status(model: &GuiViewModel) -> String {
     if model.counts.total == 0 {
         return "Gregg — no systems configured".to_owned();
     }
-    if model.counts.offline > 0 {
-        return format!(
-            "Gregg — {} offline, {} online",
-            model.counts.offline, model.counts.online
-        );
-    }
-    format!("Gregg — {} online", model.counts.online)
+    format!("Gregg — {}", model.tray_summary)
 }
 
 #[cfg(test)]
@@ -1182,6 +1320,88 @@ mod tests {
         let mut snapshot = gregg::clientd::snapshot::FrontendSnapshot::empty(systems);
         snapshot.generation = generation;
         snapshot
+    }
+
+    /// The `.slint` file, so that a test can say what the pulldown carries.
+    const SLINT: &str = include_str!("ui/main.slint");
+
+    #[test]
+    fn the_tray_has_no_launcher_entry() {
+        assert!(
+            !SLINT.contains("Open Gregg"),
+            "the launcher entry is gone: the tray's click opens the pulldown"
+        );
+        assert!(
+            SLINT.contains("root.tray-clicked()"),
+            "the tray's click reaches the GUI"
+        );
+    }
+
+    #[test]
+    fn the_pulldown_drops_the_application_chrome() {
+        for heading in ["METRICS", "CRON", "EGGPOOL"] {
+            assert!(
+                !SLINT.contains(heading),
+                "the {heading} heading is chrome a dropdown does not have"
+            );
+        }
+        assert!(
+            !SLINT.contains("text: \"Close\""),
+            "the Close button that overhung the header is gone"
+        );
+    }
+
+    #[test]
+    fn the_hosts_actions_are_not_on_every_row() {
+        // The actions are the pulldown's own affordances, aimed at the
+        // selection: a button on every row crowds the row and blurs into the
+        // selection tint.
+        assert_eq!(
+            SLINT.matches("root.edit-host-requested(").count(),
+            1,
+            "one place asks to edit a host"
+        );
+        assert_eq!(
+            SLINT.matches("root.remove-host-requested(").count(),
+            1,
+            "one place asks to remove a host"
+        );
+    }
+
+    #[test]
+    fn a_healthy_attachment_says_nothing() {
+        assert_eq!(
+            connection_text(&ConnectionState::Connected {
+                protocol_version: 3,
+                daemon_id: "abc".to_owned(),
+            }),
+            "",
+            "a line that says nothing is chrome"
+        );
+    }
+
+    #[test]
+    fn the_daemons_identity_is_not_reported() {
+        let text = connection_text(&ConnectionState::Connected {
+            protocol_version: 3,
+            daemon_id: "3f2a9c".to_owned(),
+        });
+        assert!(
+            !text.contains("3f2a9c"),
+            "the daemon's identity means nothing to an operator"
+        );
+    }
+
+    #[test]
+    fn the_native_menu_is_detached_only_where_it_would_swallow_the_click() {
+        // On macOS a menu attached to the status item is popped by the very
+        // click that is supposed to open the pulldown, so it is detached
+        // there. Windows and Linux keep theirs, where a right-click reaches
+        // it and a left-click does not.
+        #[cfg(target_os = "macos")]
+        assert!(!platform::native_tray_menu());
+        #[cfg(not(target_os = "macos"))]
+        assert!(platform::native_tray_menu());
     }
 
     #[test]
