@@ -7,8 +7,8 @@
 //! `NSWindow.orderFront:` from a background app does not bring the window to
 //! the front. A GUI launched the way a real one is launched — a login item, a
 //! launcher, an agent — is a background app from its first moment, so
-//! "Open Monitor" from the tray would do **nothing at all**: the operator
-//! clicks the tray item and no window appears.
+//! "Open Gregg" from the tray would do **nothing at all**: the operator
+//! clicks the tray item and no panel appears.
 //!
 //! Slint 1.18 exposes no activation API, so the activation is done here
 //! through AppKit. Everything else in the GUI is platform-neutral, and this
@@ -34,9 +34,9 @@
 //! gregg-gui: tray=unavailable reason="no StatusNotifierItem host on this desktop"
 //! ```
 //!
-//! With no tray, closing the monitor window ends the GUI instead of hiding
-//! it, and the window says so. The decision is taken when the window is
-//! closed, not at startup: a tray host can start after the desktop session
+//! With no tray, closing the panel ends the GUI instead of hiding it, and the
+//! panel says so. The decision is taken when the panel is closed, not at
+//! startup: a tray host can start after the desktop session
 //! is up, and Slint retries the registration when the icon is set again.
 
 /// The reason a desktop with no tray host gets.

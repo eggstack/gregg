@@ -96,6 +96,13 @@ summary and the five items — and so is the **no-tray fallback**, on a desktop
 with no host at all: the GUI reports the reason and keeps running instead of
 dying.
 
+The transcript above is what run `39650126619` actually printed, and it is
+kept verbatim. One label has changed since: the tray item that opened the
+monitor window is now **Open Gregg**, because there is no separate monitor
+window to open — it opens the pulldown panel. The exercise **records** the
+menu labels it observes rather than asserting on them, so a fresh transcript
+appears in the GUI job's log on every push.
+
 *The Windows leg* starts the real GUI, waits for its `tray=` line, and proves
 with `EnumWindows` that it created a **native top-level window** for its own
 process, and that the client daemon it launched is running. It does **not**

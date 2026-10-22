@@ -159,8 +159,8 @@ AppIndicator.
 On Linux the tray is a `StatusNotifierItem`, and the desktop has to run a
 **host** for it — the panel, the GNOME Shell extension, and so on. A desktop
 without one has no tray at all, and Slint fails to register **silently**: the
-icon simply never appears. That is a trap, because the monitor window's close
-button *hides* the window, so on such a desktop closing it would leave an
+icon simply never appears. That is a trap, because the panel's close control
+*dismisses* the panel, so on such a desktop closing it would leave an
 invisible, unquittable GUI with the daemon still polling.
 
 So the GUI asks the desktop, and answers in one machine-readable line:
@@ -277,11 +277,11 @@ owner of the fleet's state.
 
 ### Application activation
 
-On macOS the application **activates itself** before it raises the monitor
-window. This is not decoration: a tray application is a *background*
+On macOS the application **activates itself** before it raises the pulldown
+panel. This is not decoration: a tray application is a *background*
 application, macOS does not activate the app that owns an `NSStatusItem` menu,
 and a background app cannot bring its own window to the front. Without the
-activation, "Open Monitor" from the tray does nothing at all when the GUI was
+activation, "Open Gregg" from the tray does nothing at all when the GUI was
 launched the way a real one is launched — a login item, a launcher, an agent.
 
 Slint 1.18 exposes no activation API, so `src/platform.rs` calls
@@ -399,7 +399,7 @@ gregg-gui v0.1.0 (/Users/davidbowman/projects/gregg/apps/gregg-gui)
 - **`slint-build`** — compiles `src/ui/main.slint` at build time.
 - **`objc2` + `objc2-app-kit`** — **macOS only**, and only for the `NSApplication`
   feature. They exist so the GUI can activate itself when it raises the
-  monitor window; see "Application activation" above. They never enter the
+  pulldown panel; see "Application activation" above. They never enter the
   Linux or Windows builds.
 
 ### Locked Slint versions
@@ -437,7 +437,7 @@ femtovg (OpenGL) renderer and its GPU stack.
 | Feature | Why it is needed |
 | ------- | ---------------- |
 | `std` | The standard-library backend. Slint's `no_std` mode is not usable with the `winit` backend or the system tray. |
-| `backend-winit` | The windowing backend that draws the monitor window on Linux, macOS and Windows. |
+| `backend-winit` | The windowing backend that draws the panel on Linux, macOS and Windows. |
 | `renderer-software` | The CPU renderer. It needs no GPU, no OpenGL/Metal shader toolchain and no GPU driver, which keeps the build free of graphics system dependencies and the binary portable. |
 | `software-renderer-systemfonts` | System font discovery for the software renderer. Without it the software renderer has no font to draw text with, and every label renders blank. |
 | `system-tray` | The native tray entry (`NSStatusItem` on macOS, the notification area on Windows, `StatusNotifierItem` on Linux). Required by the `SystemTrayIcon` component. |

@@ -231,16 +231,18 @@ apps/gregg-gui/target/release/gregg-gui --config ~/.config/gregg/gregg.toml \
 ```
 
 The tray is the always-visible entry: a health-coloured icon, a bounded fleet
-summary, and Open Monitor, Reload, About Gregg and Quit Gregg. The window
-shows the fleet, the selected host's metrics, drives and interfaces, its
-scheduler jobs and the `EggPool` plane, with the host and job lists scrolling
-inside a window of fixed size. Closing the window hides it and leaves the tray
-running; quitting the GUI never stops the client daemon.
+summary, and Open Gregg, Reload, About Gregg and Quit Gregg. Open Gregg raises a
+single borderless, always-on-top **pulldown panel** — there is no separate
+monitor window — showing the fleet, the selected host's metrics, drives and
+interfaces, its scheduler jobs and the `EggPool` plane, with the host and job
+lists scrolling inside a panel of fixed size. The panel can also **add, remove,
+rename and re-point** the hosts in the config file. Dismissing the panel hides
+it and leaves the tray running; quitting the GUI never stops the client daemon.
 
 On a desktop with **no system tray** — a plain GNOME session has no
 `StatusNotifierItem` host — the tray cannot appear at all. The GUI notices,
-says so in the window, and then **quits when you close the window** instead of
-hiding it, because a hidden window with no tray is an application you can no
+says so in the panel, and then **quits when you close the panel** instead of
+hiding it, because a hidden panel with no tray is an application you can no
 longer reach.
 
 It is its own Cargo workspace with its own lockfile, because Slint 1.18 needs
