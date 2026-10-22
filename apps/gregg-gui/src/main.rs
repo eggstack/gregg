@@ -1104,14 +1104,18 @@ fn render(state: &mut UiState, panel: &slint::Weak<Pulldown>, tray: &slint::Weak
     let hosts = slint::ModelRc::from(hosts.as_slice());
     panel.set_hosts(hosts.clone());
 
-    let metrics: Vec<ValueRow> = model
+    let metrics: Vec<MetricRow> = model
         .selected
         .as_ref()
         .map(|card| {
             card.metrics
                 .iter()
-                .map(|row| ValueRow {
+                .map(|row| MetricRow {
                     label: row.label.clone().into(),
+                    pct_text: row.pct_text.clone().into(),
+                    // A row with no reading leaves its bar empty, and an empty
+                    // bar is not a zero: the share is negative, not zero.
+                    fraction: row.pct.map_or(-1.0, |pct| pct / 100.0),
                     value: row.value.clone().into(),
                 })
                 .collect()

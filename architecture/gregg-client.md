@@ -554,6 +554,52 @@ hold an unbounded list: before, a 25-host fleet pushed the metrics, cron and
 scroll container with a bounded height, so the panel keeps its size and every
 pane stays reachable.
 
+The pulldown's **appearance** is a load-bearing part of the same story, and one
+of its facts was a defect. A macOS dropdown is a rounded card of translucent
+material with a hairline edge and a soft shadow, and the pulldown is built to
+match that: the card's edge is a **measured macOS hairline**
+(`NSColor.separatorColor`: `rgba(255,255,255,0.098)` dark, `rgba(0,0,0,0.098)`
+light) rather than Slint's `Palette.border`, which is 45 % black in one pixel
+in the light scheme and reads as a hard dark line; the fill is
+`Palette.background` at 94 % opacity, the closest the software renderer comes
+to a vibrant material; the shadow is **fourteen one-pixel rings** with a
+Gaussian alpha profile, because Slint's `draw_box_shadow` is an empty stub in
+the software renderer and a few hard-edged rings band visibly; and the pointer
+sits on the **trailing edge** — the edge the tray is on — because the card
+anchors to the trailing corner and a pointer at the card's centre pointed at
+nothing.
+
+That work was blocked by a defect in the **presentation layer**, not in Slint
+and not in the GUI: on macOS a frameless Slint window *is* a transparent
+`NSWindow`, and `winit` asks for exactly that. But the framebuffer that
+carries the window's pixels goes through `softbuffer`, whose macOS backend
+declares the pixel format as `CGImageAlphaInfo::NoneSkipFirst` — **no alpha
+channel at all** — so CoreGraphics presents every transparent pixel opaque.
+The pulldown's shadow margin, which is transparent by design so the desktop
+shows through it, was therefore presented as a **thick black frame**, and the
+card's rounded corners were black squares. The fix is one word —
+`CGImageAlphaInfo::PremultipliedFirst`, the same 32-bit layout with the alpha
+the buffer already carries — and it is carried by a **vendored copy** of
+`softbuffer` 0.4.8 under `apps/gregg-gui/vendor/softbuffer`, because 0.4.8 is
+the latest release and the defect is still in it. The change is inside Apple's
+platform only; every other backend is byte-identical to upstream. The full
+rationale, the measurements that established the defect, and the removal
+condition are in `apps/gregg-gui/vendor/VENDORED-PATCH.md`. **Do not drop that
+copy**: without it the pulldown cannot have a soft shadow or rounded corners
+on macOS at all, because the alternative is an opaque square window.
+
+The metrics pane carries the **same shape the TUI's metric rows carry**: a
+label, a usage bar, the share in per cent, and the reading. The rows, the
+aggregates and the "no reading" rules are the TUI's — `CPU`, `MEM`,
+`SWP`/`COMMIT`, `DISK`, `NET`, `LOAD`, `FREQ`, `IO`, with `NET`'s bar the
+maximum of the two directions and loopback out of the aggregate — so the two
+frontends cannot drift. A metric with no observation is `—` and **no bar**:
+an empty bar means *not measured*, never *measured as zero*, so a row with no
+reading carries a negative fraction rather than a zero one. The pane's value
+is **condensed** (a pair writes its unit once: `6.1 / 15.5 GiB`), while the
+host list keeps its long form, because that line summarises a host rather than
+describing a bar.
+
 A tray application is a **background** application, and on macOS that has a
 concrete consequence: an `NSStatusItem` menu does not activate the app that
 owns it, and a background app cannot bring its own window to the front with

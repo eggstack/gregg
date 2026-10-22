@@ -477,6 +477,94 @@ and Wayland was never executed. The GUI's release binary is **11,929,712
 bytes**, **+33,104 (+0.3%)** on Plan 191's 11,896,608, with no new dependency in
 this workspace.
 
+### The pulldown's chrome was revised, and the "transparent on macOS" claim did not hold (2026-10-22)
+
+The section above records the dropdown's shape as it was measured for Plan
+192: a 12 px corner radius, "the three shadow layers", and a pulldown that is
+**transparent on macOS**. Two of those claims are now superseded, and the
+first one hid a real defect.
+
+**The pulldown was never transparent, and the reason was not a platform
+limit.** On macOS a frameless Slint window *is* a transparent `NSWindow` —
+`winit` asks for exactly that (`NSWindow.opaque = false`, `backgroundColor =
+clear`) and `i-slint-backend-winit` asks for transparency whenever the window's
+background is not opaque or the window has no frame. The window server
+honours it: `CGWindowListCreateImage` reports the unpainted region as alpha 0.
+
+The **framebuffer** was the problem. `softbuffer`'s macOS backend hands
+CoreGraphics a `CGImage` whose pixel format is declared as
+`CGImageAlphaInfo::NoneSkipFirst` — **no alpha channel at all**, the first byte
+of each pixel being an unused filler. The software renderer writes a correct
+premultiplied alpha into that byte and CoreGraphics discards it, so every
+transparent pixel of the window was presented **opaque**.
+
+The visible consequence was the defect this revision fixes: the pulldown's
+14 px shadow margin is transparent by design, so the desktop should show
+through it — and instead it was presented as a **thick black frame**, and the
+card's rounded corners were black squares.
+
+**How the defect was established.** A purpose-built AppKit probe presented the
+*same* premultiplied RGBA bytes under both declarations and read the result
+back with `CGWindowListCreateImage`:
+
+| Declared alpha          | Border pixel       | Meaning                          |
+| ----------------------- | ------------------ | -------------------------------- |
+| `noneSkipFirst` (6)     | `(0, 0, 0, 255)`   | the alpha was dropped — opaque    |
+| `premultipliedFirst` (2)| `(0, 0, 0, 0)`     | the alpha was honoured            |
+
+The pulldown itself was then captured with `screencapture -l`, which reports
+the window's own alpha. **Before** the fix the 14 px margin read
+`(0, 0, 0, 255)`; **after** it, `(0, 0, 0, 0)`, and the shadow rings became
+genuinely translucent — a shadow ring measured `(61, 61, 61, 245)` where the
+margin beside it is `(0, 0, 0, 4)`.
+
+**The fix** is one word in a **vendored copy** of `softbuffer` 0.4.8
+(`apps/gregg-gui/vendor/softbuffer`): `CGImageAlphaInfo::PremultipliedFirst`
+declares the same 32-bit layout with the alpha the buffer already carries.
+0.4.8 is the latest release and the defect is still in it, which is why the
+copy exists. `softbuffer` was already in the dependency graph through Slint, so
+**no crate was added to the build**, and the change is inside Apple's platform
+only — the X11, Wayland, KMS, Win32, Android, Orbital and web backends are
+byte-identical to upstream. The full rationale, the alternatives that were
+rejected and the removal condition are in `apps/gregg-gui/vendor/VENDORED-PATCH.md`.
+
+**What the pulldown's chrome is now**, measured:
+
+- The **shadow** is fourteen one-pixel rings with a Gaussian alpha profile
+  (`exp(-x²/50)`), not three hard-edged layers: the three-layer version read
+  as a visible three-step band. Over a known light background the composited
+  profile ramps smoothly from 17 % darkening at the card's edge to nothing
+  14 px out — `249, 248, 246, 243, 239, 235, 230, 225, 219, 214, 210, 208,
+  207` — with no banding.
+- The **outline** is a measured macOS hairline, `NSColor.separatorColor`:
+  `rgba(255, 255, 255, 0.098)` in the dark scheme and `rgba(0, 0, 0, 0.098)`
+  in the light one. Slint's own `Palette.border` is `#00000073` in the light
+  scheme — 45 % black in a single pixel, which is a hard dark line rather than
+  a separator.
+- The **fill** is `Palette.background` at 94 % opacity, the closest the
+  software renderer comes to a vibrant material.
+- The **pointer** moved to the card's **trailing edge**, the edge the tray is
+  on: the card anchors to the trailing corner, so a pointer at the card's
+  centre pointed at nothing.
+
+Both colour schemes were checked. The dark scheme was captured natively; the
+light scheme was captured with the application temporarily forced to the Aqua
+appearance, so the light palette and the light hairline could be inspected on
+a dark-mode desktop.
+
+**The cost of the revision:** the release binary is **11,962,832 bytes**,
+**+66,224 (+0.6%)** on Plan 192's 11,929,712. The vendored `softbuffer` copy
+costs **nothing measurable**: it changes one word in a pixel-format
+declaration that was already in the binary. The growth is the revised chrome
+and the metric bars.
+
+**What was not done:** the interactive native acceptance is still outstanding,
+as it was for Plan 192 — no tray icon was clicked and no pulldown was opened
+by a pointer. The macOS Intel build was not produced locally, there is still
+no DPI measurement at 125 % or 150 %, and Wayland was never executed. The
+Windows and Linux legs are **not** affected by the vendored patch, and their
+behaviour is authority in the GUI CI job, not here.
+
 ### The native exercises, on CI run `39811582623`
 
 The GUI workspace is not a member of the root workspace, so no root job

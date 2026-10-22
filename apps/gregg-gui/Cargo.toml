@@ -140,8 +140,11 @@ tokio-util = "0.7"
 [build-dependencies]
 slint-build = { version = "=1.18.1" }
 
-# Plan 188 Part B: a vendored copy of `annotate-snippets` 0.12.9 with one
-# relaxed dependency bound.
+# Two vendored copies. Both are MIT OR Apache-2.0, which the root workspace's
+# `deny.toml` already allows, and both are documented in full in
+# `vendor/VENDORED-PATCH.md`.
+#
+# 1. `annotate-snippets` 0.12.9 with one relaxed dependency bound.
 #
 # WHY THIS EXISTS: `ratatui` 0.29 (pulled in transitively by the `gregg` core
 # library above) pins `unicode-width =0.2.0` exactly, while Slint's
@@ -161,12 +164,29 @@ slint-build = { version = "=1.18.1" }
 #
 # No source file of the vendored crate is modified, and no source file of the
 # Slint compiler is modified: this is a build-time-only workaround that adds
-# no code to the shipped binary. `annotate-snippets` is MIT OR Apache-2.0,
-# both of which the root workspace's `deny.toml` already allows.
+# no code to the shipped binary.
+#
+# 2. `softbuffer` 0.4.8 with one word changed in its macOS backend.
+#
+# WHY THIS EXISTS: `softbuffer` is how Slint's software renderer presents its
+# frames, and it was already in this graph through Slint — this copy adds no
+# crate to the build. Its macOS backend declares the framebuffer's pixel
+# format as `CGImageAlphaInfo::NoneSkipFirst`, which tells CoreGraphics the
+# framebuffer has NO alpha channel, so every transparent pixel of a window is
+# presented opaque. The pulldown's shadow margin is transparent by design, so
+# it was presented as a thick BLACK FRAME instead of a soft shadow, and the
+# card's rounded corners were black squares.
+#
+# The vendored copy declares the alpha channel instead
+# (`CGImageAlphaInfo::PremultipliedFirst`), which is the same 32-bit layout
+# with the alpha the buffer already carries. The change is inside Apple's
+# platform only: the X11, Wayland, KMS, Win32, Android, Orbital and web
+# backends are byte-identical to upstream.
 #
 # See `vendor/VENDORED-PATCH.md` for the full rationale.
 [patch.crates-io]
 annotate-snippets = { path = "vendor/annotate-snippets" }
+softbuffer = { path = "vendor/softbuffer" }
 
 # Mirrors the root workspace's release profile so the measured binary size is
 # comparable with the TUI's. `strip = "symbols"` is what makes the reported

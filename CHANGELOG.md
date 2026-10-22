@@ -120,6 +120,48 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   tray still works either way, and the native exercises use it so that a panel
   is really on screen on the platform they run on.
 
+- **The desktop frontend's pulldown now looks like a macOS dropdown, and the
+  thick black frame around it is gone.** The frame was not a styling choice
+  and not a Slint limitation: on macOS a frameless Slint window *is* a
+  transparent `NSWindow`, but the framebuffer that carries its pixels goes
+  through `softbuffer`, whose macOS backend declares the pixel format as
+  `CGImageAlphaInfo::NoneSkipFirst` — **no alpha channel at all** — so
+  CoreGraphics presents every transparent pixel opaque. The pulldown's shadow
+  margin is transparent by design, so it was presented as a **thick black
+  frame**, and the card's rounded corners were black squares. The fix is one
+  word — `CGImageAlphaInfo::PremultipliedFirst`, the same 32-bit layout with
+  the alpha the buffer already carries — carried by a **vendored copy** of
+  `softbuffer` 0.4.8 under `apps/gregg-gui/vendor/softbuffer`, because 0.4.8
+  is the latest release and the defect is still in it. The change is inside
+  Apple's platform only; the X11, Wayland, KMS, Win32, Android, Orbital and
+  web backends are byte-identical to upstream. `softbuffer` was already in the
+  dependency graph, so no crate was added to the build.
+
+  The pulldown's chrome now matches what macOS actually draws: the card's
+  edge is a **measured macOS hairline** (`NSColor.separatorColor` —
+  `rgba(255,255,255,0.098)` in the dark scheme, `rgba(0,0,0,0.098)` in the
+  light one) rather than Slint's `Palette.border`, which is 45 % black in one
+  pixel in the light scheme and reads as a hard dark line; the card's fill is
+  `Palette.background` at 94 % opacity, the closest the software renderer
+  comes to a vibrant material; the shadow is **fourteen one-pixel rings** with
+  a Gaussian alpha profile — about 17 % black at the card's edge, fading to
+  nothing 14 px out with no banding — because Slint's `draw_box_shadow` is an
+  empty stub in the software renderer and three hard-edged rings band
+  visibly; and the pointer moved to the card's **trailing edge**, the edge the
+  tray is on, because the card anchors to the trailing corner and a pointer at
+  the card's centre pointed at nothing.
+
+- **The desktop frontend's metrics pane shows usage bars, like the TUI's
+  metric rows.** The rows, the aggregates and the "no reading" rules are the
+  TUI's — `CPU`, `MEM`, `SWP`/`COMMIT`, `DISK`, `NET`, `LOAD`, `FREQ` and `IO`,
+  with `NET`'s bar the maximum of the two directions and loopback out of the
+  aggregate — so the two frontends cannot drift. A metric with no observation
+  is `—` and **no bar**: an empty bar means *not measured*, never *measured as
+  zero*, so such a row carries a negative fraction rather than a zero one. The
+  pane's value is **condensed** — a pair writes its unit once, `6.1 / 15.5
+  GiB` — while the host list keeps its long form, because that line summarises
+  a host rather than describing a bar.
+
 ### Changed
 
 - **The desktop frontend's interaction model is changing: the tray's click will

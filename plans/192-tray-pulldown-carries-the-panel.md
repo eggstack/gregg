@@ -5,6 +5,28 @@ pending native interactive acceptance) and the 187-190 line; unblocks nothing ye
 Plan 091. The interactive native acceptance gate is **unchecked**, so this plan is **not closed** and
 the GUI is **not shippable** for Windows or Linux.
 
+> **Amendment, 2026-10-22 — the pulldown's chrome was revised after this plan was implemented.**
+> The direction this plan set — *the pulldown reads as a dropdown* — is unchanged and is still the
+> goal. Two of the ways this plan recorded meeting it are **superseded**, and the plan's evidence
+> for them no longer describes what ships:
+>
+> - The shadow is no longer "three translucent rounded rectangles" (see the amendment notes
+>   below). It is **fourteen one-pixel rings** with a Gaussian alpha profile, because the
+>   three-layer version banded visibly.
+> - The macOS pulldown is **not transparent** as this plan's measurements recorded. It was
+>   *supposed* to be, and it was not: `softbuffer`'s macOS backend declares the framebuffer's
+>   pixel format with **no alpha channel**, so the shadow margin — transparent by design — was
+>   presented as a **thick black frame**. That was a defect in the presentation layer, not a
+>   platform limit, and it is fixed by a **vendored copy** of `softbuffer` 0.4.8 whose macOS
+>   backend declares the alpha channel. See `apps/gregg-gui/vendor/VENDORED-PATCH.md`.
+>
+> The card's outline is also no longer Slint's `Palette.border` (45 % black in one pixel in the
+> light scheme): it is a **measured macOS hairline**, `NSColor.separatorColor`.
+>
+> The amendment changes the pulldown's *chrome*, not its *behaviour*: the tray's click still
+> opens the pulldown, the pulldown still carries the content, there is still no launcher entry,
+> and the protocol is still untouched.
+
 ## Objective
 
 Make the **tray's click open the pulldown**, and make the pulldown **carry the panel's contents**
@@ -190,6 +212,10 @@ operator drags the panel once and expects it to stay there.
       item, and sized to its content. — Measured on a screen capture: a 12 px corner radius, the
       three shadow layers, the pointer toward the menu bar, and **420×658** for a seven-host
       configuration.
+      **Amended 2026-10-22:** the "three shadow layers" are now **fourteen one-pixel rings**
+      with a Gaussian alpha profile (the three-layer version banded visibly), and the outline is
+      a measured macOS hairline rather than `Palette.border`. The size and the pointer are
+      unchanged.
 - [x] The forms still add, remove, rename and re-point hosts through the CLI's own code, and a
       refused mutation leaves the config byte-identical and shows a visible reason. — Unchanged
       from Plan 191, and covered by the GUI's own `hosts.rs` tests.
@@ -261,7 +287,7 @@ below is unchecked, exactly as Plan 190 and Plan 191 leave it.
 | The tray's click opens the pulldown | `apps/gregg-gui/src/ui/main.slint`, `src/main.rs` | `TrayIcon` forwards the inherited `SystemTrayIcon.clicked` to a new `tray-clicked` callback, and `main.rs` toggles the pulldown from it |
 | The native menu is a context menu | `src/ui/main.slint`, `src/platform.rs` | the menu is `if root.native-menu : Menu { MenuItem { title: "Quit Gregg" } }`, and `platform::native_tray_menu()` is **false on macOS**, so the menu is **detached there** and the click reaches the callback |
 | No launcher entry | `src/ui/main.slint` | there is no `Open Gregg`; the pulldown's own footer carries `Reload · Add host · EggPool · About · Quit` |
-| The pulldown is a dropdown | `src/ui/main.slint` | a rounded card with a 1 px border, a three-layer faked shadow and a `Path`-drawn pointer toward the tray — up on macOS and Linux, down on Windows |
+| The pulldown is a dropdown | `src/ui/main.slint` | a rounded card with a 1 px macOS hairline, a fourteen-ring faked shadow (amended 2026-10-22 from three layers) and a `Path`-drawn pointer on the card's trailing edge toward the tray — up on macOS and Linux, down on Windows |
 | The application chrome is gone | `src/ui/main.slint` | no `METRICS` / `CRON` headings, no overhanging `Close` button, no daemon-identity line, no per-row `Edit` / `Remove` buttons; the header carries the summary and a compact `×`, and the *selected* host's actions are links |
 | Placement on every path | `src/main.rs`, `src/placement.rs` | the first open is deferred into the event loop, the placement is retried for 20 ticks × 16 ms until the native window exists, and the size is clamped to the work area |
 | The geometry survives a restart | `src/state.rs` (new) | `<config>.gui-state`, read bounded (4 KiB) and validated, written atomically |
@@ -332,10 +358,33 @@ bar, and the pulldown is **transparent on macOS** — the window's own backgroun
 **420×658** for a seven-host configuration, which is neither Plan 191's fixed 560×520 nor a
 constant.
 
+> **Amended 2026-10-22.** The transparency claim above was **wrong**, and the shadow claim is
+> superseded.
+>
+> The window's *background* is `#00000000` on macOS, and the window really is a transparent
+> `NSWindow` — but the **framebuffer** that carries its pixels was presented **opaque**:
+> `softbuffer`'s macOS backend declares the pixel format as `CGImageAlphaInfo::NoneSkipFirst`,
+> which means *no alpha channel*, so CoreGraphics discarded the alpha the software renderer had
+> written. The shadow margin — transparent by design, so the desktop shows through it — was
+> therefore presented as a **thick black frame**, and the card's rounded corners were black
+> squares. The pulldown was never transparent in the sense this section claimed.
+>
+> The fix is one word in a **vendored copy** of `softbuffer` 0.4.8
+> (`apps/gregg-gui/vendor/softbuffer`): `CGImageAlphaInfo::PremultipliedFirst` declares the
+> same 32-bit layout with the alpha the buffer already carries. 0.4.8 is the latest release and
+> the defect is still in it, which is why the copy exists. The change is inside Apple's platform
+> only. See `apps/gregg-gui/vendor/VENDORED-PATCH.md` for the rationale and the measurements.
+>
+> The shadow is now **fourteen one-pixel rings** with a Gaussian alpha profile — about 17 % black
+> at the card's edge, fading to nothing 14 px out, with no banding — and the card's outline is a
+> measured macOS hairline, `NSColor.separatorColor` (`rgba(255,255,255,0.098)` dark,
+> `rgba(0,0,0,0.098)` light), which Slint's `Palette.border` is not.
+
 Two renderer facts were found the hard way and are now in the `.slint`:
 
 - the software renderer's `draw_box_shadow` is an **empty stub** (`i-slint-renderer-software-1.18.1/lib.rs:3059`),
-  so the shadow is drawn by hand as three translucent rounded rectangles;
+  so the shadow is drawn by hand — as three translucent rounded rectangles when this plan was
+  implemented, and since 2026-10-22 as fourteen one-pixel rings with a Gaussian alpha profile;
 - a `Text` keeps its unwrapped width as a minimum unless `overflow: elide` is set, so every
   wrapping text in the pulldown carries `overflow: elide` — without it a long status line
   overflowed the pulldown on **both** sides.

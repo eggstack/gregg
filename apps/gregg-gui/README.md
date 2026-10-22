@@ -295,12 +295,26 @@ A dropdown has a shape, and this one draws its own.
 
 - It is a **rounded card** with a **one-pixel outline** and a **soft shadow**
   behind it. Slint's software renderer does not implement drop shadows — its
-  `draw_box_shadow` is an empty stub — so the shadow is drawn: three rounded
-  rectangles behind the card, each a little larger and fainter than the last.
-- A **pointer** points at the tray item: a triangle on the card's edge, drawn
-  twice — once in the card's outline colour and a little larger, once in the
-  card's own colour on top — so it has an edge even where the window cannot be
-  transparent. It points **up** where the tray is at the top of the screen
+  `draw_box_shadow` is an empty stub — so the shadow is drawn: **fourteen
+  one-pixel rings** around the card, each a little larger and fainter than the
+  last, with a **Gaussian alpha profile** (`exp(-x²/50)`) rather than a few
+  hard steps. The peak is about 17 % black at the card's edge, fading to
+  nothing 14 px out, with no visible banding.
+- The card's **outline is a macOS hairline**, not Slint's palette border:
+  `rgba(255, 255, 255, 0.098)` in the dark scheme and
+  `rgba(0, 0, 0, 0.098)` in the light one — the measured value of
+  `NSColor.separatorColor`. Slint's own `Palette.border` is 45 % black in a
+  single pixel in the light scheme, which is a hard dark line, not a
+  separator. The same hairline is used for the card's edge, the section
+  separators, the pointer's outline and the resize grip.
+- The card's **fill is a translucent material**: `Palette.background` at 94 %
+  opacity, so a little of the desktop shows through, the way a macOS popover's
+  vibrant material does. Slint cannot blur what is behind the window, so this
+  is the closest approximation available in the software renderer.
+- A **pointer** points at the tray item: a small triangle on the card's
+  **trailing edge** — the edge the tray is on — drawn twice, once in the
+  card's outline colour and a little larger and once in the card's own colour
+  on top. It points **up** where the tray is at the top of the screen
   (macOS, Linux) and **down** where the tray is at the bottom (Windows).
 - On **macOS** the window is transparent, so the rounded corners and the
   shadow are the desktop's own colours showing through. **Windows and Linux**
@@ -322,6 +336,30 @@ A dropdown has a shape, and this one draws its own.
   requested flush with the work area's top edge **26 px lower**. A placement
   the operator chose is honoured **exactly**, so this affects the first open
   only.
+
+### The metrics pane
+
+The selected host's metrics are the pane an operator actually reads, so they
+carry the **same shape the TUI's metric rows carry**: a label, a **usage bar**,
+the share in per cent, and the reading.
+
+- The rows are the TUI's: `CPU`, `MEM`, `SWP` (or `COMMIT`), `DISK`, `NET`,
+  `LOAD`, `FREQ` and `IO`, with the same aggregates and the same "no reading"
+  rules. A metric with no observation is `—`, never `0`.
+- A row that **has a share** gets a bar: `CPU`, `MEM`, `SWP`/`COMMIT`, `DISK`
+  and `NET`. `NET`'s bar is the maximum of the two directions, which is the
+  TUI's rule for network utilisation, and loopback is not in the aggregate.
+  `LOAD`, `FREQ` and `IO` have no share to draw, so their bar is empty — an
+  empty bar means *not measured*, never *measured as zero*.
+- The bar's **track** is the foreground at 15 % and its **fill** is the
+  accent colour, and it is a pill: the fill's radius is half the bar's
+  height.
+- The value beside the bar is **condensed**: a pair is written with its unit
+  once (`6.1 / 15.5 GiB`, `4.2 / 16.1 KiB/s`) rather than twice, and a pair
+  whose two parts do not share a unit keeps both.
+- The **host list** keeps its long form — `CPU 11.9% MEM 7.5 GiB / 15.5 GiB
+  (48.5%)` — because that line is a summary of a host, not a bar. The condensed
+  form belongs to the pane that has the room to show a bar.
 
 ### How the pulldown is dismissed
 
@@ -574,7 +612,7 @@ cargo tree --manifest-path apps/gregg-gui/Cargo.toml --prefix none
 
 ### Vendored patch: `annotate-snippets` 0.12.9
 
-This workspace carries one vendored crate, `vendor/annotate-snippets`, because
+This workspace carries a vendored crate, `vendor/annotate-snippets`, because
 the graph cannot otherwise be resolved: `ratatui` 0.29 (pulled in by the
 `gregg` core library) pins `unicode-width =0.2.0` exactly, while Slint's
 build-time compiler reaches `annotate-snippets` 0.12.9, which requires
@@ -588,7 +626,32 @@ The vendored copy relaxes that one bound to `unicode-width = "0.2"`. The only
 adds no code to the shipped binary. `annotate-snippets` is MIT OR Apache-2.0,
 both of which the root workspace's `deny.toml` already allows.
 
-Full rationale, including the alternatives that were rejected:
+### Vendored patch: `softbuffer` 0.4.8
+
+This workspace also carries `vendor/softbuffer`. `softbuffer` is **not** a new
+dependency: Slint's winit backend already uses it to present the software
+renderer's frames, and it was already in this graph. The vendored copy changes
+**one word** in the macOS backend.
+
+`softbuffer`'s macOS backend hands CoreGraphics a `CGImage` whose pixel format
+is declared as `CGImageAlphaInfo::NoneSkipFirst` — *no alpha channel at all*,
+the first byte of each pixel is an unused filler. The software renderer writes
+a correct premultiplied alpha into that byte, and CoreGraphics throws it away,
+so every transparent pixel of a window is presented **opaque**.
+
+For the pulldown that meant the 14 px margin around the card — transparent by
+design, so the shadow could show the desktop through it — was presented as a
+**thick black frame**, and the card's rounded corners were black squares. The
+vendored copy declares `CGImageAlphaInfo::PremultipliedFirst` instead: the same
+32-bit layout, with the alpha the buffer already carries. The change is inside
+Apple's platform only; every other backend is byte-identical to upstream.
+
+Without this copy the pulldown cannot have a soft shadow or rounded corners
+at all on macOS, because the alternative is an opaque window with square
+corners and no shadow.
+
+Full rationale, the measurements that established the defect, and the
+alternatives that were rejected:
 [`vendor/VENDORED-PATCH.md`](vendor/VENDORED-PATCH.md).
 
 ## Packaging and install policy
@@ -669,12 +732,16 @@ makes the difference attributable.
 | Binary | Size |
 | ------ | ---- |
 | The GUI before Plan 191 (the separate monitor window) | 10,803,360 bytes (10.3 MiB) |
-| **The GUI now** (the tray pulldown, with host management) | **11,896,608 bytes** (11.3 MiB) |
-| **Difference** | **+1,093,248 bytes (+10.1%)** |
+| The GUI after Plan 191 (the tray pulldown, with host management) | 11,896,608 bytes (11.3 MiB) |
+| **The GUI now** (the pulldown with the revised chrome, the metric bars, and the vendored `softbuffer` patch) | **11,962,832 bytes** (11.4 MiB) |
+| **Difference** (before Plan 191 → now) | **+1,159,472 bytes (+10.7%)** |
 | The same GUI calling `gregg::cli::dispatch` (the rejected alternative) | 14,761,600 bytes |
 
 So the pulldown and the host-management forms cost about **1.04 MiB** more
-than the monitor window they replaced.
+than the monitor window they replaced. The revised chrome and the metric bars
+cost **+66,224 bytes (+0.6%)** on top of Plan 191, and the vendored
+`softbuffer` patch costs **nothing measurable**: it changes one word in a
+pixel-format declaration that was already in the binary.
 
 **Where that megabyte goes**, from `cargo bloat --release --crates`, which
 attributes the linked binary per crate:
@@ -849,8 +916,9 @@ apps/gregg-gui/
 │   └── ui/
 │       └── main.slint    # the Pulldown and the SystemTrayIcon
 └── vendor/
-    ├── VENDORED-PATCH.md # why the vendored crate exists
-    └── annotate-snippets/
+    ├── VENDORED-PATCH.md # why each vendored crate exists
+    ├── annotate-snippets/
+    └── softbuffer/
 ```
 
 ### The layers

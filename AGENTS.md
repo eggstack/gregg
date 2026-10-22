@@ -104,6 +104,29 @@ The GUI prints one machine-readable line — `pulldown=placed x=… y=… width=
 height=… area=…` — so the native exercises assert the **position**, not only
 that a window exists.
 
+**The pulldown's macOS look depends on a vendored `softbuffer` patch — keep
+it.** On macOS a frameless Slint window *is* a transparent `NSWindow`, and
+`winit` asks for exactly that, but the framebuffer carrying the window's
+pixels goes through `softbuffer`, whose macOS backend declares the pixel format
+as `CGImageAlphaInfo::NoneSkipFirst` — **no alpha channel** — so CoreGraphics
+presents every transparent pixel opaque. The pulldown's shadow margin is
+transparent by design, so it was presented as a **thick black frame**, and the
+card's rounded corners were black squares. The fix is one word
+(`CGImageAlphaInfo::PremultipliedFirst`) in a **vendored copy** of `softbuffer`
+0.4.8 under `apps/gregg-gui/vendor/softbuffer`, because 0.4.8 is the latest
+release and the defect is still in it. `softbuffer` was already in the graph
+through Slint, so no crate was added. The change is inside Apple's platform
+only. **Do not drop that copy** without checking the release notes for the
+alpha declaration: without it the pulldown cannot have a soft shadow or
+rounded corners on macOS at all, because the alternative is an opaque square
+window. `apps/gregg-gui/vendor/VENDORED-PATCH.md` carries the rationale, the
+measurements and the removal condition. The rest of the pulldown's chrome is
+a **measured** macOS hairline (`NSColor.separatorColor`, not Slint's
+`Palette.border`, which is 45 % black in one pixel in the light scheme), a
+translucent card fill, a **fourteen-ring Gaussian shadow** (Slint's software
+renderer ignores `drop-shadow-*`), and a pointer on the card's **trailing
+edge** — the edge the tray is on.
+
 **The GUI may write the configuration file, and only through the CLI's own
 code.** The panel's add, remove and rename go through `gregg::cli::add_host`
 and `gregg::cli::remove_host` — the paths `gregg add` and `gregg remove` take —

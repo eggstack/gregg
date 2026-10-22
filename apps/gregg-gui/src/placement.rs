@@ -720,6 +720,8 @@ mod tests {
             ("the footer", "height: 18px"),
             ("the host row", "height: 46px"),
             ("the job row", "height: 22px"),
+            ("the metric row", "metric-row-height: 18px"),
+            ("the metric bar", "metric-bar-height: 6px"),
             ("the status line", "0px : 18px"),
             ("the message", "0px : 30px"),
             ("the tray warning", "0px : 18px"),

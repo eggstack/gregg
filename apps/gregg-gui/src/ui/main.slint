@@ -78,11 +78,30 @@ export struct HostRow {
     selected: bool,
 }
 
-/// One labelled value, used for the metric, detail and EggPool panes.
+/// One labelled value, used for the detail and EggPool panes.
 export struct ValueRow {
     /// The short label.
     label: string,
     /// The formatted value.
+    value: string,
+}
+
+/// One measured row, with the bar that shows its share.
+///
+/// The TUI draws the same measures as `label [bar] share value`, so the two
+/// read the same way: the bar is the share, the share is a column of its
+/// own, and the value is what the share does not say.
+export struct MetricRow {
+    /// The short label, e.g. `CPU`.
+    label: string,
+    /// The share as text, e.g. `39.4%`. Empty when the platform reported none.
+    pct_text: string,
+    /// The share of the row that is used, in `0..=1`.
+    ///
+    /// Negative when there is no reading at all, so that an empty bar says
+    /// "not measured" rather than "measured as zero".
+    fraction: float,
+    /// The value that is not a share, e.g. `6.1 / 15.5 GiB`.
     value: string,
 }
 
@@ -143,6 +162,32 @@ component Link inherits Rectangle {
     }
 }
 
+/// A usage bar: a track with a filled share of it.
+///
+/// The track is the card's own border colour and the fill is the system's
+/// accent, so the bar follows the desktop's scheme instead of a colour
+/// chosen here. A row with no reading leaves the bar empty: an empty bar
+/// says "not measured", and the row's own text says the same thing.
+component UsageBar inherits Rectangle {
+    /// The share that is filled, in `0..=1`.
+    in property <float> fraction: 0;
+
+    /// Whether the row carries a reading at all.
+    in property <bool> measured: false;
+
+    border-radius: root.height / 2;
+    // The track is the foreground at a tenth of its strength: a bar's track
+    // is a filled area, not an edge, so it is not the card's hairline.
+    background: Palette.foreground.with-alpha(0.15);
+
+    Rectangle {
+        width: root.measured ? max(0px, root.width * root.fraction) : 0px;
+        height: root.height;
+        border-radius: root.height / 2;
+        background: Palette.accent-background;
+    }
+}
+
 export component Pulldown inherits Window {
     title: "Gregg";
     // The pulldown is a popover, not a window: no chrome, and it stays above
@@ -199,7 +244,7 @@ export component Pulldown inherits Window {
     in property <[HostRow]> hosts;
 
     /// The selected host's measured rows.
-    in property <[ValueRow]> metrics;
+    in property <[MetricRow]> metrics;
 
     /// The selected host's drive and interface rows.
     in property <[ValueRow]> details;
@@ -329,8 +374,54 @@ export component Pulldown inherits Window {
     /// The room the shadow takes around the card.
     private property <length> margin: 14px;
 
+    /// The card's hairline.
+    ///
+    /// A native macOS popover has **no stroked outline**: its edge is the
+    /// edge of the vibrant material, a step of about a tenth of the
+    /// luminance. `NSColor.separatorColor` is that step — measured at
+    /// `rgba(0, 0, 0, 0.098)` in the light scheme and
+    /// `rgba(255, 255, 255, 0.098)` in the dark one.
+    ///
+    /// `Palette.border` is **not** it: in the light scheme it is `#00000073`,
+    /// forty-five percent of black in a single pixel, which is a hard dark
+    /// line drawn *around* the panel rather than an edge of it.
+    private property <color> hairline:
+        Palette.color-scheme == ColorScheme.dark ? #FFFFFF19 : #00000019;
+
+    /// How dark the card's shadow is at its darkest.
+    ///
+    /// It is the shadow's *peak*, not the alpha of one step: the steps add
+    /// up, and this is roughly what they add up to at the card's own edge.
+    private property <float> shadow-strength: 0.20;
+
     /// The card's corner radius.
     private property <length> radius: 12px;
+
+    /// The columns of a measured row.
+    ///
+    /// The label's column is wide enough for the longest label the model
+    /// uses (`COMMIT`), the bar has a fixed width so every row's bar starts
+    /// at the same place, and the share's column is wide enough for `100%`.
+    private property <length> metric-label-width: 42px;
+    private property <length> metric-bar-width: 76px;
+    private property <length> metric-bar-height: 6px;
+    private property <length> metric-share-width: 38px;
+    private property <length> metric-row-height: 18px;
+
+    /// Where the pointer toward the tray item sits.
+    ///
+    /// The pulldown is anchored to the platform's **trailing** corner, and
+    /// that is where the tray item is, so the pointer sits there too — a beak
+    /// under the item it belongs to, the way a native popover's is. Slint
+    /// 1.18 does not expose the tray item's own position, so the pointer
+    /// follows the card's anchor rather than the item's exact place.
+    ///
+    /// The inset keeps the pointer's base on the card's flat edge, clear of
+    /// the rounded corner.
+    private property <length> pointer-width: 14px;
+    private property <length> pointer-height: 7px;
+    private property <length> pointer-inset: 16px;
+    private property <length> pointer-x: root.width - root.margin - root.pointer-inset - root.pointer-width;
 
     /// The width the panes get: the card without its padding.
     private property <length> pane-width: root.width - 2 * root.margin - 2 * root.pane-padding;
@@ -358,16 +449,22 @@ export component Pulldown inherits Window {
         // The card's shadow.
         //
         // Slint's software renderer does not draw drop shadows — its
-        // `draw_box_shadow` is an empty stub — so the shadow is drawn: three
-        // rounded rectangles behind the card, each a little larger and
-        // fainter than the last.
-        for layer in 3 : Rectangle {
-            x: root.margin - layer * 2px;
-            y: root.margin + layer * 1px;
-            width: root.width - 2 * (root.margin - layer * 2px);
-            height: root.height - 2 * root.margin + layer * 3px;
-            border-radius: root.radius + layer * 2px;
-            background: layer == 0 ? #00000026 : (layer == 1 ? #00000017 : #0000000d);
+        // `draw_box_shadow` is an empty stub — so the shadow is drawn: a
+        // stack of thin rounded rectangles behind the card, each one pixel
+        // further out and a little fainter than the last.
+        //
+        // The alphas follow a Gaussian falloff, so the *sum* of the steps is
+        // one soft shadow that fades to nothing at the window's edge. A few
+        // wide steps would read as a ring around the card instead, which is
+        // what a hard shadow looks like on a bright desktop: a band, not a
+        // shadow.
+        for step in 14 : Rectangle {
+            x: root.margin - (step + 1) * 1px;
+            y: root.margin - (step + 1) * 1px;
+            width: root.width - 2 * (root.margin - (step + 1) * 1px);
+            height: root.height - 2 * (root.margin - (step + 1) * 1px);
+            border-radius: root.radius + (step + 1) * 1px;
+            background: rgba(0, 0, 0, root.shadow-strength * (exp(0.0 - step * step / 50.0) - exp(0.0 - (step + 1) * (step + 1) / 50.0)));
         }
 
         // The card. It is the pulldown's own shape: rounded, and outlined
@@ -380,8 +477,17 @@ export component Pulldown inherits Window {
             height: root.height - 2 * root.margin;
             border-radius: root.radius;
             border-width: 1px;
-            border-color: Palette.border;
-            background: Palette.background;
+            border-color: root.hairline;
+            // The card's fill.
+            //
+            // A native macOS popover is a *vibrant material*: it transmits
+            // most of what is behind it, desaturated and darkened on the way
+            // through. Slint cannot blur the backdrop, so the closest thing
+            // is a fill that lets a little of the desktop through — enough
+            // that the panel belongs to the desktop rather than sitting on
+            // it, and little enough that the text stays legible over any
+            // wallpaper.
+            background: Palette.background.with-alpha(0.94);
 
             VerticalLayout {
                 padding: 0px;
@@ -637,15 +743,63 @@ export component Pulldown inherits Window {
                                 Rectangle {
                                     min-height: 1px;
                                     max-height: 1px;
-                                    background: Palette.border;
+                                    background: root.hairline;
                                 }
 
-                                for row in root.metrics : Text {
-                                    text: row.label + "  " + row.value;
-                                    font-size: 12px;
-                                    color: Palette.foreground;
-                                    overflow: elide;
-                                    wrap: no-wrap;
+                                // A measured row: the label, the bar that shows
+                                // the share, the share itself, and the value
+                                // the share does not say. The columns are
+                                // properties, so every row's bar starts at the
+                                // same place and the row cannot drift from
+                                // the pane it is laid out in.
+                                for row in root.metrics : Rectangle {
+                                    height: root.metric-row-height;
+
+                                    Text {
+                                        x: 0px;
+                                        y: 0px;
+                                        width: root.metric-label-width;
+                                        text: row.label;
+                                        font-size: 12px;
+                                        color: Palette.foreground;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        wrap: no-wrap;
+                                    }
+
+                                    UsageBar {
+                                        x: root.metric-label-width + 4px;
+                                        y: (root.metric-row-height - root.metric-bar-height) / 2;
+                                        width: root.metric-bar-width;
+                                        height: root.metric-bar-height;
+                                        fraction: row.fraction;
+                                        measured: row.fraction >= 0;
+                                    }
+
+                                    Text {
+                                        x: root.metric-label-width + 4px + root.metric-bar-width + 6px;
+                                        y: 0px;
+                                        width: root.metric-share-width;
+                                        text: row.pct_text;
+                                        font-size: 12px;
+                                        color: Palette.foreground;
+                                        vertical-alignment: center;
+                                        horizontal-alignment: right;
+                                        overflow: elide;
+                                        wrap: no-wrap;
+                                    }
+
+                                    Text {
+                                        x: root.metric-label-width + 4px + root.metric-bar-width + 6px + root.metric-share-width + 8px;
+                                        y: 0px;
+                                        width: max(0px, root.list-content-width - (root.metric-label-width + 4px + root.metric-bar-width + 6px + root.metric-share-width + 8px));
+                                        text: row.value;
+                                        font-size: 12px;
+                                        color: Palette.foreground;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        wrap: no-wrap;
+                                    }
                                 }
 
                                 for row in root.details : Text {
@@ -659,7 +813,7 @@ export component Pulldown inherits Window {
                                 Rectangle {
                                     min-height: 1px;
                                     max-height: 1px;
-                                    background: Palette.border;
+                                    background: root.hairline;
                                     visible: root.jobs.length > 0;
                                 }
 
@@ -693,7 +847,7 @@ export component Pulldown inherits Window {
                                 Rectangle {
                                     min-height: 1px;
                                     max-height: 1px;
-                                    background: Palette.border;
+                                    background: root.hairline;
                                     visible: root.eggpool.length > 0;
                                 }
 
@@ -780,7 +934,7 @@ export component Pulldown inherits Window {
                             Rectangle {
                                 min-height: 1px;
                                 max-height: 1px;
-                                background: Palette.border;
+                                background: root.hairline;
                             }
 
                             HorizontalLayout {
@@ -864,7 +1018,7 @@ export component Pulldown inherits Window {
                             Rectangle {
                                 min-height: 1px;
                                 max-height: 1px;
-                                background: Palette.border;
+                                background: root.hairline;
                             }
 
                             HorizontalLayout {
@@ -957,46 +1111,46 @@ export component Pulldown inherits Window {
         // outline runs into the pointer's outline instead of crossing it.
         Path {
             visible: root.pointer-at-top;
-            x: (root.width - 18px) / 2;
-            y: root.margin - 11px;
-            width: 18px;
-            height: 11px;
+            x: root.pointer-x;
+            y: root.margin - root.pointer-height;
+            width: root.pointer-width;
+            height: root.pointer-height;
             fit: ImageFit.fill;
-            commands: "M 0 11 L 9 0 L 18 11 Z";
-            fill: Palette.border;
+            commands: "M 0 7 L 7 0 L 14 7 Z";
+            fill: root.hairline;
         }
 
         Path {
             visible: root.pointer-at-top;
-            x: (root.width - 16px) / 2;
-            y: root.margin - 9px;
-            width: 16px;
-            height: 9px;
+            x: root.pointer-x + 1px;
+            y: root.margin - root.pointer-height + 2px;
+            width: root.pointer-width - 2px;
+            height: root.pointer-height - 2px;
             fit: ImageFit.fill;
-            commands: "M 1 9 L 8 0 L 15 9 Z";
-            fill: Palette.background;
+            commands: "M 1 5 L 6 0 L 11 5 Z";
+            fill: Palette.background.with-alpha(0.94);
         }
 
         Path {
             visible: !root.pointer-at-top;
-            x: (root.width - 18px) / 2;
+            x: root.pointer-x;
             y: root.height - root.margin;
-            width: 18px;
-            height: 11px;
+            width: root.pointer-width;
+            height: root.pointer-height;
             fit: ImageFit.fill;
-            commands: "M 0 0 L 18 0 L 9 11 Z";
-            fill: Palette.border;
+            commands: "M 0 0 L 14 0 L 7 7 Z";
+            fill: root.hairline;
         }
 
         Path {
             visible: !root.pointer-at-top;
-            x: (root.width - 16px) / 2;
+            x: root.pointer-x + 1px;
             y: root.height - root.margin;
-            width: 16px;
-            height: 9px;
+            width: root.pointer-width - 2px;
+            height: root.pointer-height - 2px;
             fit: ImageFit.fill;
-            commands: "M 0 0 L 16 0 L 8 9 Z";
-            fill: Palette.background;
+            commands: "M 1 0 L 11 0 L 6 5 Z";
+            fill: Palette.background.with-alpha(0.94);
         }
 
         // The resize grip, in the corner. The pulldown has no window frame,
@@ -1007,7 +1161,7 @@ export component Pulldown inherits Window {
             width: 14px;
             height: 14px;
             border-width: 1px;
-            border-color: Palette.border;
+            border-color: root.hairline;
 
             TouchArea {
                 moved => {

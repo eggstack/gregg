@@ -114,14 +114,28 @@ pub enum HostState {
 }
 
 /// One measured row.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// It is not `Eq`: a row carries a measured share, and a float is not
+/// something Rust can say is equal to itself.
+#[derive(Debug, Clone, PartialEq)]
 pub struct MetricRow {
     /// A stable key for the row, e.g. `cpu` or `memory`.
     pub key: &'static str,
     /// The short label, e.g. `CPU` or `MEM`.
     pub label: String,
-    /// The formatted value, or [`MISSING`] when the value is unavailable.
+    /// The share of the row that is used, in `0..=100`, when the platform
+    /// reported a usable one. It is what the row's bar is filled to, and it
+    /// is `None` when the platform reported no share at all.
+    pub pct: Option<f32>,
+    /// The share as text, e.g. `39.4%`. Empty when there is no share.
+    pub pct_text: String,
+    /// The value that is not a share, condensed for the bar's row, e.g.
+    /// `6.1 / 15.5 GiB`. Empty when the row is nothing but a share.
     pub value: String,
+    /// The row as the host list's one-line summary reads it, e.g.
+    /// `6.1 GiB / 15.5 GiB (39.4%)`. The summary is the long form, because
+    /// the host list has no room for a bar and no column to put a share in.
+    pub summary: String,
 }
 
 /// One drive's row in the selected host's detail.
@@ -155,7 +169,10 @@ pub struct InterfaceRow {
 }
 
 /// One host, ready to render.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// It is not `Eq`, because a host carries measured rows and a measured share
+/// is a float.
+#[derive(Debug, Clone, PartialEq)]
 pub struct SystemCard {
     /// The stable system id. Selection is keyed on this.
     pub id: String,
@@ -251,7 +268,10 @@ pub struct EggpoolView {
 }
 
 /// Everything the window and the tray render.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// It is not `Eq`, because a host carries measured rows and a measured share
+/// is a float.
+#[derive(Debug, Clone, PartialEq)]
 pub struct GuiViewModel {
     /// The connection state.
     pub connection: ConnectionState,
@@ -448,17 +468,62 @@ fn status_text(state: &HostState) -> String {
 /// families — swap or commit, load, frequency, I/O wait, network — appear
 /// only when the platform actually reported them, so a missing row means
 /// "this platform does not report it" rather than "the value is zero".
+/// The share of a row that is used, when the platform reported a usable one.
+///
+/// A non-finite reading is not a share: the bar is left empty rather than
+/// filled with a number nobody measured. An out-of-range reading is clamped,
+/// because a bar that runs past its own track is not a measurement either.
+fn usable_pct(pct: f32) -> Option<f32> {
+    if pct.is_finite() {
+        Some(pct.clamp(0.0, 100.0))
+    } else {
+        None
+    }
+}
+
+/// Two formatted measurements in one cell, with the unit written once when
+/// both carry the same one: `6.1 / 15.5 GiB`, `4.2 / 16.1 KiB/s`.
+///
+/// When the two land in **different** units — a small `used` against a large
+/// `total` — each keeps its own, because dropping either unit would make
+/// the number mean something other than what was measured.
+fn format_pair(first: &str, second: &str) -> String {
+    match (first.rsplit_once(' '), second.rsplit_once(' ')) {
+        (Some((first_value, first_unit)), Some((second_value, second_unit)))
+            if first_unit == second_unit =>
+        {
+            format!("{first_value} / {second_value} {first_unit}")
+        }
+        _ => format!("{first} / {second}"),
+    }
+}
+
+/// The measured rows for one host.
+///
+/// The rows that are always present are CPU, memory and disk. The optional
+/// families — swap or commit, load, frequency, I/O wait, network — appear
+/// only when the platform actually reported them, so a missing row means
+/// "this platform does not report it" rather than "the value is zero".
 fn metric_rows(latest: &NormalizedSnapshot) -> Vec<MetricRow> {
     let mut rows = vec![
         MetricRow {
             key: "cpu",
             label: "CPU".to_owned(),
-            value: format_pct(latest.usage_pct),
+            pct: usable_pct(latest.usage_pct),
+            pct_text: format_pct(latest.usage_pct),
+            value: String::new(),
+            summary: format_pct(latest.usage_pct),
         },
         MetricRow {
             key: "memory",
             label: "MEM".to_owned(),
-            value: format!(
+            pct: usable_pct(latest.memory.usage_pct),
+            pct_text: format_pct(latest.memory.usage_pct),
+            value: format_pair(
+                &format_bytes(latest.memory.used_bytes),
+                &format_bytes(latest.memory.total_bytes),
+            ),
+            summary: format!(
                 "{} / {} ({})",
                 format_bytes(latest.memory.used_bytes),
                 format_bytes(latest.memory.total_bytes),
@@ -472,7 +537,13 @@ fn metric_rows(latest: &NormalizedSnapshot) -> Vec<MetricRow> {
         rows.push(MetricRow {
             key: "swap",
             label: "SWP".to_owned(),
-            value: format!(
+            pct: usable_pct(swap.usage_pct),
+            pct_text: format_pct(swap.usage_pct),
+            value: format_pair(
+                &format_bytes(swap.used_bytes),
+                &format_bytes(swap.total_bytes),
+            ),
+            summary: format!(
                 "{} / {} ({})",
                 format_bytes(swap.used_bytes),
                 format_bytes(swap.total_bytes),
@@ -483,7 +554,13 @@ fn metric_rows(latest: &NormalizedSnapshot) -> Vec<MetricRow> {
         rows.push(MetricRow {
             key: "commit",
             label: "COMMIT".to_owned(),
-            value: format!(
+            pct: usable_pct(commit.usage_pct),
+            pct_text: format_pct(commit.usage_pct),
+            value: format_pair(
+                &format_bytes(commit.used_bytes),
+                &format_bytes(commit.limit_bytes),
+            ),
+            summary: format!(
                 "{} / {} ({})",
                 format_bytes(commit.used_bytes),
                 format_bytes(commit.limit_bytes),
@@ -499,7 +576,13 @@ fn metric_rows(latest: &NormalizedSnapshot) -> Vec<MetricRow> {
             rows.push(MetricRow {
                 key: "disk",
                 label: "DISK".to_owned(),
-                value: format!(
+                pct: usable_pct(aggregate.usage_pct),
+                pct_text: format_pct(aggregate.usage_pct),
+                value: format_pair(
+                    &format_bytes(aggregate.used_bytes),
+                    &format_bytes(aggregate.total_bytes),
+                ),
+                summary: format!(
                     "{} / {} ({})",
                     format_bytes(aggregate.used_bytes),
                     format_bytes(aggregate.total_bytes),
@@ -510,31 +593,42 @@ fn metric_rows(latest: &NormalizedSnapshot) -> Vec<MetricRow> {
     }
 
     if let Some(network) = latest.network.as_ref() {
-        let value = format!(
-            "{} / {}",
-            format_rate(network.aggregate_rx_bytes_per_sec),
-            format_rate(network.aggregate_tx_bytes_per_sec)
-        );
-        let mut row = MetricRow {
-            key: "network",
-            label: "NET".to_owned(),
-            value,
-        };
+        let rx = format_rate(network.aggregate_rx_bytes_per_sec);
+        let tx = format_rate(network.aggregate_tx_bytes_per_sec);
+        // The bar's row is the condensed one: the two rates share a unit, and
+        // the link's capacity is the denominator the share was taken against.
+        let mut value = format_pair(&rx, &tx);
+        let mut summary = format!("{rx} / {tx}");
         // The link capacity is optional even when the throughput is not.
         if let Some(capacity) = network
             .aggregate_rx_capacity_bps
             .or(network.aggregate_tx_capacity_bps)
         {
-            row.value = format!("{} ({})", row.value, format_capacity(Some(capacity)));
+            let capacity = format_capacity(Some(capacity));
+            value = format!("{value} ({capacity})");
+            summary = format!("{summary} ({capacity})");
         }
-        rows.push(row);
+        // The network's share of its link is the same measure the TUI draws
+        // its own bar from, so the two cannot disagree.
+        let pct = network.aggregate_utilization_pct().and_then(usable_pct);
+        rows.push(MetricRow {
+            key: "network",
+            label: "NET".to_owned(),
+            pct,
+            pct_text: pct.map_or_else(String::new, format_pct),
+            value,
+            summary,
+        });
     }
 
     if let Some(load) = latest.load.as_ref() {
         rows.push(MetricRow {
             key: "load",
             label: "LOAD".to_owned(),
+            pct: None,
+            pct_text: String::new(),
             value: format_load(load),
+            summary: format_load(load),
         });
     }
 
@@ -542,7 +636,10 @@ fn metric_rows(latest: &NormalizedSnapshot) -> Vec<MetricRow> {
         rows.push(MetricRow {
             key: "frequency",
             label: "FREQ".to_owned(),
+            pct: None,
+            pct_text: String::new(),
             value: format_frequency(frequency),
+            summary: format_frequency(frequency),
         });
     }
 
@@ -554,7 +651,10 @@ fn metric_rows(latest: &NormalizedSnapshot) -> Vec<MetricRow> {
             rows.push(MetricRow {
                 key: "iowait",
                 label: "IO".to_owned(),
-                value: format_pct(iowait),
+                pct: usable_pct(iowait),
+                pct_text: format_pct(iowait),
+                value: String::new(),
+                summary: format_pct(iowait),
             });
         }
     }
@@ -567,7 +667,7 @@ fn headline(metrics: &[MetricRow]) -> String {
     metrics
         .iter()
         .filter(|row| row.key == "cpu" || row.key == "memory")
-        .map(|row| format!("{} {}", row.label, row.value))
+        .map(|row| format!("{} {}", row.label, row.summary))
         .collect::<Vec<_>>()
         .join("  ")
 }
@@ -1256,12 +1356,15 @@ mod tests {
             .expect("a disk row");
         // Half of the total is 50%, and the denominator is the *total*, not
         // the available space.
-        assert!(disk.value.contains("50.0%"), "{}", disk.value);
+        assert!(disk.pct_text.contains("50.0%"), "{}", disk.pct_text);
         assert!(
             disk.value.contains("93.1 GiB"),
             "the denominator must be the total: {}",
             disk.value
         );
+        // The bar's row is the condensed one, so the unit is written once.
+        assert!(disk.value.contains(" / "), "{}", disk.value);
+        assert_eq!(disk.value.matches("GiB").count(), 1, "{}", disk.value);
     }
 
     #[test]
@@ -1926,11 +2029,11 @@ mod tests {
             .iter()
             .find(|row| row.key == "disk")
             .expect("a disk row");
-        assert!(disk.value.contains("10.0%"), "{}", disk.value);
+        assert!(disk.pct_text.contains("10.0%"), "{}", disk.pct_text);
         assert!(
-            !disk.value.contains("50.0%"),
+            !disk.summary.contains("50.0%"),
             "the previous endpoint's numbers must not survive: {}",
-            disk.value
+            disk.summary
         );
 
         // And so do the detail rows.
@@ -1971,5 +2074,38 @@ mod tests {
             "the selected card must be the host's own: {}",
             card.endpoint
         );
+    }
+
+    /// A pair of measurements shares its unit when both carry the same one.
+    #[test]
+    fn a_pair_writes_its_unit_once() {
+        assert_eq!(format_pair("6.1 GiB", "15.5 GiB"), "6.1 / 15.5 GiB");
+        assert_eq!(format_pair("4.2 KiB/s", "16.1 KiB/s"), "4.2 / 16.1 KiB/s");
+    }
+
+    /// Two measurements in different units keep both, because dropping either
+    /// unit would make the number mean something other than what was measured.
+    #[test]
+    fn a_pair_in_two_units_keeps_both() {
+        assert_eq!(format_pair("1.0 MiB", "2.0 GiB"), "1.0 MiB / 2.0 GiB");
+        assert_eq!(format_pair("0 B", "2.0 GiB"), "0 B / 2.0 GiB");
+    }
+
+    /// A share is only a share when the platform reported a finite one.
+    #[test]
+    fn a_non_finite_share_is_no_share() {
+        assert_eq!(usable_pct(f32::NAN), None);
+        assert_eq!(usable_pct(f32::INFINITY), None);
+        assert_eq!(usable_pct(f32::NEG_INFINITY), None);
+        assert_eq!(usable_pct(0.0), Some(0.0));
+        assert_eq!(usable_pct(42.5), Some(42.5));
+    }
+
+    /// An out-of-range reading is clamped: a bar that runs past its own track
+    /// is not a measurement either.
+    #[test]
+    fn an_out_of_range_share_is_clamped() {
+        assert_eq!(usable_pct(-1.0), Some(0.0));
+        assert_eq!(usable_pct(150.0), Some(100.0));
     }
 }

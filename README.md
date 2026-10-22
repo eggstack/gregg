@@ -249,7 +249,10 @@ the platform routes the tray's click to that callback instead of popping the
 menu. So the tray's **click opens the pulldown and the pulldown carries the
 content**, with no launcher entry. The pulldown is anchored to the trailing
 corner of the display, on the side where the desktop's own shell lives, and its
-position and size are remembered across restarts.
+position and size are remembered across restarts. It **looks** like a macOS
+dropdown too: a rounded card of translucent material with a hairline edge, a
+soft shadow and a pointer toward the tray item, and the selected host's
+metrics carry **usage bars** in the same shape the TUI's metric rows carry.
 
 On a desktop with **no system tray** — a plain GNOME session has no
 `StatusNotifierItem` host — the tray cannot appear at all. The GUI notices,

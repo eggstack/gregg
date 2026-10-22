@@ -1,3 +1,19 @@
+# Vendored patches
+
+This directory holds two vendored copies of crates.io crates. Each section
+below says what the crate is, why the graph or the product needs the vendored
+copy, exactly what was changed, and how to remove it.
+
+| Crate                | Version | Why it is vendored                                    |
+| -------------------- | ------- | ----------------------------------------------------- |
+| `annotate-snippets`  | 0.12.9  | the dependency graph cannot otherwise be resolved       |
+| `softbuffer`         | 0.4.8   | macOS drops the framebuffer's alpha channel without it |
+
+Both are MIT OR Apache-2.0 licensed, which the root workspace's `deny.toml`
+already allows.
+
+---
+
 # Vendored patch: `annotate-snippets` 0.12.9
 
 This directory is a vendored copy of
@@ -103,3 +119,134 @@ byte-identical to upstream 0.12.9.
 If the `gregg` core library ever stops depending on `ratatui` 0.29 (or
 `ratatui` ever relaxes its `unicode-width` pin), delete this directory and
 the `[patch.crates-io]` section of `../Cargo.toml`.
+
+---
+
+# Vendored patch: `softbuffer` 0.4.8
+
+This is a vendored copy of
+[`softbuffer`](https://crates.io/crates/softbuffer) 0.4.8 (MIT OR
+Apache-2.0). `softbuffer` is not a new dependency: Slint's winit backend
+already depends on it to present the software renderer's frames, and it was
+already in this workspace's dependency graph before the copy was made. Only
+the **macOS** presentation path is changed, and only by one word.
+
+## The defect
+
+On macOS a frameless Slint window is a transparent `NSWindow`: `winit` asks
+for it explicitly (`NSWindow.opaque = false`, `backgroundColor = clear`), and
+`i-slint-backend-winit` asks for transparency exactly when the window's
+background is not opaque or the window has no frame. The window server
+honours that — the window really is transparent, and `CGWindowListCreateImage`
+reports the unpainted region as alpha 0.
+
+The **framebuffer** that carries the window's pixels is the problem.
+`softbuffer`'s macOS backend hands CoreGraphics a `CGImage` whose pixel format
+is declared as:
+
+```rust
+CGImageAlphaInfo::NoneSkipFirst
+```
+
+`NoneSkipFirst` means *there is no alpha channel at all*: the first component
+of each 32-bit pixel is an unused filler byte. So although the software
+renderer writes a correct premultiplied alpha into that byte, CoreGraphics
+throws it away and presents every pixel opaque.
+
+The visible consequence is exactly the defect this patch exists to fix: the
+pulldown's shadow margin — the 14 px around the card — is transparent in the
+framebuffer, so it is presented as **solid black**. The pulldown wore a thick
+black frame instead of a soft shadow, and its rounded corners were black
+squares.
+
+## The patch
+
+One word, in `src/backends/cg.rs`:
+
+```rust
+CGImageAlphaInfo::PremultipliedFirst   // upstream: CGImageAlphaInfo::NoneSkipFirst
+```
+
+`PremultipliedFirst` declares the **same 32-bit layout** with the alpha
+channel present. "First" is the most significant byte of the pixel word, which
+for `CGBitmapByteOrderInfo::Order32Little` is the last byte in memory — which
+is exactly where this backend puts the alpha: the buffer is packed as
+`alpha << 24 | red << 16 | green << 8 | blue`. The colour components are
+already premultiplied by the renderer that fills the buffer, which is what
+`PremultipliedFirst` expects.
+
+Nothing else about the presentation path changes: the pixel layout, the byte
+order, the blending, the `CGColorSpace` and the layer's `contents` are
+identical. The only difference is that the alpha survives the trip to the
+screen.
+
+### Why this is safe
+
+- The change is inside `#[cfg(target_vendor = "apple")]` code. The X11,
+  Wayland, KMS, Win32, Android, Orbital and web backends are byte-identical to
+  upstream 0.4.8, so Linux and Windows are unaffected.
+- The declared format now *matches the data*. Upstream was describing a
+  buffer that carries alpha as one that does not, which is a
+  representation bug, not a deliberate choice: an alpha-carrying framebuffer
+  presented as opaque is wrong for every consumer, not only for a window that
+  wants transparency.
+- An opaque window is unaffected in appearance. When the framebuffer is fully
+  opaque, premultiplied and straight alpha are the same values.
+
+### How the fix was verified
+
+The behaviour was measured, not inferred:
+
+- A purpose-built AppKit probe presented the **same** premultiplied RGBA
+  bytes under both declarations. `noneSkipFirst` produced an opaque black
+  border (`alpha = 255`); `premultipliedFirst` produced a transparent one
+  (`alpha = 0`). The window's own pixels were read back with
+  `CGWindowListCreateImage`.
+- The pulldown itself was captured with `screencapture -l`, which reports the
+  window's own alpha. Before the patch the 14 px margin read
+  `(0, 0, 0, 255)`; after it, `(0, 0, 0, 0)`, and the shadow rings became
+  genuinely translucent.
+- The composited result was measured over a known light background: the
+  shadow ramps smoothly from 17 % darkening at the card's edge to nothing 14 px
+  out, with no banding.
+
+## Other changes to the vendored copy
+
+All of them are to the crates.io-normalized `Cargo.toml`; the `src/` tree is
+byte-identical to upstream 0.4.8 **except** for `src/backends/cg.rs`.
+
+1. `src/backends/cg.rs` — the alpha declaration described above. The file
+   carries the rationale in a comment at the patch site.
+2. The `[[bench]]` target and every `[dev-dependencies]` table removed. This
+   copy is only ever built as a library dependency of Slint's winit backend,
+   and cargo refuses to load a manifest whose declared target file is missing.
+3. `include` replaces `exclude`, so the vendored copy packages only the files
+   this crate actually builds from.
+4. An empty `[workspace]` table added, so this copy is its own workspace root
+   and is not pulled into the `apps/gregg-gui` workspace as a member. That
+   also keeps it out of the GUI workspace's `cargo fmt` and `cargo clippy`
+   gates, which is correct: it is upstream's code, not this project's.
+
+## Alternatives that were considered and rejected
+
+- **Move the GUI to a GPU renderer.** Slint's femtovg and Skia renderers do
+  present transparency, but enabling either adds a GPU stack to a build that
+  is deliberately software-only, and it is a much larger change than the
+  defect deserves.
+- **Make the pulldown's window opaque and drop the shadow.** Without an alpha
+  channel there is no shadow and no rounded corner — the window would be a
+  square rectangle. That trades a cosmetic defect for a worse one.
+- **Patch the window instead of the framebuffer.** The `NSWindow` is already
+  transparent and needs no change; only the pixels it is handed were wrong.
+- **Present the frame ourselves.** Building a `CGImage` with alpha in the GUI
+  and setting it on the layer by hand would mean re-implementing the whole
+  presentation path, in `unsafe` AppKit code, inside the application. It
+  would be far more code and far more risk than the one word upstream needs.
+
+## Removing the patch
+
+When `softbuffer` releases a version whose macOS backend declares the
+framebuffer's alpha channel, delete `vendor/softbuffer` and its
+`[patch.crates-io]` entry in `../Cargo.toml`. The pulldown's shadow and
+rounded corners depend on it, so check the release notes for the alpha
+declaration before removing the copy.

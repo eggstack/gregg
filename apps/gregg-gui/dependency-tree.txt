@@ -728,7 +728,7 @@ raw-window-handle v0.6.2
 rgb v0.8.53 (*)
 scoped-tls-hkt v0.1.5
 scopeguard v1.2.0
-softbuffer v0.4.8
+softbuffer v0.4.8 (/Users/davidbowman/projects/gregg/apps/gregg-gui/vendor/softbuffer)
 objc2 v0.6.5 (*)
 objc2-core-foundation v0.3.2 (*)
 objc2-core-graphics v0.3.2 (*)
