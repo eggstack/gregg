@@ -311,6 +311,36 @@ What **is** closed by this plan, and does not need re-doing:
 Implemented on 2026-10-22. The plan is **not closed**: the interactive native acceptance gate
 below is unchecked, exactly as Plan 190 leaves it.
 
+### Three failures that only a native Windows job could have found
+
+The GUI's CI job runs the same workspace natively on macOS, Windows and Linux, and
+that is the authority for the Windows and Linux legs. This plan is a record of what
+that authority caught, because two of the three failures were invisible on the
+author's macOS host:
+
+1. **`dead_code` on the anchor enum.** Each platform constructs only one of the two
+   anchor variants — the top-trailing corner everywhere but Windows, the
+   bottom-trailing corner on Windows — so the other one is dead code there. It is
+   allowed on the enum, with the reason, rather than on one variant.
+2. **`clippy::result_large_err` on a closure over the store's error type.** The
+   store's `ConfigError` carries a `toml::de::Error`, which is larger on Windows
+   because of platform-specific `io::Error` size variance. The root workspace has
+   allowed that lint for exactly this reason since Plan 040; the GUI workspace has
+   no such allowance, so the test was changed instead — it writes the whole
+   configuration rather than mutating it, and no lint is silenced.
+3. **A test that assumed the shell's strip is always at the top.** The desktop
+   shell's strip is at the top on macOS and Linux and at the bottom on Windows, and
+   the test asserted the top case on every platform. The fix was not to correct the
+   assertion but to **remove the platform conditional from the arithmetic**: the
+   inset now takes the anchor as an argument, so both of its cases are tested on
+   every platform, and a platform conditional in it can no longer hide.
+
+The first two were found by a local `--target x86_64-pc-windows-gnu` Clippy
+cross-check, which is a fast development aid and **not** closure evidence; the
+third was found by the native Windows job, which is the authority. The Linux leg
+could not be cross-checked at all from macOS, because the fontconfig system
+library is not available for cross-compiling.
+
 ### What was built
 
 - **One surface.** `apps/gregg-gui/src/ui/main.slint` defines a `Pulldown` component and a
