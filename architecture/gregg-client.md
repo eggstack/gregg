@@ -589,19 +589,35 @@ condition are in `apps/gregg-gui/vendor/VENDORED-PATCH.md`. **Do not drop that
 copy**: without it the pulldown cannot have a soft shadow or rounded corners
 on macOS at all, because the alternative is an opaque square window.
 
-The pulldown's **fleet view** is the TUI's **condensed fleet row with bars in
-it**: one line per host, and the whole fleet readable at a glance. The columns
-are the TUI's condensed table's, with the swap-or-commit column added —
-`HOST`, `CPU`, `MEM`, `SWP`/`COMMIT`, `DISK`, `NET`, `LOAD` — and the
-headings sit above the rows so every row's bar starts at the same place. The
-row **names the host and not where it is**: the endpoint is the detail view's
-business, the way the TUI's condensed row does not carry it either. The
-readings that are **not used shares** are carried beside the row rather than
-in a column of their own, in the TUI's own places: the **I/O wait follows the
-host's name** (the TUI's `IO 1.5%` token) and the **frequency follows the CPU
-percentage** (the TUI's CPU row carries it there). A host that is not online
-has **no columns at all** — its row says why it is offline and nothing else,
-which is the TUI's own rule.
+The pulldown's **fleet view** is the TUI's condensed fleet row **turned on its
+side**: every host is a **block of its own**, so the fleet is a table of blocks
+rather than a table of rows. A block is a **header line** and the **five used
+shares** under it.
+
+The header line **names the host and carries the readings that are not used
+shares** — the I/O wait, the load, the core count and the frequency — in the
+TUI's own words and the TUI's own order: `Deadpool  IO 40.7%  9.87/11.42/12.26
+16C  912.96MHz`. The block names the host and **not where it is**: the endpoint
+is the detail view's business, the way the TUI's condensed row does not carry
+it either.
+
+The five rows are the TUI's five used shares — `CPU`, `MEM`, `SWP`/`COMMIT`,
+`DISK` and `NET` — and each row carries **only its share**: the bar takes the
+**full width of the row** less the percentage, and the percentage is the last
+thing in the row. The bar carries the precision and the number carries the
+glance. A reading that is **not** a used share has no bar, so it can never be
+drawn as one: the I/O wait in particular is a fraction of *time*, and a bar
+that meant something else would misread.
+
+A host that is not online has **no rows at all** — its header says why it is
+offline and nothing else, which is the TUI's own rule. The list is **bounded**
+and scrolls: the pulldown is a popover, and a fleet can be large.
+
+The **selected** host is marked with a quiet tint and by its name in the accent
+colour, and deliberately **not** with the platform's selection colour: that
+colour is a saturated accent, and the palette's own foreground for it is black
+on macOS, which draws a bar as what reads as a hole. A bar is a *measurement*,
+and a measurement looks the same wherever it is.
 
 The **detail pane** carries the **same shape the TUI's metric rows carry**: a
 label, a usage bar, the share in per cent, and the reading. The rows, the

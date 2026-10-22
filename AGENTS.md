@@ -71,15 +71,23 @@ cron and EggPool panes — or the buttons — out of the panel. It is dismissed 
 dismissal**, because Slint 1.18 exposes no focus-lost event, and that limit is
 stated in the documentation rather than papered over.
 
-**The pulldown has two views, and the fleet view is a compact table.** The
-**fleet** is the TUI's condensed fleet row with bars in it: one line per host,
-a usage bar for each of the five used shares (`CPU`, `MEM`, `SWP`/`COMMIT`,
-`DISK`, `NET`), and the readings that are not used shares carried beside the
-row in the TUI's own places — the I/O wait after the host's name, the
-frequency after the CPU percentage. The row names the host and not where it
-is. The selected host's own numbers are behind the pulldown's own footer
-control, so the main window is a list of hosts and nothing else. **A bar fills
-from its left edge**, and that is written down: Slint centres a child that has
+**The pulldown has two views, and the fleet view is a table of blocks.** The
+**fleet** is the TUI's condensed fleet row turned on its side: every host is a
+**block of its own** — a **header line** that names the host and carries the
+readings that are not used shares (the I/O wait, the load, the core count and
+the frequency) in the TUI's own words, and under it the **five used shares**
+(`CPU`, `MEM`, `SWP`/`COMMIT`, `DISK`, `NET`), one row each, each row carrying
+**only its share**: the bar takes the full width of the row less the
+percentage, and the percentage is the last thing in the row. A reading that is
+not a used share has no bar, so it can never be drawn as one. The block names
+the host and not where it is. A host that is not online has **no rows**: its
+header says why it is offline and nothing else. The selected host's own
+numbers are behind the pulldown's own footer control, so the main window is a
+list of hosts and nothing else. The selected host is marked with a **quiet
+tint** and by its name in the accent colour, never with the platform's
+selection colour: that colour is a saturated accent whose palette foreground
+is black on macOS, and a bar drawn in it reads as a hole. **A bar fills from
+its left edge**, and that is written down: Slint centres a child that has
 a size and no explicit `x`/`y` inside a parent that is not a layout, so every
 element the pulldown places inside another element carries its own `x` and
 `y`.

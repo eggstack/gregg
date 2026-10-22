@@ -10,19 +10,26 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - **The desktop frontend's pulldown has two views, and the fleet view is a
-  compact table with usage bars.** The pulldown's **fleet** is now the TUI's
-  **condensed fleet row with bars in it**: one line per host, with a **usage
-  bar** for each of the five used shares — `CPU`, `MEM`, `SWP`/`COMMIT`,
-  `DISK` and `NET` — under a row of column headings, so every row's bar
-  starts at the same place and the columns line up down the whole fleet. The
-  row **names the host and not where it is**: the endpoint is the detail
-  view's business, the way the TUI's condensed row does not carry it either.
-  The readings that are **not** used shares are carried beside the row in the
-  TUI's own places: the **I/O wait follows the host's name** (the TUI's
-  `IO 1.5%` token) and the **frequency follows the CPU percentage** (the
-  TUI's CPU row carries it there). A host that is not online has **no
-  columns at all** — its row says why it is offline and nothing else, which
-  is the TUI's own rule.
+  table of blocks.** The pulldown's **fleet** is now the TUI's condensed fleet
+  row **turned on its side**: every host is a **block of its own**, so the fleet
+  is a table of blocks rather than a table of rows. A block is a **header
+  line** — the host's name and the readings that are **not** used shares, in
+  the TUI's own words and the TUI's own order, e.g.
+  `Deadpool  IO 40.7%  9.87/11.42/12.26  16C  912.96MHz` — and the **five used
+  shares** under it: `CPU`, `MEM`, `SWP`/`COMMIT`, `DISK` and `NET`, one row
+  each. Each row carries **only its share**: the bar takes the **full width of
+  the row** less the percentage, and the percentage is the last thing in the
+  row. A reading that is not a used share has no bar, so it can never be drawn
+  as one: the I/O wait in particular is a fraction of *time*.
+
+  The block **names the host and not where it is**: the endpoint is the detail
+  view's business, the way the TUI's condensed row does not carry it either. A
+  host that is not online has **no rows at all** — its header says why it is
+  offline and nothing else, which is the TUI's own rule. The selected host is
+  marked with a quiet tint and by its name in the accent colour, and
+  deliberately **not** with the platform's selection colour: that colour is a
+  saturated accent whose palette foreground is black on macOS, which draws a
+  bar as what reads as a hole.
 
   The selected host's own numbers — its metrics, drives and interfaces, its
   scheduler jobs and records, and the `EggPool` plane — are behind the
