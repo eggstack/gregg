@@ -223,35 +223,64 @@ mutation.
 
 ## Closure gates
 
-- [ ] The framework decision above is recorded with its evidence, and the
+- [x] The framework decision above is recorded with its evidence, and the
       `std-widgets` import is either removed with a smaller measured binary or
-      kept with the measurement recorded.
-- [ ] The separate monitor window is gone: one tray pulldown carries the
+      kept with the measurement recorded. — The review is in this file and the
+      import was **kept**: the panel's `Button` and `LineEdit` come from it.
+      The measurement is in the closure record: the release binary is
+      11,896,608 bytes against 10,803,360 before the plan, and the font and
+      SVG stacks the import brings did not grow at all.
+- [x] The separate monitor window is gone: one tray pulldown carries the
       fleet summary, the host list, the selected host's metrics, drives,
-      interfaces, cron, records and `EggPool`.
-- [ ] The panel opens from the tray, is positioned within the work area,
+      interfaces, cron, records and `EggPool`. — `src/ui/main.slint` defines a
+      `Pulldown` component and a `TrayIcon` component and no other window.
+- [x] The panel opens from the tray, is positioned within the work area,
       keeps its position and size, and is dismissed by `Esc`, the tray toggle
       and its close control. The absence of click-away dismissal is stated in
-      the user documentation.
-- [ ] The panel follows the desktop colour scheme through `Palette`, and the
-      buttons have hover and pressed states.
-- [ ] Add, remove and rename work from the panel against the real config
+      the user documentation. — The position is clamped to the display's bounds
+      and remembered, `Esc` is handled by the panel's focus scope, and
+      `apps/gregg-gui/README.md` states that Slint 1.18 exposes no focus-lost
+      event, so there is no click-away dismissal.
+- [x] The panel follows the desktop colour scheme through `Palette`, and the
+      buttons have hover and pressed states. — `Palette` is imported and used
+      for every colour, and the buttons are `std-widgets`' `Button`, which has
+      both states.
+- [x] Add, remove and rename work from the panel against the real config
       path, with the CLI's validation and atomic write, and a refused
-      mutation leaves the config byte-identical and shows a visible reason.
-- [ ] An endpoint change is presented as a replacement, states that the
+      mutation leaves the config byte-identical and shows a visible reason. —
+      The write path is `gregg::cli::add_host` / `remove_host` against the same
+      `ConfigStore`, and the tests in `hosts.rs` write to a real store in a
+      temporary directory and compare the file's bytes before and after a
+      refusal.
+- [x] An endpoint change is presented as a replacement, states that the
       host's identity changes, and is applied only on the operator's explicit
-      confirmation.
-- [ ] The GUI still opens no HTTP client, still starts no polling plane, and
-      the daemon's `DaemonRequest` set is unchanged.
-- [ ] The GUI's own CI job still formats, lints, tests and release-builds on
-      macOS, Windows and Linux, and the native tray exercises still pass.
-- [ ] The host-management path is proven on **all three** targets in CI
+      confirmation. — The form's note says the host is replaced and its
+      identity changes, and the confirming button is labelled **Replace
+      endpoint**.
+- [x] The GUI still opens no HTTP client, still starts no polling plane, and
+      the daemon's `DaemonRequest` set is unchanged. —
+      `crates/gregg/src/clientd/protocol.rs` is untouched: no `DaemonRequest`
+      variant was added, removed or changed. The GUI's own test asserts it
+      links no HTTP client, and the write path was narrowed until the HTTP and
+      TLS stack was not even *linked*.
+- [x] The GUI's own CI job still formats, lints, tests and release-builds on
+      macOS, Windows and Linux, and the native tray exercises still pass. —
+      `scripts/check-gui.sh` passes locally and the CI job runs the same script
+      on all three legs. Run `39727675355` is green on all three GUI legs and
+      on the core `Windows` job.
+- [x] The host-management path is proven on **all three** targets in CI
       without a desktop session, because it is a config-and-reload path rather
-      than a pointer path.
+      than a pointer path. — The tests in `hosts.rs` use a temporary directory
+      and the real `ConfigStore`, and are part of the GUI workspace's
+      `cargo test` on every leg of that run.
 - [ ] The **interactive** native acceptance — a visible notification-area
       icon, the pulldown opening from it, and the panel being usable on a
       real desktop — is recorded per target, or is **left unchecked** and
-      blocks shipment for that target, exactly as Plan 190 leaves it.
+      blocks shipment for that target, exactly as Plan 190 leaves it. —
+      **Left unchecked.** Nothing interactive was performed: no notification-
+      area icon was seen on a real desktop, no panel was opened by a pointer,
+      and no GNOME session was used. This blocks shipment for Windows and
+      Linux, and the GUI stays a source build.
 
 ## Preserved exclusions
 
