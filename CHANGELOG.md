@@ -9,6 +9,29 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The desktop frontend's pulldown has two views, and the fleet view is a
+  compact table with usage bars.** The pulldown's **fleet** is now the TUI's
+  **condensed fleet row with bars in it**: one line per host, with a **usage
+  bar** for each of the five used shares — `CPU`, `MEM`, `SWP`/`COMMIT`,
+  `DISK` and `NET` — under a row of column headings, so every row's bar
+  starts at the same place and the columns line up down the whole fleet. The
+  row **names the host and not where it is**: the endpoint is the detail
+  view's business, the way the TUI's condensed row does not carry it either.
+  The readings that are **not** used shares are carried beside the row in the
+  TUI's own places: the **I/O wait follows the host's name** (the TUI's
+  `IO 1.5%` token) and the **frequency follows the CPU percentage** (the
+  TUI's CPU row carries it there). A host that is not online has **no
+  columns at all** — its row says why it is offline and nothing else, which
+  is the TUI's own rule.
+
+  The selected host's own numbers — its metrics, drives and interfaces, its
+  scheduler jobs and records, and the `EggPool` plane — are behind the
+  pulldown's **own footer control**, so the main window is a list of hosts
+  and their bars and nothing else. The pulldown's height follows the view it
+  is carrying, and the host's own `Edit` and `Remove` actions are the
+  pulldown's affordances, aimed at the selection, rather than a button on
+  every row.
+
 - **A daemon-executable selection boundary for separately named frontends
   (Plan 188):** `clientd::ensure_running_with_executable` lets a frontend that
   is *not* the `gregg` binary — an optional desktop GUI — name the client it
@@ -296,6 +319,23 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   Printable Unicode, including wide CJK, is left intact.
 
 ### Fixed
+
+- **The desktop frontend's usage bars filled from the middle of their track
+  instead of from the left.** Slint centres a child that has a size and no
+  explicit `x`/`y` inside a parent that is not a layout — the compiler's
+  `maybe_center_in_parent` pass in `default_geometry` — so a bar's fill
+  without an `x` grew out of the *middle* of its track and read as a dot
+  rather than as a bar. The fill's origin is now written down, and the rule
+  is recorded in `architecture/gregg-client.md`: **every element the pulldown
+  places inside another element carries its own `x` and `y`**.
+
+- **The desktop frontend's pulldown clipped its last host row.** The
+  attribution text took a line of its own even when it was empty, and a line
+  nobody asked for is a line the height calculation does not know about, so
+  the panel was a line too short and the last row of the host list was cut
+  in half. The attribution is now wrapped in a rectangle with an explicit
+  height, like the status line and the message before it, and the panel's
+  height is exact.
 
 - **The Windows build of the `gregg` crate did not compile** (Plan 188's
   launcher boundary): the `#[cfg(windows)]` branch of `is_executable_file` in

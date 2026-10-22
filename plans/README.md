@@ -115,6 +115,20 @@ that** — the tray's click opens the pulldown, the pulldown carries the panel's
 content, the `Open Gregg` launcher entry goes, and on macOS the native menu is
 detached entirely so the pulldown carries `Reload`, `About` and `Quit`.
 
+**The pulldown now has two views, and the fleet view is a compact table**
+(amended 2026-10-22). The **fleet** is the TUI's condensed fleet row with
+bars in it — one line per host, a usage bar for each of the five used shares
+(`CPU`, `MEM`, `SWP`/`COMMIT`, `DISK`, `NET`) under a row of column headings,
+and the readings that are not used shares carried beside the row in the TUI's
+own places (the I/O wait after the host's name, the frequency after the CPU
+percentage). The selected host's own numbers are behind the pulldown's own
+footer control, so the main window is a list of hosts and nothing else. Two
+defects were fixed in the same pass: a usage bar filled from the **middle** of
+its track, because Slint centres a child that has a size and no explicit
+`x`/`y` inside a parent that is not a layout; and the pulldown clipped its
+last host row, because an empty `Text` still takes a line of its own and the
+height calculation did not know about it.
+
 The same run found **two defects that Plan 191's closure record did not hold**,
 and both are in Plan 192's scope and **both are fixed**: the panel was **never
 positioned** on the startup path, because Slint's `with_winit_window` "will only

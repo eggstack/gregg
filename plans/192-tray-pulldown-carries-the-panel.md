@@ -30,6 +30,41 @@ the GUI is **not shippable** for Windows or Linux.
 > opens the pulldown, the pulldown still carries the content, there is still no launcher entry,
 > and the protocol is still untouched.
 
+> **Amendment, 2026-10-22 (second) — the pulldown now has two views, and the fleet view is
+> a compact table.**
+> The direction this plan set — *the pulldown reads as a dropdown* — is unchanged and is still the
+> goal. What changed is **what the pulldown carries at once**. The pulldown now has **two views**:
+>
+> - The **fleet** is the TUI's **condensed fleet row with bars in it**: one line per host, a usage
+>   bar for each of the five used shares (`CPU`, `MEM`, `SWP`/`COMMIT`, `DISK`, `NET`) under a
+>   row of column headings. The row **names the host and not where it is** — the endpoint is the
+>   detail view's business, the way the TUI's condensed row does not carry it either — and the
+>   readings that are **not** used shares are carried beside the row in the TUI's own places: the
+>   **I/O wait after the host's name**, the **frequency after the CPU percentage**.
+> - The **detail** — the selected host's metrics, drives and interfaces, its scheduler jobs and
+>   records, and the `EggPool` plane — is behind the pulldown's **own footer control**, so the
+>   main window is a list of hosts and nothing else.
+>
+> The pulldown's height follows the view it is carrying, and the host's own `Edit` and `Remove`
+> actions are the pulldown's affordances, aimed at the selection, rather than a button on every
+> row.
+>
+> Two defects were fixed in the same pass:
+>
+> - **A usage bar filled from the middle of its track instead of from the left.** Slint centres a
+>   child that has a size and no explicit `x`/`y` inside a parent that is not a layout (the
+>   compiler's `maybe_center_in_parent` pass), so a bar's fill without an `x` grew out of the
+>   middle of its track. Every element the pulldown places inside another element now carries its
+>   own `x` and `y`.
+> - **The pulldown clipped its last host row**, because the attribution text took a line of its
+>   own even when it was empty and the height calculation did not know about it. The attribution
+>   is now wrapped in a rectangle with an explicit height, like the status line and the message
+>   before it.
+>
+> The amendment changes the pulldown's *shape*, not its *behaviour*: the tray's click still opens
+> the pulldown, the pulldown still carries the content, there is still no launcher entry, and the
+> protocol is still untouched.
+
 ## Objective
 
 Make the **tray's click open the pulldown**, and make the pulldown **carry the panel's contents**
@@ -194,10 +229,18 @@ operator drags the panel once and expects it to stay there.
       metrics, drives, interfaces, cron, records, the `EggPool` plane and the forms, and there is
       no `Open Gregg` anywhere. The *click itself* has not been performed on any platform — that
       is the interactive acceptance below, and it is left unchecked.
+      — **Amended 2026-10-22 (second):** the content is carried in **two views** now. The
+      **fleet** is one line per host with a bar for each of the five used shares, and the
+      **detail** — the selected host's metrics, drives, interfaces, cron, records and the
+      `EggPool` plane — is behind the pulldown's own footer control. The forms are still
+      carried. The launcher is still gone.
 - [x] The native menu is not the primary surface on any platform. On macOS it is detached, and
       the pulldown carries `Reload`, `About` and `Quit`. — `platform::native_tray_menu()` is
       `false` on macOS and `true` elsewhere; the `.slint`'s menu carries `Quit Gregg` and
       nothing else; the pulldown's footer carries `Reload · Add host · EggPool · About · Quit`.
+      — **Amended 2026-10-22 (second):** the footer also carries the **view control**
+      (`Detail` in the fleet, `Fleet` in the detail) and the selected host's own `Edit` and
+      `Remove`.
 - [x] The pulldown is positioned and clamped within the work area on **every** path that opens
       it: the tray's click, the startup path, and a desktop with no tray host. The native
       exercises assert the position, not only that a window exists. — The first open is deferred
@@ -382,6 +425,25 @@ constant.
 > at the card's edge, fading to nothing 14 px out, with no banding — and the card's outline is a
 > measured macOS hairline, `NSColor.separatorColor` (`rgba(255,255,255,0.098)` dark,
 > `rgba(0,0,0,0.098)` light), which Slint's `Palette.border` is not.
+
+> **Amended 2026-10-22 (second) — the size, and what the pulldown carries.**
+> The **420×658** above is superseded: the pulldown is now **606 px wide** (the fleet table's
+> measured columns plus the card's chrome) and **264 px tall** for a seven-host fleet in the
+> fleet view, because the fleet view is **one line per host** rather than a list of hosts plus
+> every host's numbers. The detail view is taller, because it carries the numbers.
+>
+> A third renderer fact was found the hard way and is now in the `.slint`:
+>
+> - Slint **centres a child that has a size and no explicit `x`/`y`** inside a parent that is not
+>   a layout (`maybe_center_in_parent` in the compiler's `default_geometry` pass). A usage bar's
+>   fill without an `x` therefore grew out of the *middle* of its track and read as a dot. Every
+>   element the pulldown places inside another element now carries its own `x` and `y`.
+>
+> And one layout fact, which is a **height** rule rather than a renderer one: a `Text` takes a
+> line of its own **even when it is empty**, so an unwrapped line nobody asked for is a line the
+> height calculation does not know about. The attribution is wrapped in a rectangle with an
+> explicit height, like the status line and the message before it, and the panel's height is
+> exact.
 
 Two renderer facts were found the hard way and are now in the `.slint`:
 

@@ -233,12 +233,15 @@ apps/gregg-gui/target/release/gregg-gui --config ~/.config/gregg/gregg.toml \
 The tray is the always-visible entry: a health-coloured icon whose tooltip
 carries the fleet summary, and whose **click opens the pulldown**. The pulldown
 is a single borderless, always-on-top panel — there is no separate monitor
-window — carrying the fleet, the selected host's metrics, drives and
-interfaces, its scheduler jobs and the `EggPool` plane, plus `Reload`, `About`
-and `Quit`, with the host and job lists scrolling inside a panel sized to its
-content. The panel can also **add, remove, rename and re-point** the hosts in
-the config file. Dismissing the panel hides it and leaves the tray running;
-quitting the GUI never stops the client daemon.
+window — with **two views**: the **fleet**, which is one line per host with a
+**usage bar** for each of the five used shares (`CPU`, `MEM`, `SWP`/`COMMIT`,
+`DISK`, `NET`), the way the TUI's condensed fleet row reads; and the
+**detail**, which is the selected host's metrics, drives and interfaces, its
+scheduler jobs and the `EggPool` plane, and which the pulldown's own footer
+opens. The panel also carries `Reload`, `About` and `Quit`, and can **add,
+remove, rename and re-point** the hosts in the config file. Dismissing the
+panel hides it and leaves the tray running; quitting the GUI never stops the
+client daemon.
 
 The native tray menu is the **context** menu, not the dropdown — on macOS it is
 detached entirely, and elsewhere it carries only `Quit Gregg`. A native menu
@@ -251,8 +254,7 @@ content**, with no launcher entry. The pulldown is anchored to the trailing
 corner of the display, on the side where the desktop's own shell lives, and its
 position and size are remembered across restarts. It **looks** like a macOS
 dropdown too: a rounded card of translucent material with a hairline edge, a
-soft shadow and a pointer toward the tray item, and the selected host's
-metrics carry **usage bars** in the same shape the TUI's metric rows carry.
+soft shadow and a pointer toward the tray item.
 
 On a desktop with **no system tray** — a plain GNOME session has no
 `StatusNotifierItem` host — the tray cannot appear at all. The GUI notices,

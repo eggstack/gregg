@@ -71,6 +71,19 @@ cron and EggPool panes — or the buttons — out of the panel. It is dismissed 
 dismissal**, because Slint 1.18 exposes no focus-lost event, and that limit is
 stated in the documentation rather than papered over.
 
+**The pulldown has two views, and the fleet view is a compact table.** The
+**fleet** is the TUI's condensed fleet row with bars in it: one line per host,
+a usage bar for each of the five used shares (`CPU`, `MEM`, `SWP`/`COMMIT`,
+`DISK`, `NET`), and the readings that are not used shares carried beside the
+row in the TUI's own places — the I/O wait after the host's name, the
+frequency after the CPU percentage. The row names the host and not where it
+is. The selected host's own numbers are behind the pulldown's own footer
+control, so the main window is a list of hosts and nothing else. **A bar fills
+from its left edge**, and that is written down: Slint centres a child that has
+a size and no explicit `x`/`y` inside a parent that is not a layout, so every
+element the pulldown places inside another element carries its own `x` and
+`y`.
+
 **The pulldown moves under the tray's click — Plan 192.** The interaction
 model above is what Plan 191 built; Plan 192 **replaced** it, and this is the
 shape now: **the tray's click opens the pulldown, and the pulldown carries the

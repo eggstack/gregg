@@ -474,11 +474,12 @@ meaningless. An intent governs what the daemon *transmits*, never what it
 *fetches*, so a released intent costs the fleet nothing.
 
 The GUI has **one surface**: a tray pulldown (Plans 191-192). The separate monitor
-window is gone. The pulldown is a borderless, always-on-top panel that carries
-the fleet summary, the host list, the selected host's metrics, drives and
-interfaces, its scheduler jobs and records, and the `EggPool` plane. Its lists
-are bounded and scrollable, so a large fleet cannot push the cron and
-`EggPool` panes, or the buttons, out of the panel.
+window is gone. The pulldown is a borderless, always-on-top panel with **two
+views**: the **fleet**, which is one line per host, and the **detail**, which
+is the selected host's metrics, drives and interfaces, its scheduler jobs and
+records, and the `EggPool` plane. The pulldown's own footer moves between
+them. The host list is bounded and scrollable, so a large fleet cannot push
+the panel off the desktop.
 
 **The tray's click opens the pulldown, and the pulldown carries the content**
 (Plan 192). The native tray menu is **not** the dropdown: it is the context
@@ -588,7 +589,21 @@ condition are in `apps/gregg-gui/vendor/VENDORED-PATCH.md`. **Do not drop that
 copy**: without it the pulldown cannot have a soft shadow or rounded corners
 on macOS at all, because the alternative is an opaque square window.
 
-The metrics pane carries the **same shape the TUI's metric rows carry**: a
+The pulldown's **fleet view** is the TUI's **condensed fleet row with bars in
+it**: one line per host, and the whole fleet readable at a glance. The columns
+are the TUI's condensed table's, with the swap-or-commit column added —
+`HOST`, `CPU`, `MEM`, `SWP`/`COMMIT`, `DISK`, `NET`, `LOAD` — and the
+headings sit above the rows so every row's bar starts at the same place. The
+row **names the host and not where it is**: the endpoint is the detail view's
+business, the way the TUI's condensed row does not carry it either. The
+readings that are **not used shares** are carried beside the row rather than
+in a column of their own, in the TUI's own places: the **I/O wait follows the
+host's name** (the TUI's `IO 1.5%` token) and the **frequency follows the CPU
+percentage** (the TUI's CPU row carries it there). A host that is not online
+has **no columns at all** — its row says why it is offline and nothing else,
+which is the TUI's own rule.
+
+The **detail pane** carries the **same shape the TUI's metric rows carry**: a
 label, a usage bar, the share in per cent, and the reading. The rows, the
 aggregates and the "no reading" rules are the TUI's — `CPU`, `MEM`,
 `SWP`/`COMMIT`, `DISK`, `NET`, `LOAD`, `FREQ`, `IO`, with `NET`'s bar the
@@ -596,14 +611,20 @@ maximum of the two directions and loopback out of the aggregate — so the two
 frontends cannot drift. A metric with no observation is `—` and **no bar**:
 an empty bar means *not measured*, never *measured as zero*, so a row with no
 reading carries a negative fraction rather than a zero one. The pane's value
-is **condensed** (a pair writes its unit once: `6.1 / 15.5 GiB`), while the
-host list keeps its long form, because that line summarises a host rather than
-describing a bar. **The bar column means "used share of a capacity", so only
-the TUI's five metric rows draw a bar**: `LOAD`, `FREQ` and `IO` are extra
-readings the TUI's condensed table carries, and none of them is a used share
-— I/O wait is a fraction of *time*, and a bar that meant something different
-from every other bar in the pane would misread. Their reading goes in the
-value column instead.
+is **condensed** (a pair writes its unit once: `6.1 / 15.5 GiB`). **The bar
+column means "used share of a capacity", so only the TUI's five metric rows
+draw a bar**: `LOAD`, `FREQ` and `IO` are extra readings the TUI's condensed
+table carries, and none of them is a used share — I/O wait is a fraction of
+*time*, and a bar that meant something different from every other bar in the
+pane would misread. Their reading goes in the value column instead, and in the
+fleet view beside the row.
+
+**A bar fills from its left edge, and that is written down.** Slint centres a
+child that has a size and no explicit `x`/`y` inside a parent that is not a
+layout (`maybe_center_in_parent` in the compiler's `default_geometry` pass),
+so a bar's fill without an `x` grows out of the *middle* of its track. Every
+element the pulldown places inside another element therefore carries its own
+`x` and `y`.
 
 A tray application is a **background** application, and on macOS that has a
 concrete consequence: an `NSStatusItem` menu does not activate the app that
