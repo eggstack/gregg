@@ -23,6 +23,9 @@ the GUI is **not shippable** for Windows or Linux.
 > The card's outline is also no longer Slint's `Palette.border` (45 % black in one pixel in the
 > light scheme): it is a **measured macOS hairline**, `NSColor.separatorColor`.
 >
+> CI run **`39833577564`** on `ee83e43` is **green on all ten jobs**, including the three `GUI`
+> legs — the only authority for the vendored `softbuffer` copy on macOS, Windows and Linux.
+>
 > The amendment changes the pulldown's *chrome*, not its *behaviour*: the tray's click still
 > opens the pulldown, the pulldown still carries the content, there is still no launcher entry,
 > and the protocol is still untouched.

@@ -552,6 +552,15 @@ light scheme was captured with the application temporarily forced to the Aqua
 appearance, so the light palette and the light hairline could be inspected on
 a dark-mode desktop.
 
+**CI:** run **`39833577564`** on `ee83e43` is **green on all ten jobs** — the
+core `Linux`, `macOS`, `macOS Intel`, `Windows`, `Scripts`, `MSRV` and
+`FreeBSD` jobs, and the three `GUI` legs. The GUI workspace is not a member
+of the root workspace, so no root job compiles it: the three `GUI` legs are
+the **only** authority for the vendored `softbuffer` copy on macOS, Windows
+and Linux, and all three are green. The `GUI (macos-15)` leg is the one that
+builds the patched macOS backend; the `GUI (ubuntu-latest)` and
+`GUI (windows-2022)` legs build the copy's untouched backends.
+
 **The cost of the revision:** the release binary is **11,962,832 bytes**,
 **+66,224 (+0.6%)** on Plan 192's 11,929,712. The vendored `softbuffer` copy
 costs **nothing measurable**: it changes one word in a pixel-format
