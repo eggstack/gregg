@@ -341,6 +341,32 @@ third was found by the native Windows job, which is the authority. The Linux leg
 could not be cross-checked at all from macOS, because the fontconfig system
 library is not available for cross-compiling.
 
+### The CI runs
+
+Run **`39727675355`**, against the implementation commit `0022d0b`, is **green on all ten jobs**:
+
+| Job | Conclusion |
+| --- | ---------- |
+| `Linux` | success |
+| `macOS (macos-15)` | success |
+| `macOS (macos-15-intel)` | success |
+| `Windows` | success |
+| `Scripts (shellcheck + pytest)` | success |
+| `MSRV (Rust 1.89)` | success |
+| `FreeBSD (gregg-host native)` | success |
+| `GUI (macos-15)` | success |
+| `GUI (windows-2022)` | success |
+| `GUI (ubuntu-latest)` | success |
+
+The three `GUI` legs are the ones that matter for this plan: the GUI workspace is not a member
+of the root workspace, so no root job compiles it, and these legs are the **only** authority for
+its Windows and Linux behaviour. `GUI (windows-2022)` is the job that found the third failure
+above.
+
+Two earlier runs on this branch failed, and both causes are fixed in the implementation commit:
+`39726097278` failed on the Windows Clippy gate (`dead_code` and `clippy::result_large_err`) and
+`39727156228` failed on the Windows test gate (`placement::tests::the_shell_strip_is_taken_off_the_display`).
+
 ### What was built
 
 - **One surface.** `apps/gregg-gui/src/ui/main.slint` defines a `Pulldown` component and a
@@ -370,7 +396,7 @@ library is not available for cross-compiling.
 | Add, remove and rename work from the panel against the real config path, with the CLI's validation and atomic write, and a refused mutation leaves the config byte-identical and shows a visible reason | **Met** | `hosts.rs` tests write to a real `ConfigStore` in a temporary directory and compare the file's bytes before and after a refusal. |
 | An endpoint change is presented as a replacement, states that the host's identity changes, and is applied only on the operator's explicit confirmation | **Met** | The form's note says the host is replaced and its identity changes, and the confirming button is labelled **Replace endpoint**. |
 | The GUI still opens no HTTP client, still starts no polling plane, and the daemon's `DaemonRequest` set is unchanged | **Met** | `crates/gregg/src/clientd/protocol.rs` is untouched: no `DaemonRequest` variant was added, removed or changed. The GUI's own test asserts it links no HTTP client, and the host-management path was narrowed until the HTTP stack was not even *linked* (below). |
-| The GUI's own CI job still formats, lints, tests and release-builds on macOS, Windows and Linux, and the native tray exercises still pass | **Met** | `scripts/check-gui.sh` passes locally; the CI job runs the same script on all three legs. |
+| The GUI's own CI job still formats, lints, tests and release-builds on macOS, Windows and Linux, and the native tray exercises still pass | **Met** | `scripts/check-gui.sh` passes locally; the CI job runs the same script on all three legs. Run `39727675355` is green on all three GUI legs, and on the core `Windows` job. |
 | The host-management path is proven on all three targets in CI without a desktop session | **Met** | The tests in `hosts.rs` use a temporary directory and the real `ConfigStore`, and are part of the GUI workspace's `cargo test` on every leg. |
 | The **interactive** native acceptance is recorded per target, or left unchecked and blocking shipment | **Left unchecked** | Nothing interactive was performed: no notification-area icon was seen, no panel was opened by a pointer, no GNOME session was used. This blocks shipment for Windows and Linux, and the GUI stays a source build. |
 

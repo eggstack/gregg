@@ -294,6 +294,32 @@ reading is that the pulldown is **not** lighter in memory than the monitor
 window was. The **request-budget** result above is unaffected: the GUI still
 attaches to the same daemon and still adds no request of its own.
 
+The CI that carries Plan 191 is run **`39727675355`**, green on **all ten
+jobs**: the core `Linux`, `macOS`, `macOS Intel`, `Windows`, `Scripts`, `MSRV`
+and `FreeBSD` jobs, and the three `GUI` legs (`macos-15`, `windows-2022`,
+`ubuntu-latest`). The `GUI` legs are the only authority for this workspace's
+Windows and Linux behaviour, because this workspace is not a member of the
+root workspace and no root job compiles it.
+
+Two earlier runs on the same branch failed, and both are recorded here because
+the failures are what the native Windows job is for. `39726097298` failed on
+the Windows Clippy gate — a `dead_code` on an enum variant that only one
+platform constructs, and a `clippy::result_large_err` on a closure over the
+store's error type, which is larger on Windows. The second was **not** silenced:
+the test was changed to write the whole configuration instead of mutating it.
+`39727156228` failed on the Windows test gate, because a test asserted the
+desktop shell's strip is always at the top; it is at the top on macOS and Linux
+and at the bottom on Windows. The fix removed the platform conditional from the
+arithmetic rather than correcting the assertion, so both cases are now tested
+on every platform.
+
+Neither failure was visible on the author's macOS host. The first two were
+caught by a local `--target x86_64-pc-windows-gnu` Clippy cross-check, which is
+a development aid and **not** closure evidence; the third was caught by the
+native Windows job, which is the authority. The Linux leg could not be
+cross-checked at all from macOS, because the fontconfig system library is not
+available for cross-compiling.
+
 ## The fixture
 
 | piece | what it is |
