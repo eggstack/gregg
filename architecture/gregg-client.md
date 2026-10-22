@@ -598,7 +598,12 @@ an empty bar means *not measured*, never *measured as zero*, so a row with no
 reading carries a negative fraction rather than a zero one. The pane's value
 is **condensed** (a pair writes its unit once: `6.1 / 15.5 GiB`), while the
 host list keeps its long form, because that line summarises a host rather than
-describing a bar.
+describing a bar. **The bar column means "used share of a capacity", so only
+the TUI's five metric rows draw a bar**: `LOAD`, `FREQ` and `IO` are extra
+readings the TUI's condensed table carries, and none of them is a used share
+— I/O wait is a fraction of *time*, and a bar that meant something different
+from every other bar in the pane would misread. Their reading goes in the
+value column instead.
 
 A tray application is a **background** application, and on macOS that has a
 concrete consequence: an `NSStatusItem` menu does not activate the app that

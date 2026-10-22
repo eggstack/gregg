@@ -160,7 +160,11 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   zero*, so such a row carries a negative fraction rather than a zero one. The
   pane's value is **condensed** — a pair writes its unit once, `6.1 / 15.5
   GiB` — while the host list keeps its long form, because that line summarises
-  a host rather than describing a bar.
+  a host rather than describing a bar. **The bar column means "used share of a
+  capacity"**, so only the TUI's five metric rows draw one: `LOAD`, `FREQ` and
+  `IO` are extra readings the TUI's condensed table carries, and I/O wait in
+  particular is a fraction of *time*, so a bar that meant something different
+  from every other bar in the pane would misread.
 
 ### Changed
 

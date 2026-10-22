@@ -347,10 +347,14 @@ the share in per cent, and the reading.
   `LOAD`, `FREQ` and `IO`, with the same aggregates and the same "no reading"
   rules. A metric with no observation is `—`, never `0`.
 - A row that **has a share** gets a bar: `CPU`, `MEM`, `SWP`/`COMMIT`, `DISK`
-  and `NET`. `NET`'s bar is the maximum of the two directions, which is the
-  TUI's rule for network utilisation, and loopback is not in the aggregate.
-  `LOAD`, `FREQ` and `IO` have no share to draw, so their bar is empty — an
-  empty bar means *not measured*, never *measured as zero*.
+  and `NET` — the TUI's five metric rows. `NET`'s bar is the maximum of the
+  two directions, which is the TUI's rule for network utilisation, and
+  loopback is not in the aggregate. `LOAD`, `FREQ` and `IO` are **not** used
+  shares, so they draw no bar: the bar column means *used share of a
+  capacity* everywhere in the pane, and I/O wait in particular is a fraction
+  of *time*, so a bar that meant something else would misread. Their reading
+  sits in the value column instead, and an empty bar means *not measured*,
+  never *measured as zero*.
 - The bar's **track** is the foreground at 15 % and its **fill** is the
   accent colour, and it is a pill: the fill's radius is half the bar's
   height.

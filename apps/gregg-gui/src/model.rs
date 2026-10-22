@@ -462,12 +462,6 @@ fn status_text(state: &HostState) -> String {
     }
 }
 
-/// The measured rows for one host.
-///
-/// The rows that are always present are CPU, memory and disk. The optional
-/// families — swap or commit, load, frequency, I/O wait, network — appear
-/// only when the platform actually reported them, so a missing row means
-/// "this platform does not report it" rather than "the value is zero".
 /// The share of a row that is used, when the platform reported a usable one.
 ///
 /// A non-finite reading is not a share: the bar is left empty rather than
@@ -651,9 +645,14 @@ fn metric_rows(latest: &NormalizedSnapshot) -> Vec<MetricRow> {
             rows.push(MetricRow {
                 key: "iowait",
                 label: "IO".to_owned(),
-                pct: usable_pct(iowait),
-                pct_text: format_pct(iowait),
-                value: String::new(),
+                // I/O wait is a fraction of *time*, not a used share of a
+                // *capacity*, so it gets no bar: the bar column means "used
+                // share" everywhere else in this pane, and a bar that means
+                // something else would misread. The TUI's own metric rows do
+                // not carry an IO row either — it is a header token there.
+                pct: None,
+                pct_text: String::new(),
+                value: format_pct(iowait),
                 summary: format_pct(iowait),
             });
         }
@@ -1285,6 +1284,55 @@ mod tests {
             "an unpolled host must have no metrics at all"
         );
         assert!(!model.systems[0].headline.contains("0.0%"));
+    }
+
+    /// The bar column means "used share of a capacity", so only the rows
+    /// that carry such a share draw a bar.
+    ///
+    /// The TUI's metric rows are the five that do: CPU, MEM, SWP-or-COMMIT,
+    /// DISK and NET. LOAD, FREQ and IO are extra readings the TUI's condensed
+    /// table carries, and none of them is a used share — I/O wait in
+    /// particular is a fraction of *time*, and a bar that meant something
+    /// different from every other bar in the pane would misread.
+    #[test]
+    fn only_a_used_share_draws_a_bar() {
+        let model = project(
+            &snapshot_of(vec![with_snapshot(0, normalized())]),
+            &Selection::default(),
+            &ConnectionState::Connected {
+                protocol_version: 1,
+                daemon_id: "abc".to_owned(),
+            },
+            1_000,
+        );
+        let rows = &model.systems[0].metrics;
+        for row in rows {
+            match row.key {
+                "cpu" | "memory" | "swap" | "commit" | "disk" | "network" => {
+                    assert!(
+                        row.pct.is_some(),
+                        "{} is a used share and must draw a bar",
+                        row.key
+                    );
+                }
+                "load" | "frequency" | "iowait" => {
+                    assert!(
+                        row.pct.is_none(),
+                        "{} is not a used share and must not draw a bar",
+                        row.key
+                    );
+                }
+                other => panic!("an unknown metric row: {other}"),
+            }
+        }
+        // The row that has no share still carries its reading, in the value
+        // the pane shows beside the bar.
+        let iowait = rows
+            .iter()
+            .find(|row| row.key == "iowait")
+            .expect("an IO row");
+        assert_eq!(iowait.value, "1.5%");
+        assert!(iowait.pct_text.is_empty());
     }
 
     #[test]
