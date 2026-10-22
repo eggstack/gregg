@@ -481,6 +481,22 @@ records, and the `EggPool` plane. Its lists are bounded and scrollable, so a
 large fleet cannot push the cron and `EggPool` panes, or the buttons, out of
 the panel.
 
+**That interaction model is being replaced by Plan 192.** The native tray menu
+was a *launcher* for a separate window, so the content was not in the dropdown.
+A native menu cannot host arbitrary Slint content — true — but the content does
+not have to live in a *separately opened* window either: Slint's
+`SystemTrayIcon` has a **`clicked`** callback, and a native menu with no
+entries **detaches itself**, so the platform routes the tray's click to that
+callback instead of popping the menu. The direction is therefore that **the
+tray's click opens the pulldown and the pulldown carries the content**, with no
+launcher entry, and on macOS no native menu at all. The pulldown remains a
+Slint window, because a native menu cannot host Slint widgets, and it remains
+anchored to the platform's trailing corner, because Slint 1.18 does not expose
+the tray item's position. Two consequences for this document's concerns: the
+protocol is untouched either way, because the pulldown is a frontend over the
+same client daemon and the GUI still opens no HTTP client of its own; and the
+`DaemonRequest` set still gains no message.
+
 Closing the panel **hides** it and leaves the tray and the observation
 running; Quit is the only thing that ends the GUI, and it never ends the client
 daemon. `Esc`, the tray's Open Gregg entry and the panel's own Close control

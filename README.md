@@ -239,6 +239,16 @@ lists scrolling inside a panel of fixed size. The panel can also **add, remove,
 rename and re-point** the hosts in the config file. Dismissing the panel hides
 it and leaves the tray running; quitting the GUI never stops the client daemon.
 
+That interaction model is **being changed** (Plan 192, planned): the native
+tray menu is a *launcher* for a separate window, so the content is not in the
+dropdown. A native menu cannot host arbitrary Slint content, but the content
+does not have to live in a *separately opened* window either — Slint's
+`SystemTrayIcon` has a **`clicked`** callback, and a native menu with no
+entries detaches itself so the platform routes the tray's click to that
+callback instead of popping the menu. The direction is that **the tray's click
+opens the pulldown and the pulldown carries the content**, with no launcher
+entry and, on macOS, no native menu at all.
+
 On a desktop with **no system tray** — a plain GNOME session has no
 `StatusNotifierItem` host — the tray cannot appear at all. The GUI notices,
 says so in the panel, and then **quits when you close the panel** instead of

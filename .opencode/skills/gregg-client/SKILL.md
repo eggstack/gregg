@@ -222,6 +222,24 @@ from Slint's `Palette`, so it follows the desktop's scheme, and its buttons
 and text fields come from `std-widgets`, so they have the hover and pressed
 states a popover needs.
 
+**The interaction model is moving under the tray's click — Plan 192.** The
+native tray menu above was a *launcher* for a separate window, so the content
+was not in the dropdown. A native menu cannot host arbitrary Slint content,
+but that does not mean the content must live in a *separately opened* window:
+Slint's `SystemTrayIcon` has a **`clicked`** callback, and a native menu with
+no entries **detaches itself**, so the platform routes the tray's click to
+that callback instead of popping the menu — on macOS, on Windows (a right-click
+still opens the native menu) and on Linux. So: **the tray's click opens the
+pulldown, and the pulldown carries the content**; the `Open Gregg` launcher
+entry goes, and on macOS there is no native menu at all, so the pulldown
+carries `Reload`, `About` and `Quit`. The pulldown is still a Slint window,
+because a native menu cannot host Slint widgets, and it is still anchored to
+the trailing corner, because Slint 1.18 does not expose the tray item's
+position. Two traps to know: Slint's `with_winit_window` "will only succeed
+when the event loop is active", so the first open must be deferred into the
+event loop or the panel is never positioned or clamped; and the position and
+size live in `UiState` in memory, so they are forgotten on every restart.
+
 **The GUI may write the configuration file, and only through the CLI's own
 code** (Plan 191). The panel's add, remove and rename go through
 `gregg::cli::add_host` and `gregg::cli::remove_host` — the paths `gregg add`

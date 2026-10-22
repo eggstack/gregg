@@ -1,5 +1,21 @@
 # Plan 187: Optional Slint desktop frontend roadmap
 
+> **The interaction model below is superseded by Plan 192.** This roadmap's premise — *"Slint's
+> tray icon … renders a native menu; it is not a general-purpose arbitrary-content tray
+> popover"*, so *"the first UI has a native tray menu and a separately opened Slint monitor
+> window"* — was half true, and the conclusion drawn from it was wrong. The **native menu**
+> cannot host arbitrary Slint content, true; but Slint's `SystemTrayIcon` also has a
+> **`clicked`** callback, and a native menu with no entries detaches itself so the platform
+> routes the tray's click to that callback. The tray's click can therefore open a Slint popup
+> that **carries the content**, placed under the tray item: the popup *is* the pulldown, and
+> the native menu need not be the dropdown at all.
+>
+> So the corrected direction, which **Plan 192** implements, is: **the tray's click opens the
+> pulldown, and the pulldown carries the panel's content** — not a launcher that opens a
+> separate window. The objective below, the target topology, the framework constraints and
+> everything else in this roadmap stand; the two sentences that describe the *menu* and the
+> *separately opened window* are amended in place.
+
 Status: **complete for everything a macOS host can verify, plus a corrective
 pass on 2026-10-21** that fixed three real defects — the broken Windows build,
 the missing no-tray fallback, and the launch lock that made it impossible to
@@ -9,17 +25,19 @@ release qualification** — its own native-platform acceptance gate is still
 unchecked, and the outstanding work is listed in that plan's *Release
 qualification* section. Child **Plan 191 is implemented, pending native
 interactive acceptance**: the separate monitor window is gone, the GUI is one
-tray pulldown, and it can add, remove, rename and re-point hosts. The
-**interactive** three-desktop demonstration is still **outstanding and not
-claimed** — see the closure record at the end of this file and the scope
-record in `plans/README.md`. The GUI is therefore **not shippable for Windows
-or Linux**, and it stays a source build.
+tray pulldown, and it can add, remove, rename and re-point hosts. **Its
+interaction model is superseded by Plan 192**, which makes the tray's click open
+the pulldown and the pulldown carry the content, rather than the native menu
+launching a separate window. The **interactive** three-desktop demonstration is
+still **outstanding and not claimed** — see the closure record at the end of this
+file and the scope record in `plans/README.md`. The GUI is therefore **not
+shippable for Windows or Linux**, and it stays a source build.
 
 Depends on: the completed Plan 161-172 Gregg client-daemon split and current main at planning time (2026-10-21). Independent of the Plan 091 soak record.
 
 ## Objective
 
-Add a small, optional Rust desktop/menu-bar frontend that mirrors Gregg's fleet TUI without duplicating its polling, configuration, scheduler, cron history, or EggPool worker. The normal entry point is a native tray/menu-bar icon with a concise status menu. An **Open Monitor** action opens a compact, resizable monitor window. The GUI is not an agent, web dashboard, remote service, or privileged process.
+Add a small, optional Rust desktop/menu-bar frontend that mirrors Gregg's fleet TUI without duplicating its polling, configuration, scheduler, cron history, or EggPool worker. The normal entry point is a native tray/menu-bar icon, and **clicking it opens the pulldown, which carries the content itself**. ~~The normal entry point is a native tray/menu-bar icon with a concise status menu. An **Open Monitor** action opens a compact, resizable monitor window.~~ *(Amended by Plan 192: the status menu was a launcher, and the monitor window was a separate surface. The tray's click now opens the pulldown, and the pulldown carries the fleet, the metrics, the drives, the interfaces, the cron, the records, the `EggPool` plane and the host forms.)* The GUI is not an agent, web dashboard, remote service, or privileged process.
 
 ## Verified baseline and reuse contract
 
@@ -40,15 +58,34 @@ greggd fleet -- HTTP --> one gregg client daemon per config
                                +-- local IPC --> existing gregg TUI(s)
                                |
                                +-- local IPC --> optional gregg-gui
-                                                  |-- native tray/menu
-                                                  +-- compact Slint window
+                                                  |-- native tray icon
+                                                  +-- one Slint pulldown,
+                                                      opened by the tray's
+                                                      click, carrying the
+                                                      content itself
 ~~~
+
+*(Amended by Plan 192: the pulldown replaces the "compact Slint window" that the tray's
+menu used to launch. It is still one Slint window — a native menu cannot host Slint widgets —
+but it is opened by the tray's click rather than by a menu entry, and it carries the content
+rather than pointing at it.)*
 
 The GUI owns its window/tray state, selected host, panels and view preferences. It **never** owns a remote HTTP client or polling scheduler, reads no remote config independently, and never silently falls back to direct polling. Different configs remain independent daemons; multiple GUI/TUI frontends on one config have one remote polling budget.
 
 ## Framework decision and constraints
 
-Use **Slint 1.18.x** as the primary candidate, with its `SystemTrayIcon`, a Winit backend, and the software renderer; choose minimal Cargo features based on actual native builds, not assumed defaults. Slint's tray icon is its own top-level component and renders a native menu; it is not a general-purpose arbitrary-content tray popover. The first UI has a native tray menu and a separately opened Slint monitor window; do not promise identical popup positioning across macOS, Windows, X11 and Wayland.
+Use **Slint 1.18.x** as the primary candidate, with its `SystemTrayIcon`, a Winit backend, and the software renderer; choose minimal Cargo features based on actual native builds, not assumed defaults. Slint's tray icon is its own top-level component and renders a native menu; it is not a general-purpose arbitrary-content tray popover. ~~The first UI has a native tray menu and a separately opened Slint monitor window;~~ do not promise identical popup positioning across macOS, Windows, X11 and Wayland.
+
+*(Amended by Plan 192.)* The constraint above is still true of the **native menu**: it cannot
+host arbitrary Slint content. What it did not say — and what the first UI wrongly assumed — is
+that the content must therefore live in a **separately opened** window that the menu
+*launches*. Slint's `SystemTrayIcon` also has a **`clicked`** callback, and a native menu with
+no entries detaches itself so the platform routes the tray's click to that callback instead of
+popping the menu. So the tray's click can open a Slint popup carrying the content, placed
+under the tray item. The corrected constraint is: **the pulldown is a Slint window, opened by
+the tray's click, and the native menu is not the dropdown.** The positioning caveat stands and
+is unchanged — Slint 1.18.1 does not expose the tray item's screen position, so the pulldown
+is anchored to the platform's trailing corner and clamped to the display's bounds.
 
 Slint's 2026 royalty-free desktop license has a mandatory attribution alternative (top-level AboutSlint entry or public download-page badge). Choose and document the actual license path before shipping; keep Gregg's own source license unchanged unless legal review establishes a conflict. The GUI is a general-purpose desktop application only; this plan does not license embedded deployments. Verify the exact locked Slint/slint-build version and license on implementation.
 

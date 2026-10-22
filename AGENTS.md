@@ -62,15 +62,41 @@ panel with no tray is an unreachable application. With no tray the panel is
 also opened at startup, so it is never a hidden surface.
 
 **The GUI has one surface: a tray pulldown.** The separate monitor window is
-gone. A borderless, always-on-top panel opens from the native tray menu and
-carries every pane: the fleet summary, the host list, the selected host's
-metrics, drives, interfaces, cron, records and the EggPool plane, plus the
-forms that add, remove and edit hosts. The lists scroll with **bounded**
-heights: a large fleet must not push the metrics, cron and EggPool panes — or
-the buttons — out of the panel. It is dismissed by `Esc`, the tray's Open Gregg
-entry and its own Close control; there is **no click-away dismissal**, because
-Slint 1.18 exposes no focus-lost event, and that limit is stated in the
-documentation rather than papered over.
+gone. A borderless, always-on-top panel carries every pane: the fleet summary,
+the host list, the selected host's metrics, drives, interfaces, cron, records
+and the EggPool plane, plus the forms that add, remove and edit hosts. The
+lists scroll with **bounded** heights: a large fleet must not push the metrics,
+cron and EggPool panes — or the buttons — out of the panel. It is dismissed by
+`Esc`, the tray's click and its own Close control; there is **no click-away
+dismissal**, because Slint 1.18 exposes no focus-lost event, and that limit is
+stated in the documentation rather than papered over.
+
+**The pulldown is moving under the tray's click — Plan 192.** The interaction
+model above is what Plan 191 built and what Plan 192 **replaces**: the native
+tray menu was a *launcher* for a separate window, so the content was not in the
+dropdown. A native menu cannot host arbitrary Slint content, but that does not
+mean the content must live in a *separately opened* window: Slint's
+`SystemTrayIcon` has a **`clicked`** callback, and a native menu with no entries
+**detaches itself**, so the platform routes the tray's click to that callback
+instead of popping the menu — on macOS, on Windows (where a right-click still
+opens the native menu) and on Linux. The direction is therefore: **the tray's
+click opens the pulldown, and the pulldown carries the content**; the `Open
+Gregg` launcher entry goes, and on macOS there is no native menu at all, so the
+pulldown carries `Reload`, `About` and `Quit`. Do not build against the
+launcher model. The pulldown is still a Slint window, because a native menu
+cannot host Slint widgets, and it is still anchored to the platform's trailing
+corner, because Slint 1.18 does not expose the tray item's position.
+
+**Two traps in the GUI's placement and geometry.** Slint's
+`with_winit_window` "will only succeed when the event loop is active", so
+`placement::work_area()` returns `None` before the event loop runs: the first
+open has to be **deferred into the event loop** (a thread plus
+`invoke_from_event_loop`, as the bridge already does), or the panel is never
+positioned, never clamped to the work area, and its size is never clamped
+either. And the panel's position and size live in `UiState`, in memory: the GUI
+writes **no state file**, so they are forgotten on every restart even though the
+README and the plan say they are kept. Plan 192 fixes both; until then, do not
+assume the panel is placed or that its geometry survives.
 
 **The GUI may write the configuration file, and only through the CLI's own
 code.** The panel's add, remove and rename go through `gregg::cli::add_host`

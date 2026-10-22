@@ -42,6 +42,46 @@ Plans 188, 189 and 191 are implemented. What exists:
 - an entry point (`src/main.rs`) that wires the two together and runs the
   Slint event loop.
 
+> ### The interaction model is moving — Plan 192
+>
+> Everything above describes the build as it stands. **Plan 192 changes how the
+> operator gets to it.**
+>
+> The tray's native menu today is a **launcher**: it offers a summary, a flat
+> list of host jump entries, and `Open Gregg`, and `Open Gregg` opens a
+> **separate** window that carries the content. So the content is not in the
+> dropdown, and the window that holds it reads as a small application rather
+> than a popover.
+>
+> A native menu cannot host arbitrary Slint content — that part is true — but
+> the content does not have to live in a *separately opened* window. Slint's
+> `SystemTrayIcon` also has a **`clicked`** callback, and a native menu with no
+> entries **detaches itself**, so the platform routes the tray's click to that
+> callback instead of popping the menu: on macOS
+> (`i-slint-core-1.18.1/items/system_tray/appkit.rs:248`), on Windows
+> (`windows.rs:290`, where a right-click still opens the native menu), and on
+> Linux (`ksni.rs:284`, where the desktop decides the gesture).
+>
+> So the direction is: **the tray's click opens the pulldown, and the pulldown
+> carries the content**. The `Open Gregg` launcher entry goes; on macOS there
+> is no native menu at all, and the pulldown carries `Reload`, `About` and
+> `Quit`. The pulldown is still a Slint window, because a native menu cannot
+> host Slint widgets, and it is still anchored to the platform's trailing
+> corner, because Slint 1.18 does not expose the tray item's position.
+>
+> Two defects found while reproducing this are in the same plan's scope:
+>
+> - **the panel is never positioned on the startup path.** Slint's
+>   `with_winit_window` "will only succeed when the event loop is active", and
+>   the startup path calls it before the event loop runs, so `work_area()`
+>   returns `None`: the panel is not positioned, not clamped to the work area,
+>   and its size is not clamped either. It lands wherever the window manager
+>   puts it. Deferring the first open into the event loop fixes it.
+> - **the position and size are not kept across a restart.** They live in
+>   `UiState`, in memory, and the GUI writes no state file — so the claim that
+>   the panel "remembers where the operator put it" is true for one session and
+>   false across a restart.
+
 Plan 190 owns native cross-platform qualification, the footprint measurement
 and the packaging decision. A corrective pass on 2026-10-21 fixed the
 Windows build of the `gregg` crate this frontend depends on, implemented the
@@ -654,6 +694,36 @@ a memory saving. The **request-budget** claim is unaffected — the GUI still
 attaches to the same daemon and still adds no request of its own (see
 `EVIDENCE.md`) — but the CPU and request figures above are the old shape's
 and were not re-measured.
+
+**Corrected on 2026-10-22: the table above is `ps` RSS, and RSS is the wrong
+instrument on macOS.** It counts shared, clean, reclaimable pages — the dyld
+shared cache, `icudt78l.dat`, the system font collections, the macOS
+appearance resources — which every app on the machine maps. The **physical
+footprint**, which is what the machine actually pays and what Activity Monitor
+shows, was measured on the same build with `footprint`:
+
+| configuration | `ps` RSS | **physical footprint** | dirty | Rust heap (`MALLOC_SMALL`) |
+| ------------- | -------- | ---------------------- | ----- | ------------------------- |
+| The panel open | 71–92 MB | **18 MB** | ~20 MB | 9 MB |
+| The panel hidden | 67–76 MB | **11 MB** | — | 7 MB |
+
+So the per-process cost is roughly a **quarter** of the RSS figure, and the
+"72–83 MB resident" is better read as *the size of the shared system frameworks
+this process touches*. Three further measured facts, all new:
+
+- **The cost does not scale with the fleet.** 1 host on a 5 s poll: 18 MB
+  footprint, 9 MB heap. 25 hosts on a 3 s poll: 19 MB footprint, 9 MB heap.
+- **There is no leak.** 150 s of continuous polling left the footprint flat at
+  22–24 MB, with RSS fluctuating and no trend.
+- **One real lever, and it is not reachable from inside the process.** With
+  `MallocSpaceEfficient=1` set **before** the process starts, the heap drops
+  from 14 MB to 8 MB and the footprint from 26–28 MB to **14–15 MB**, with the
+  CPU unchanged. macOS's malloc reads that variable in `malloc_init()`, before
+  `main()` runs — setting it from inside the process was measured and does
+  **not** work — so it would have to come from a launcher's environment, an
+  `LSEnvironment` plist entry, or a re-exec. `mimalloc` as a global allocator
+  was measured and gives **no** gain (13–16 MB heap); a smaller panel is
+  worth about 1 MB; and a GPU renderer is not worth its dependency.
 
 Two things worth reading carefully about the old shape's figures:
 

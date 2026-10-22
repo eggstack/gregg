@@ -89,6 +89,40 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **The desktop frontend's interaction model is changing: the tray's click will
+  open the pulldown, and the pulldown will carry the content (Plan 192,
+  planned).** Nothing changes yet — this records the direction. As built, the
+  tray's native menu is a **launcher**: it offers a summary, a flat list of
+  host jump entries and `Open Gregg`, and `Open Gregg` opens a *separate*
+  window that carries the content. So the content is not in the dropdown, and
+  the window holding it reads as a small application rather than a popover.
+  A native menu cannot host arbitrary Slint content — true — but the content
+  does not have to live in a *separately opened* window either: Slint's
+  `SystemTrayIcon` has a **`clicked`** callback, and a native menu with no
+  entries **detaches itself**, so the platform routes the tray's click to that
+  callback instead of popping the menu (on macOS, on Windows, where a
+  right-click still opens the native menu, and on Linux). The direction is
+  therefore that **the tray's click opens the pulldown and the pulldown
+  carries the content**, with no launcher entry, and on macOS no native menu
+  at all — the pulldown carries `Reload`, `About` and `Quit`. The pulldown
+  remains a Slint window, because a native menu cannot host Slint widgets, and
+  it remains anchored to the platform's trailing corner, because Slint 1.18
+  does not expose the tray item's position. The protocol is untouched either
+  way: the GUI remains a frontend over the same client daemon, opens no HTTP
+  client of its own, and `DaemonRequest` gains no message.
+
+  The same review found two defects in the current build, both of which are in
+  the plan's scope: the panel was **never positioned on the startup path**,
+  because Slint's `with_winit_window` "will only succeed when the event loop
+  is active" and the startup path calls it before the event loop runs — so
+  `work_area()` returned `None` and the panel was neither positioned nor
+  clamped to the work area; and the panel's position and size were **not kept
+  across a restart**, because they live in memory and the GUI writes no state
+  file. It also re-measured the memory: the recorded "72–83 MB resident" is
+  `ps` RSS, which on macOS is dominated by shared, clean, reclaimable pages,
+  and the **physical footprint** is **26–28 MB** — 11 MB with the panel
+  hidden, 18 MB with it open — which is roughly a quarter of the RSS figure.
+
 - **`gregg::cli` exposes the add and remove paths on their own (Plan 191):**
   `gregg::cli::add_host` and `gregg::cli::remove_host` are the code paths
   `gregg add` and `gregg remove` take — the same endpoint grammar, the same

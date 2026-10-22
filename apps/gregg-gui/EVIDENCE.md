@@ -308,6 +308,50 @@ and `FreeBSD` jobs, and the three `GUI` legs (`macos-15`, `windows-2022`,
 Windows and Linux behaviour, because this workspace is not a member of the
 root workspace and no root job compiles it.
 
+### The footprint figure was `ps` RSS, and the physical footprint is a quarter of it
+
+Re-measured on 2026-10-22. The "72–83 MB resident" and "68–104 MB" figures
+above are `ps` RSS. On macOS that counts shared, clean, reclaimable pages —
+the dyld shared cache, `icudt78l.dat`, the system font collections and the
+macOS appearance resources — which every app on the machine maps, and which
+`footprint` correctly reports as reclaimable. The **physical footprint**, which
+is what the machine actually pays and what Activity Monitor shows:
+
+| configuration | `ps` RSS | physical footprint | Rust heap (`MALLOC_SMALL`) |
+| ------------- | -------- | ------------------ | ------------------------- |
+| The panel open | 71–92 MB | **18 MB** | 9 MB |
+| The panel hidden | 67–76 MB | **11 MB** | 7 MB |
+
+Three further measured facts, and one lever that is real but unreachable from
+inside the process:
+
+- **The memory does not scale with the fleet.** 1 host on a 5 s poll: 18 MB
+  footprint, 9 MB heap. 25 hosts on a 3 s poll: 19 MB footprint, 9 MB heap.
+  The fleet projection is not what the memory is made of.
+- **There is no leak.** 150 s of continuous polling left the footprint flat at
+  22–24 MB.
+- **The system-font scan is the one sizeable, addressable cost.** Slint's
+  software renderer asks CoreText for every font descriptor and then mmaps and
+  parses every font file on the system — 645 families on this host. Measured
+  in isolation against `fontique` directly: **+6,880 KB RSS, +3,152 KB
+  footprint and 182 ms of blocking startup**, paid at `SlintContext::new`,
+  before the panel's first paint. Slint 1.18.1 gives **no** supported way to
+  turn it off: the software renderer's `std` feature includes `systemfonts`
+  unconditionally, so Slint's own `software-renderer-systemfonts` feature is a
+  no-op — removing it produced a **byte-identical** binary. Removing it would
+  need a vendored patch of Slint's runtime code, which is not worth 3.2 MB
+  and 180 ms.
+- **`MallocSpaceEfficient=1`, set before the process starts**, takes the heap
+  from 14 MB to 8 MB and the footprint from 26–28 MB to **14–15 MB**, with the
+  CPU unchanged (0.10 % of one core either way). macOS's malloc reads the
+  variable in `malloc_init()`, before `main()` runs: setting it from inside the
+  process was measured and does **not** work, so it would have to come from a
+  launcher's environment, an `LSEnvironment` plist entry, or a re-exec.
+  `mimalloc` as a global allocator was measured and gives **no** gain
+  (13–16 MB heap); a smaller panel is worth about 1 MB; and a GPU renderer
+  would add a graphics dependency the plan deliberately avoided without
+  touching the font scan.
+
 Two earlier runs on the same branch failed, and both are recorded here because
 the failures are what the native Windows job is for. `39726097298` failed on
 the Windows Clippy gate — a `dead_code` on an enum variant that only one
@@ -326,6 +370,37 @@ a development aid and **not** closure evidence; the third was caught by the
 native Windows job, which is the authority. The Linux leg could not be
 cross-checked at all from macOS, because the fontconfig system library is not
 available for cross-compiling.
+
+### The interaction model is superseded by Plan 192, and two claims did not hold
+
+Running the committed build on 2026-10-22 showed that the tray's native menu
+was a **launcher** for a separate window, so the content was not in the
+dropdown, and the window carrying it read as a small application rather than a
+popover. **Plan 192 replaces that interaction model**: the tray's *click* opens
+the pulldown, and the pulldown carries the content. The mechanism is Slint's
+`SystemTrayIcon.clicked`, and a native menu with no entries detaches itself so
+the platform routes the click there instead of popping the menu — on macOS
+(`i-slint-core-1.18.1/items/system_tray/appkit.rs:248`), on Windows
+(`windows.rs:290`, where a right-click still opens the native menu) and on
+Linux (`ksni.rs:284`). The `if cond : Menu { … }` form was **verified by
+compiling it** in this workspace.
+
+Two claims in Plan 191's record did not hold, and are corrected there:
+
+- **The panel was never positioned on the startup path.** Slint's
+  `with_winit_window` "will only succeed when the event loop is active", and
+  the startup path calls it before the event loop runs, so `work_area()`
+  returned `None`: no `set_position` at all, no clamping, and the window at
+  x=1640 on a 3840-wide display instead of under the menu bar. Deferring the
+  first open into the event loop gives `work_area=Some(left 8, top 36,
+  3824×1036)` and the window at **(3272, 36)**.
+- **The position and size were not kept across a restart.** They live in
+  `UiState`, in memory, and the GUI writes no state file.
+
+And the **Wayland** path has never been executed: the CI Linux leg runs under
+`xvfb-run`, which is X11, while `winit/x11` *and* `winit/wayland` are both
+compiled in. Wayland is the modern GNOME default, so the pulldown's behaviour
+there is untested.
 
 ## The fixture
 

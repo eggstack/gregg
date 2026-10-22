@@ -1,9 +1,36 @@
 # Plan 191: Tray pulldown GUI and host management
 
-Status: implemented, pending native interactive acceptance. Depends on Plan 190 (implemented,
-pending release qualification) and the 187-189 line; independent of Plan 091. Unblocks nothing
-yet. The interactive native acceptance gate is **unchecked**, so this plan is **not closed** and
-the GUI is **not shippable** for Windows or Linux.
+> **Its interaction model is superseded by Plan 192.** What this plan built is kept — the
+> single surface, the host management, the CLI write path, the `DaemonRequest` set unchanged —
+> but the **direction** it set is replaced. This plan made the **native tray menu the dropdown**
+> and the panel a **separately opened window that the menu launched**: a launcher with a
+> dashboard behind it. Plan 192 reverses that, so the **tray's click opens the pulldown** and
+> the pulldown **carries the panel's content** rather than pointing at it.
+>
+> Two claims this plan made do not hold, and are corrected here rather than left standing:
+>
+> - **"the panel is positioned within the work area"** is false on the path this plan's own
+>   native exercises use. `placement::work_area()` returns `None` before the event loop runs,
+>   because Slint's `with_winit_window` "will only succeed when the event loop is active", so
+>   the panel is never positioned and never clamped. Measured on the committed build on
+>   2026-10-22: `work_area=None`, no `set_position` at all, and the window at x=1640 on a
+>   3840-wide display. Plan 192 fixes it.
+> - **"the position and size are remembered"** is true for one session and false across a
+>   restart: `UiState` holds them in memory and the GUI writes no state file. Plan 192 fixes
+>   it.
+>
+> The **footprint** figures below also need one correction, measured on 2026-10-22: the
+> "72–83 MB resident" number is `ps` RSS, which on macOS is dominated by shared, clean,
+> reclaimable pages — the dyld shared cache, ICU data, the system font collections and the
+> macOS appearance resources. The **physical footprint**, which is what the machine actually
+> pays and what Activity Monitor shows, is **26–28 MB**, of which the Rust heap is 14 MB. The
+> figure is not wrong; it answers a question nobody was asking.
+
+Status: implemented, pending native interactive acceptance; its interaction model is superseded
+by Plan 192. Depends on Plan 190 (implemented, pending release qualification) and the 187-189
+line; independent of Plan 091. Unblocks nothing yet. The interactive native acceptance gate is
+**unchecked**, so this plan is **not closed** and the GUI is **not shippable** for Windows or
+Linux.
 
 ## Objective
 
@@ -14,6 +41,11 @@ monitor window carries today — and drop the separate monitor window entirely.
 Add the ability to **add, remove and edit** hosts from that panel, against the
 same Gregg config and the same per-config client daemon the GUI already
 attaches to.
+
+> **Amended by Plan 192.** "Opened from the tray" above meant *launched from the tray's menu*,
+> which is the launcher model Plan 192 replaces. It means *opened by the tray's click*, and the
+> pulldown carries the content itself. The rest of this objective — one surface, no separate
+> monitor window, host management against the same config and the same client daemon — stands.
 
 The daemon's ownership of remote polling is untouched: the pulldown is still a
 frontend over the per-config client daemon, and still opens no HTTP client of
@@ -28,7 +60,7 @@ webview; one Rust codebase; and a panel that can be shown and dismissed.
 
 | Option | Native tray | Footprint / residency | Toolchain | Verdict |
 | --- | --- | --- | --- | --- |
-| **Slint 1.18.1** (current) | First-class `SystemTrayIcon` with a native menu on all three platforms | 10,803,360 B stripped (11,896,608 B after this plan); 72–83 MB resident; ~0.65% of one core | Rust 1.92 (its own floor) | **Retain** |
+| **Slint 1.18.1** (current) | First-class `SystemTrayIcon` with a native menu on all three platforms | 10,803,360 B stripped (11,896,608 B after this plan); 72–83 MB `ps` RSS (**26–28 MB physical footprint** — see the correction in the closure record); ~0.65% of one core | Rust 1.92 (its own floor) | **Retain** |
 | `egui`/`eframe` + `tray-icon` | No built-in tray; a second crate (`tray-icon` 0.26.1) plus a hand-written native menu | Materially smaller binary and RSS, but immediate-mode redraw | `egui` 0.37 needs **Rust 1.95**; the 0.34/0.35 line fits 1.92 | Rejected |
 | Tauri / any webview | `tauri-plugin-tray` | A webview process dominates RSS | — | Excluded by existing rules |
 | GTK4 / Qt6 / per-platform native | First-class | Heavy, or three codebases | Not Rust | Rejected |
@@ -44,7 +76,11 @@ Findings:
    72–83 MB resident figure is the software renderer and the system-font
    machinery, and it is paid whether a window is open or not. Dropping the
    separate monitor window does not make the process lighter; only the
-   renderer choice would.
+   renderer choice would. **Corrected on 2026-10-22:** that 72–83 MB is `ps`
+   RSS, which on macOS counts shared and reclaimable system pages; the
+   physical footprint is **26–28 MB**, of which the system-font machinery is
+   about 3.2 MB and the Rust heap 14 MB. The renderer is still the cost, but
+   it is a quarter of the size the RSS figure suggests.
 3. **The tray is the hard part of this product, and Slint is the only Rust
    option that ships it first-class.** `SystemTrayIcon` renders a real
    `NSStatusItem` on macOS, `Shell_NotifyIcon` on Windows and a
@@ -237,10 +273,14 @@ mutation.
 - [x] The panel opens from the tray, is positioned within the work area,
       keeps its position and size, and is dismissed by `Esc`, the tray toggle
       and its close control. The absence of click-away dismissal is stated in
-      the user documentation. — The position is clamped to the display's bounds
-      and remembered, `Esc` is handled by the panel's focus scope, and
-      `apps/gregg-gui/README.md` states that Slint 1.18 exposes no focus-lost
-      event, so there is no click-away dismissal.
+      the user documentation. — **Corrected on 2026-10-22.** The `Esc` handling,
+      the close control, the tray toggle and the stated limit are as described,
+      and the position is clamped to the display's bounds *when the work area is
+      available*. But the work area is **not** available on the startup path:
+      `placement::work_area()` returns `None` before the event loop runs, so the
+      panel is never positioned or clamped there, and the position and size are
+      **not** kept across a restart. Both are fixed by **Plan 192**, which also
+      changes what the tray's click does.
 - [x] The panel follows the desktop colour scheme through `Palette`, and the
       buttons have hover and pressed states. — `Palette` is imported and used
       for every colour, and the buttons are `std-widgets`' `Button`, which has
@@ -492,6 +532,37 @@ open-panel run was 106/94/100 MB against a hidden 78 MB in the same session — 
 instead of two is not a memory saving. Plan 190's 25-host numbers were **not** re-measured,
 because the harness that produced them is not in the repository, and the numbers above
 should not be read as replacing them.
+
+**Corrected on 2026-10-22, with the measurement that was missing.** The table above is
+`ps` RSS. On macOS that number is dominated by **shared, clean, reclaimable** pages — the
+dyld shared cache, `icudt78l.dat`, the system font collections and the macOS appearance
+resources — which every app on the machine maps. The **physical footprint**, which is what
+the machine actually pays and what Activity Monitor shows, was measured with `footprint` on
+the same build:
+
+| | `ps` RSS | physical footprint | dirty | Rust heap (`MALLOC_SMALL`) |
+| --- | --- | --- | --- | --- |
+| panel hidden | 67–76 MB | **11 MB** | — | 7 MB |
+| panel open | 71–92 MB | **18 MB** | ~20 MB | 9 MB |
+
+So the per-process cost is roughly **a quarter** of the RSS figure, and the earlier
+"72–83 MB resident" is better read as *the size of the shared system frameworks this
+process touches*. Two further measured facts, both new:
+
+- **The cost does not scale with the fleet.** 1 host on a 5 s poll: 18 MB footprint, 9 MB
+  heap. 25 hosts on a 3 s poll: 19 MB footprint, 9 MB heap. The fleet projection is not
+  what the memory is made of.
+- **There is no leak.** 150 s of continuous polling: the footprint stayed flat at 22–24 MB
+  and the RSS fluctuated without a trend.
+
+And one lever that is real but not reachable from inside the process: with
+`MallocSpaceEfficient=1` set **before** the process starts, the heap drops from 14 MB to
+8 MB and the footprint from 26–28 MB to **14–15 MB**, with the CPU unchanged (0.10 % of one
+core either way). macOS's malloc reads that variable in `malloc_init()`, before `main()`
+runs — setting it from inside the process was measured and does **not** work — so it would
+have to come from a launcher's environment, an `LSEnvironment` plist entry, or a re-exec.
+`mimalloc` as a global allocator was measured and gives **no** gain (13–16 MB heap), and
+neither a smaller panel (24 → 23 MB) nor a GPU renderer is worth taking.
 
 ### Deviations from this plan, and why
 

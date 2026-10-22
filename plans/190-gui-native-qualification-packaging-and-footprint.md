@@ -95,10 +95,20 @@ has watched happen**.
 
 ### What is outstanding
 
+> **Amended on 2026-10-22 by Plan 192.** The list below was written when the GUI's surface
+> was a native tray menu that *launched* a separate monitor window. The surface has since
+> changed — Plan 191 replaced the monitor window with a single pulldown, and **Plan 192
+> changes the interaction model again**: the tray's click opens the pulldown and the pulldown
+> carries the content, so there is no `Open Monitor` action and, on macOS, no native menu at
+> all. Every item below therefore still stands **with its surface updated**, and the macOS
+> run in particular has to be **repeated**: it exercised `Open Monitor` and a monitor window,
+> and says nothing about the pulldown.
+
 1. **Interactive native acceptance, per target.**
    - **Windows** — a run in a real Windows desktop session where a **visible**
-     notification-area icon appears, the tray menu opens, Open Monitor raises
-     the window, the close button hides it, and Quit ends the GUI while the
+     notification-area icon appears, the tray menu opens, ~~Open Monitor raises
+     the window~~ **the tray's click opens the pulldown** *(as amended by Plan
+     192)*, the close button hides it, and Quit ends the GUI while the
      client daemon survives. The CI exercise proves the code compiles, lints,
      tests, starts, creates **native top-level windows** and launches a daemon
      on a native Windows host — but it enumerates window *objects* and never
@@ -107,10 +117,18 @@ has watched happen**.
    - **Linux** — a run in a **real GNOME session**. The Linux CI leg proves the
      `StatusNotifierItem` registration against a real session bus and a real
      `StatusNotifierItem` host, and the no-host fallback on a bus with no host
-     — that is the protocol half; an operator's desktop session is not.
+     — that is the protocol half; an operator's desktop session is not. The
+     session must also record **which gesture** opens the pulldown, because the
+     `StatusNotifierItem` `Activate` gesture is the desktop's decision, and the
+     CI leg runs under **Xvfb (X11)** while the **Wayland** path — which is
+     compiled in, since `winit/x11` and `winit/wayland` are both enabled — has
+     never been executed.
    - **macOS** — the matrix is **partial**: Apple Silicon was exercised (tray
      entry, menu, Open Monitor, Reload, About, Quit), the **Intel** build was
-     not produced, and there is **no recorded DPI measurement**.
+     not produced, and there is **no recorded DPI measurement**. **The
+     recorded run is now stale in substance as well as in wording**: it
+     exercised a surface that no longer exists, so the pulldown has never been
+     observed interactively on any platform.
 2. **The outstanding core defect: Windows handle inheritance.** A detached
    daemon spawn on Windows inherits every inheritable handle the parent holds,
    so a command that spawns the daemon with a **piped** stdout hangs its reader
@@ -124,7 +142,15 @@ has watched happen**.
    72–83 MB resident, roughly 0.65% of one core. The **accept** decision
    stands for the source build; whether a ten-megabyte binary and ~80 MB
    resident is the right thing to ship in a menu bar all day is a **shipping**
-   decision, not a defect.
+   decision, not a defect. **Corrected on 2026-10-22:** the 72–83 MB is `ps`
+   RSS, which on macOS is dominated by shared, clean, reclaimable pages — the
+   dyld shared cache, ICU data, the system font collections and the macOS
+   appearance resources. The **physical footprint**, which is what the machine
+   actually pays, is **26–28 MB** (11 MB with the panel hidden, 18 MB with it
+   open), of which the Rust heap is 14 MB and the system-font machinery about
+   3.2 MB. So the shipping question is smaller than it looked: the honest
+   figure is roughly a quarter of the RSS number, and the measurement is
+   recorded in Plan 191's closure record.
 4. **Recorded dependency debt.** The GUI workspace vendors a patched
    `annotate-snippets` 0.12.9 to reconcile the conflicting `unicode-width`
    requirements of Slint and Ratatui. It works, and it is byte-identical to the
@@ -673,6 +699,14 @@ this line.
   fail only when the machine is loaded.
 
 **Native (macOS, a real desktop session)**
+
+> **This run observed a surface that no longer exists.** It was performed against the Plan
+> 189 shape — a native tray menu that launched a separate monitor window. Plan 191 replaced
+> the monitor window with a single pulldown, and **Plan 192** replaces the interaction model
+> again: the tray's *click* opens the pulldown and the pulldown carries the content. So this
+> list is the record of **what was observed then**, and it is the **starting point** for the
+> pulldown's own interactive run, not a description of the GUI as it stands. In particular,
+> the pulldown has **never** been observed interactively on any platform.
 
 - The tray entry is present in the menu bar, with a health-coloured icon; the
   tray menu contains exactly the fleet summary, Open Monitor, Reload, About
