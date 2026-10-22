@@ -59,6 +59,19 @@ use model::{ConnectionState, GuiViewModel, Selection};
 
 slint::include_modules!();
 
+/// One measured column, as the fleet's table shows it.
+///
+/// A cell with no reading carries a negative fraction, so its bar is empty
+/// rather than full: an empty bar says "not measured", and a full one would
+/// say "measured as everything".
+fn fleet_cell(cell: &model::FleetCell) -> FleetCell {
+    FleetCell {
+        pct_text: cell.pct_text.clone().into(),
+        fraction: cell.fraction,
+        extra: cell.extra.clone().into(),
+    }
+}
+
 /// The Slint attribution the royalty-free Slint license requires.
 ///
 /// Slint's royalty-free desktop license (`LicenseRef-Slint-Royalty-free-2.0`)
@@ -90,16 +103,38 @@ const PLACEMENT_RETRY: Duration = Duration::from_millis(16);
 /// What the panel is showing.
 ///
 /// The Slint side has its own `PanelMode`; this is the Rust side's copy of
-/// the same thing, and the two are kept in step by [`push_form`].
+/// the same thing, and the two are kept in step by [`push_view`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum FormMode {
-    /// The fleet.
+enum ViewMode {
+    /// The fleet: one row per host, with its bars.
     #[default]
-    Metrics,
+    Fleet,
+    /// The selected host's detail: its metrics, its drives, its interfaces,
+    /// its scheduler and the `EggPool` plane.
+    Detail,
     /// The form that adds a host.
     AddHost,
     /// The form that edits one host.
     EditHost,
+}
+
+impl ViewMode {
+    /// Whether this view is one of the two the operator looks at.
+    fn is_panel(&self) -> bool {
+        matches!(self, Self::Fleet | Self::Detail)
+    }
+
+    /// The other view: the fleet, or the selected host's detail.
+    ///
+    /// A form is not one of the two, and it does not toggle: the form is
+    /// left alone until it is submitted or abandoned.
+    fn toggled(&self) -> Self {
+        match self {
+            Self::Fleet => Self::Detail,
+            Self::Detail => Self::Fleet,
+            other => *other,
+        }
+    }
 }
 
 /// The GUI's own state.
@@ -129,7 +164,7 @@ struct UiState {
     /// How big the operator last made the panel, in logical pixels.
     panel_size: Option<(f32, f32)>,
     /// What the panel is showing.
-    form_mode: FormMode,
+    view_mode: ViewMode,
     /// The host-management form's state.
     form: HostForm,
     /// What the last action said.
@@ -420,6 +455,19 @@ fn main() {
         callback_bridge.set_cron_intent(None);
     });
 
+    // The two views. The fleet is a list of hosts and their bars; the detail
+    // is the selected host's own numbers. The control toggles between them,
+    // and it is the *selected* host whose detail it is.
+    let callback_state = Arc::clone(&state);
+    let callback_panel = panel.as_weak();
+    panel.on_view_toggled(move || {
+        let Ok(mut state) = callback_state.lock() else {
+            return;
+        };
+        state.view_mode = state.view_mode.toggled();
+        push_view(&mut state, &callback_panel);
+    });
+
     let callback_state = Arc::clone(&state);
     let callback_bridge = Arc::clone(&bridge);
     panel.on_job_selected(move |job| {
@@ -470,11 +518,11 @@ fn main() {
         let Ok(mut state) = callback_state.lock() else {
             return;
         };
-        state.form_mode = FormMode::AddHost;
+        state.view_mode = ViewMode::AddHost;
         state.form = HostForm::adding();
         state.panel_message.clear();
         state.panel_message_is_error = false;
-        push_form(&mut state, &callback_panel);
+        push_view(&mut state, &callback_panel);
     });
 
     let callback_state = Arc::clone(&state);
@@ -486,14 +534,14 @@ fn main() {
         let Some(target) = host_target(&state, id.as_str()) else {
             state.panel_message = format!("{id} is no longer configured");
             state.panel_message_is_error = true;
-            push_form(&mut state, &callback_panel);
+            push_view(&mut state, &callback_panel);
             return;
         };
-        state.form_mode = FormMode::EditHost;
+        state.view_mode = ViewMode::EditHost;
         state.form = HostForm::editing(target);
         state.panel_message.clear();
         state.panel_message_is_error = false;
-        push_form(&mut state, &callback_panel);
+        push_view(&mut state, &callback_panel);
     });
 
     let callback_state = Arc::clone(&state);
@@ -507,7 +555,7 @@ fn main() {
         let Some(target) = host_target(&state, id.as_str()) else {
             state.panel_message = format!("{id} is no longer configured");
             state.panel_message_is_error = true;
-            push_form(&mut state, &callback_panel);
+            push_view(&mut state, &callback_panel);
             return;
         };
         apply_mutation(
@@ -547,11 +595,11 @@ fn main() {
         let Ok(mut state) = callback_state.lock() else {
             return;
         };
-        state.form_mode = FormMode::Metrics;
+        state.view_mode = ViewMode::Fleet;
         state.form = HostForm::default();
         state.panel_message.clear();
         state.panel_message_is_error = false;
-        push_form(&mut state, &callback_panel);
+        push_view(&mut state, &callback_panel);
     });
 
     let callback_state = Arc::clone(&state);
@@ -561,7 +609,7 @@ fn main() {
             return;
         };
         state.form.endpoint = text.to_string();
-        push_form(&mut state, &callback_panel);
+        push_view(&mut state, &callback_panel);
     });
 
     let callback_state = Arc::clone(&state);
@@ -571,7 +619,7 @@ fn main() {
             return;
         };
         state.form.name = text.to_string();
-        push_form(&mut state, &callback_panel);
+        push_view(&mut state, &callback_panel);
     });
 
     // ------------------------------------------------------ the panel itself
@@ -583,7 +631,7 @@ fn main() {
         };
         state.panel_visible = false;
         // A panel that is dismissed leaves the fleet view behind it.
-        state.form_mode = FormMode::Metrics;
+        state.view_mode = ViewMode::Fleet;
         state.form = HostForm::default();
         if let Some(panel) = callback_panel.upgrade() {
             let _ = panel.hide();
@@ -850,7 +898,8 @@ fn content_for(state: &UiState, panel: &Pulldown) -> placement::Content {
         status: !panel.get_status_text().is_empty(),
         message: !panel.get_panel_message().is_empty(),
         warning: !panel.get_tray_warning().is_empty(),
-        form: state.form_mode != FormMode::Metrics,
+        form: !state.view_mode.is_panel(),
+        detail: state.view_mode == ViewMode::Detail,
     }
 }
 
@@ -891,7 +940,7 @@ fn apply_mutation(
             };
             state.panel_message = message;
             state.panel_message_is_error = false;
-            state.form_mode = FormMode::Metrics;
+            state.view_mode = ViewMode::Fleet;
             state.form = HostForm::default();
             // The daemon re-reads the configuration at its own reload
             // boundary and republishes. The GUI never asks it to apply a
@@ -903,7 +952,7 @@ fn apply_mutation(
             state.panel_message_is_error = true;
         }
     }
-    push_form(state, panel);
+    push_view(state, panel);
 }
 
 /// What the form says, in the operator's words.
@@ -925,14 +974,14 @@ struct FormView {
 
 /// The form's presentation, for the current state.
 fn form_view(state: &UiState) -> FormView {
-    match state.form_mode {
-        FormMode::Metrics => FormView {
+    match state.view_mode {
+        ViewMode::Fleet | ViewMode::Detail => FormView {
             title: String::new(),
             note: String::new(),
             apply_text: String::new(),
             can_apply: false,
         },
-        FormMode::AddHost => FormView {
+        ViewMode::AddHost => FormView {
             title: "Add a host".to_owned(),
             note: "The endpoint is added to the configuration exactly as `gregg add` would add \
                    it: an explicit port, no HTTPS, and the whole configuration is validated                    before it is written."
@@ -940,7 +989,7 @@ fn form_view(state: &UiState) -> FormView {
             apply_text: "Add".to_owned(),
             can_apply: !state.form.endpoint.trim().is_empty(),
         },
-        FormMode::EditHost => {
+        ViewMode::EditHost => {
             let changed = state.form.endpoint_changed();
             FormView {
                 title: "Edit this host".to_owned(),
@@ -970,7 +1019,11 @@ fn form_view(state: &UiState) -> FormView {
 /// The form's fields are pushed **before** the mode changes, so a text field
 /// that is created by the mode change reads the value the operator is meant
 /// to see rather than an empty one.
-fn push_form(state: &mut UiState, panel: &slint::Weak<Pulldown>) {
+///
+/// The pulldown's size follows the view: the fleet is a list of hosts and
+/// their bars, and the detail is the selected host's own numbers, and the
+/// two are not the same height.
+fn push_view(state: &mut UiState, panel: &slint::Weak<Pulldown>) {
     let Some(panel) = panel.upgrade() else {
         return;
     };
@@ -978,13 +1031,18 @@ fn push_form(state: &mut UiState, panel: &slint::Weak<Pulldown>) {
     panel.set_panel_message(state.panel_message.clone().into());
     panel.set_panel_message_is_error(state.panel_message_is_error);
 
-    match state.form_mode {
-        FormMode::Metrics => {
-            panel.set_mode(PanelMode::Metrics);
+    match state.view_mode {
+        ViewMode::Fleet => {
+            panel.set_mode(PanelMode::Fleet);
             panel.set_form_endpoint(SharedString::new());
             panel.set_form_name(SharedString::new());
         }
-        FormMode::AddHost | FormMode::EditHost => {
+        ViewMode::Detail => {
+            panel.set_mode(PanelMode::Detail);
+            panel.set_form_endpoint(SharedString::new());
+            panel.set_form_name(SharedString::new());
+        }
+        ViewMode::AddHost | ViewMode::EditHost => {
             let view = form_view(state);
             panel.set_form_title(view.title.into());
             panel.set_form_note(view.note.into());
@@ -992,13 +1050,15 @@ fn push_form(state: &mut UiState, panel: &slint::Weak<Pulldown>) {
             panel.set_form_can_apply(view.can_apply);
             panel.set_form_endpoint(state.form.endpoint.clone().into());
             panel.set_form_name(state.form.name.clone().into());
-            panel.set_mode(if state.form_mode == FormMode::AddHost {
+            panel.set_mode(if state.view_mode == ViewMode::AddHost {
                 PanelMode::AddHost
             } else {
                 PanelMode::EditHost
             });
         }
     }
+
+    resize_panel(state, &panel);
 }
 
 /// Take everything the bridge published and push it into the components.
@@ -1088,21 +1148,36 @@ fn render(state: &mut UiState, panel: &slint::Weak<Pulldown>, tray: &slint::Weak
         return;
     };
 
-    let hosts: Vec<HostRow> = model
+    // The fleet's rows: one line per host, with a bar for each of the five
+    // used shares. The strip is the model's own, so the compact row and the
+    // TUI's condensed row cannot disagree about a number.
+    let hosts: Vec<FleetRow> = model
         .systems
         .iter()
-        .map(|card| HostRow {
-            id: card.id.clone().into(),
-            name: card.name.clone().into(),
-            endpoint: card.endpoint.clone().into(),
-            status: card.status.clone().into(),
-            headline: card.headline.clone().into(),
-            online: card.is_online(),
-            selected: model.selected_id.as_deref() == Some(card.id.as_str()),
+        .map(|card| {
+            let strip = &card.strip;
+            FleetRow {
+                id: strip.id.clone().into(),
+                name: strip.name.clone().into(),
+                io_token: strip.io_token.clone().into(),
+                load: strip.load.clone().into(),
+                status: strip.status.clone().into(),
+                online: strip.online,
+                selected: model.selected_id.as_deref() == Some(card.id.as_str()),
+                cpu: fleet_cell(&strip.cpu),
+                memory: fleet_cell(&strip.memory),
+                swap: fleet_cell(&strip.swap),
+                disk: fleet_cell(&strip.disk),
+                network: fleet_cell(&strip.network),
+            }
         })
         .collect();
     let hosts = slint::ModelRc::from(hosts.as_slice());
     panel.set_hosts(hosts.clone());
+
+    // The heading of the swap-or-commit column is the fleet's, not one host's:
+    // a fleet may hold both kinds of host.
+    panel.set_swap_heading(model::swap_heading(&model.systems).into());
 
     let metrics: Vec<MetricRow> = model
         .selected
@@ -1237,21 +1312,29 @@ fn render(state: &mut UiState, panel: &slint::Weak<Pulldown>, tray: &slint::Weak
     let content = content_for(state, &panel);
     panel.set_host_list_height(placement::host_list_height(content.hosts));
     panel.set_form_height(placement::metrics::FORM_HEIGHT);
-    if state.panel_visible {
-        // A pulldown that is on screen grows and shrinks with its content.
-        // The operator's own size wins, though: a placement they chose is
-        // not something a new host may overrule.
-        let area = placement::work_area(panel.window());
-        let size = placement::panel_size(
-            state.panel_size,
-            (
-                placement::metrics::DEFAULT_WIDTH,
-                placement::content_height(&content),
-            ),
-            area.as_ref(),
-        );
-        panel.window().set_size(size);
+    resize_panel(state, &panel);
+}
+
+/// Give the pulldown the size its content calls for.
+///
+/// The pulldown is as tall as what it shows, and it is as wide as the fleet
+/// table needs. The operator's own size wins, though: a placement they chose
+/// is not something a new host may overrule.
+fn resize_panel(state: &mut UiState, panel: &Pulldown) {
+    if !state.panel_visible {
+        return;
     }
+    let content = content_for(state, panel);
+    let area = placement::work_area(panel.window());
+    let size = placement::panel_size(
+        state.panel_size,
+        (
+            placement::metrics::DEFAULT_WIDTH,
+            placement::content_height(&content),
+        ),
+        area.as_ref(),
+    );
+    panel.window().set_size(size);
 }
 
 /// The connection state, in one line.
@@ -1553,9 +1636,26 @@ mod tests {
     #[test]
     fn the_panel_starts_on_the_fleet_and_hidden() {
         let state = UiState::default();
-        assert_eq!(state.form_mode, FormMode::Metrics);
+        assert_eq!(state.view_mode, ViewMode::Fleet);
         assert!(!state.panel_visible);
         assert!(state.panel_position.is_none());
+    }
+
+    /// The two views are the fleet and the selected host's detail, and the
+    /// control at the bottom of the pulldown is what moves between them.
+    #[test]
+    fn the_two_views_toggle_between_each_other() {
+        assert_eq!(ViewMode::Fleet.toggled(), ViewMode::Detail);
+        assert_eq!(ViewMode::Detail.toggled(), ViewMode::Fleet);
+        assert_eq!(ViewMode::Fleet.toggled().toggled(), ViewMode::Fleet);
+    }
+
+    /// A form is not one of the two views, and the control does not dismiss
+    /// it: the operator's half-typed endpoint is still there.
+    #[test]
+    fn a_form_is_not_toggled_away() {
+        assert_eq!(ViewMode::AddHost.toggled(), ViewMode::AddHost);
+        assert_eq!(ViewMode::EditHost.toggled(), ViewMode::EditHost);
     }
 
     #[test]
@@ -1619,7 +1719,7 @@ mod tests {
     /// The state a form starts in, for the edit form of one host.
     fn editing_state(endpoint: &str, name: &str) -> UiState {
         UiState {
-            form_mode: FormMode::EditHost,
+            view_mode: ViewMode::EditHost,
             form: HostForm::editing(HostTarget {
                 id: "host-1".to_owned(),
                 endpoint: endpoint.to_owned(),
@@ -1673,7 +1773,7 @@ mod tests {
     #[test]
     fn the_add_form_needs_an_endpoint_before_it_offers_anything() {
         let mut state = UiState {
-            form_mode: FormMode::AddHost,
+            view_mode: ViewMode::AddHost,
             form: HostForm::adding(),
             ..UiState::default()
         };
@@ -1706,8 +1806,8 @@ mod tests {
         assert_eq!(state.panel_message, "the endpoint has no port");
         assert!(state.panel_message_is_error, "the refusal is marked as one");
         assert_eq!(
-            state.form_mode,
-            FormMode::EditHost,
+            state.view_mode,
+            ViewMode::EditHost,
             "the operator stays in the form so the mistake can be corrected"
         );
         assert!(
@@ -1723,7 +1823,7 @@ mod tests {
         let manager: Arc<dyn HostMutations + Send + Sync> =
             Arc::new(RecordingMutations::new(Ok("added 10.0.0.6:11310")));
         let mut state = UiState {
-            form_mode: FormMode::AddHost,
+            view_mode: ViewMode::AddHost,
             form: HostForm::adding(),
             ..UiState::default()
         };
@@ -1743,7 +1843,7 @@ mod tests {
 
         assert_eq!(state.panel_message, "added 10.0.0.6:11310");
         assert!(!state.panel_message_is_error);
-        assert_eq!(state.form_mode, FormMode::Metrics);
+        assert_eq!(state.view_mode, ViewMode::Fleet);
         assert!(
             desired.borrow().reload,
             "the daemon has to re-read the configuration at its own reload boundary"

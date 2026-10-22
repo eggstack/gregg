@@ -574,6 +574,84 @@ no DPI measurement at 125 % or 150 %, and Wayland was never executed. The
 Windows and Linux legs are **not** affected by the vendored patch, and their
 behaviour is authority in the GUI CI job, not here.
 
+### The pulldown became a compact fleet table, and the detail moved behind a control (2026-10-22)
+
+The section above describes the pulldown as it was for Plan 192: one panel
+carrying the fleet summary, the host list **and** the selected host's own
+numbers. That is **superseded**. The pulldown now has **two views**, and the
+fleet view is the TUI's condensed fleet row with bars in it.
+
+**What the fleet view is**, measured on a window capture of the running build
+(`screencapture -x -o -l<window id>`, macOS 15, arm64):
+
+```text
+ HOST              CPU             MEM        SWP       DISK       NET     LOAD
+ Deadpool IO 61.5%  8% 4.03GHz     39%        17%      82%       0%      26.38
+ MacbookPro        offline (invalid)
+ Raspi 10  IO 73.9%  2% 2.40GHz     22%        0%       48%       0%      11.68
+ Plex              offline (invalid)
+ Le Potato20  IO 0.6%  4%            54%        34%      49%       —        0.19
+ Le Potato21  IO 8.0%  5%            20%        4%       24%       —        0.77
+```
+
+- **One line per host**, with a **bar for each of the five used shares** and
+  the shares written compactly (`8%`, not `8.3%`) — the way the TUI's
+  condensed table writes them.
+- The **I/O wait follows the host's name** and the **frequency follows the CPU
+  percentage**, in the TUI's own places. The **endpoint is gone** from the
+  row: the fleet view names the host and not where it is.
+- The **LOAD** column carries the one-minute average, and an **offline host
+  has no columns at all** — its row says why it is offline and nothing else.
+
+**The bar's origin was a real defect, and it is fixed.** The bars grew out of
+the **middle** of their tracks. The cause is Slint's own layout rule, not the
+GUI's: the compiler's `default_geometry` pass centres a child that has a size
+and no explicit `x`/`y` inside a parent that is not a layout
+(`maybe_center_in_parent`). A `Rectangle` with an explicit `width` and no
+`x` is such a child. The measurement, on the build before the fix — the track
+spans x=72..147, and every fill was **centred** on it, whatever its share:
+
+| row | fill before | fill after |
+| --- | --- | --- |
+| CPU, 9.4 % | x=106..113 (centred) | x=73..77 (from the left edge) |
+| MEM, 22.9 % | x=101..118 (centred) | x=73..98 (from the left edge) |
+| SWP, 9.5 % | x=106..113 (centred) | x=73..77 (from the left edge) |
+| DISK, 93.1 % | x=75..144 (centred) | x=73..142 (from the left edge) |
+
+Every element the pulldown places inside another element now carries its own
+`x` and `y`.
+
+**The panel clipped its last host row, and that is fixed too.** The
+attribution text took a line of its own **even when it was empty** — Slint
+measures a `Text` as one line high whatever it says — and a line nobody asked
+for is a line the height calculation does not know about, so the panel was a
+line too short. The attribution is now wrapped in a rectangle with an explicit
+height, like the status line and the message before it. The row that was cut
+in half is now whole, and the fleet view's height is exact: six whole rows of
+19 px, a heading row of 14 px, and the panel's own chrome.
+
+**Both colour schemes were captured natively.** The light scheme was captured
+by forcing the Aqua appearance with a temporary `NSAppearance` diagnostic,
+which was **reverted** before the commit; the dark scheme is the desktop's
+own. In both, the card's margin is transparent (`(0, 0, 0, 0)` at the corner,
+`(0, 0, 0, 15)` in the shadow's falloff) and the card is `Palette.background`
+at 94 % (`(241, 241, 241, 244)` light, `(44, 44, 44, 244)` dark).
+
+**The detail view** is behind the pulldown's own footer control and carries
+the TUI's metric rows unchanged — the same label, bar, share and value shape,
+with the same aggregates and the same "no reading" rules. Clicking the
+control re-sizes the panel to what that view carries.
+
+**The cost:** the release binary is **12,062,128 bytes**, **+99,296 (+0.8%)**
+on the 11,962,832 of the chrome revision above.
+
+**What was not done:** the interactive native acceptance is still outstanding,
+as it was for Plan 192 — no tray icon was clicked and no pulldown was opened
+by a pointer. The light scheme was captured with a temporary diagnostic that
+is not in the tree. The macOS Intel build was not produced locally, there is
+still no DPI measurement at 125 % or 150 %, and Wayland was never executed.
+The Windows and Linux legs are authority in the GUI CI job, not here.
+
 ### The native exercises, on CI run `39811582623`
 
 The GUI workspace is not a member of the root workspace, so no root job

@@ -55,8 +55,36 @@
 
 import { Button, LineEdit, Palette, ScrollView } from "std-widgets.slint";
 
-/// One monitored host, as the panel's host list shows it.
-export struct HostRow {
+/// One measured column of a host's status strip.
+///
+/// The columns are the ones that mean a **used share**: the CPU, the memory,
+/// the swap or the commit, the disk and the network. A reading that is not a
+/// used share — a load, a frequency, an I/O wait — has no column here, so it
+/// can never be drawn as a bar that means something else.
+export struct FleetCell {
+    /// The share as text, e.g. `39%`.
+    ///
+    /// An em dash when the platform reported no share at all: a missing
+    /// reading is not a reading of zero.
+    pct_text: string,
+    /// The share of the column that is used, in `0..=1`.
+    ///
+    /// Negative when there is no reading at all, so that an empty bar says
+    /// "not measured" rather than "measured as zero".
+    fraction: float,
+    /// The text that follows the share, when the column has one.
+    ///
+    /// Only the CPU column has one: the frequency, right after the CPU
+    /// percentage.
+    extra: string,
+}
+
+/// One host's condensed status strip: the fleet view's one row.
+///
+/// It is the TUI's condensed row with the fleet's five used shares in it: the
+/// name carries the I/O-wait token, the CPU column carries the percentage and
+/// then the frequency, and the load carries the one-minute average.
+export struct FleetRow {
     /// The host's stable id.
     ///
     /// The panel's actions name the host by this and not by its place in
@@ -64,18 +92,36 @@ export struct HostRow {
     /// drawn and the moment a row is clicked, and an action aimed at the
     /// wrong host is not something a stale index may do.
     id: string,
-    /// Display name, or the host when the system has no configured name.
+    /// The display name, or the host when the system has no configured name.
+    ///
+    /// The endpoint is not here: the compact fleet row names the host and
+    /// not where it is, the way the TUI's condensed row does.
     name: string,
-    /// The endpoint being polled, as `host:port`.
-    endpoint: string,
-    /// Reachability in words, including the reason when it is offline.
+    /// The inline I/O-wait token, e.g. `IO 1.2%`.
+    ///
+    /// Empty when the platform does not report one: the token is omitted
+    /// rather than shown as `IO 0.0%`.
+    io_token: string,
+    /// The one-minute load average, e.g. `6.76`.
+    ///
+    /// Empty when the platform does not report a load.
+    load: string,
+    /// The host's state in words, including the reason when it is offline.
     status: string,
-    /// The one-line metric summary.
-    headline: string,
     /// Whether the most recent poll succeeded.
     online: bool,
     /// Whether this is the host the detail pane is showing.
     selected: bool,
+    /// The CPU column.
+    cpu: FleetCell,
+    /// The memory column.
+    memory: FleetCell,
+    /// The swap-or-commit column.
+    swap: FleetCell,
+    /// The disk column.
+    disk: FleetCell,
+    /// The network column.
+    network: FleetCell,
 }
 
 /// One labelled value, used for the detail and EggPool panes.
@@ -119,8 +165,11 @@ export struct JobRow {
 
 /// What the panel is showing.
 export enum PanelMode {
-    /// The fleet: metrics, drives, cron, records and `EggPool`.
-    Metrics,
+    /// The fleet: one row per host, with its bars.
+    Fleet,
+    /// The selected host's detail: its metrics, drives, interfaces, cron,
+    /// records and `EggPool`.
+    Detail,
     /// The form that adds a host.
     AddHost,
     /// The form that edits one host.
@@ -175,16 +224,102 @@ component UsageBar inherits Rectangle {
     /// Whether the row carries a reading at all.
     in property <bool> measured: false;
 
+    /// Whether the bar sits on a selected row.
+    ///
+    /// A selected row is tinted with the selection colour, and the accent
+    /// fill would disappear into it, so the fill takes the selection's own
+    /// foreground instead.
+    in property <bool> selected: false;
+
     border-radius: root.height / 2;
     // The track is the foreground at a tenth of its strength: a bar's track
     // is a filled area, not an edge, so it is not the card's hairline.
-    background: Palette.foreground.with-alpha(0.15);
+    background: root.selected
+        ? Palette.selection-foreground.with-alpha(0.30)
+        : Palette.foreground.with-alpha(0.15);
 
+    // The fill's origin is **written down**, and that is not decoration.
+    //
+    // Slint centres a child that has an explicit size and no explicit `x`/`y`
+    // inside a parent that is not a layout (`maybe_center_in_parent` in the
+    // compiler's `default_geometry` pass), so a fill without an `x` grows out
+    // of the *middle* of its track instead of from its left edge. The `x` and
+    // the `y` say which corner the bar starts at.
     Rectangle {
+        x: 0px;
+        y: 0px;
         width: root.measured ? max(0px, root.width * root.fraction) : 0px;
         height: root.height;
         border-radius: root.height / 2;
-        background: Palette.accent-background;
+        background: root.selected ? Palette.selection-foreground : Palette.accent-background;
+    }
+}
+
+/// One column's heading in the fleet table.
+///
+/// The heading is the column's name and nothing else: the rows below it say
+/// what is in it, and the heading is quiet so that it does not compete with
+/// the numbers.
+component ColumnHeading inherits Text {
+    /// The heading's text.
+    in property <string> heading: "";
+
+    /// The heading's colour.
+    in property <color> heading-color: #0000007F;
+
+    text: root.heading;
+    font-size: 10px;
+    font-weight: 700;
+    color: root.heading-color;
+    vertical-alignment: center;
+    overflow: elide;
+    wrap: no-wrap;
+}
+
+/// One measured column of a host's row: the bar and the share beside it.
+///
+/// The bar is the share and the number is the share, the way the TUI's own
+/// metric rows read: the bar says how much of the capacity is used, and the
+/// number says how exactly.
+component FleetColumn inherits Rectangle {
+    /// The column's reading.
+    in property <FleetCell> cell: { pct_text: "", fraction: -1, extra: "" };
+
+    /// Whether the host's row is selected.
+    in property <bool> selected: false;
+
+    /// The width of the bar.
+    in property <length> bar-width: 24px;
+    /// The height of the bar.
+    in property <length> bar-height: 6px;
+    /// The width of the share's column.
+    in property <length> pct-width: 26px;
+    /// The gap between the bar and the share.
+    in property <length> gap: 4px;
+
+    background: #00000000;
+
+    UsageBar {
+        x: 0px;
+        y: (root.height - root.bar-height) / 2;
+        width: root.bar-width;
+        height: root.bar-height;
+        fraction: root.cell.fraction;
+        measured: root.cell.fraction >= 0;
+        selected: root.selected;
+    }
+
+    Text {
+        x: root.bar-width + root.gap;
+        y: 0px;
+        width: root.pct-width;
+        text: root.cell.pct_text;
+        font-size: 11px;
+        color: root.selected ? Palette.selection-foreground : Palette.foreground;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+        overflow: elide;
+        wrap: no-wrap;
     }
 }
 
@@ -231,6 +366,12 @@ export component Pulldown inherits Window {
     /// The height of the form.
     in property <length> form-height: 220px;
 
+    /// The heading the fleet's swap-or-commit column carries.
+    ///
+    /// Swap and the Windows commit are alternatives, and one fleet may hold
+    /// both, so the heading is the model's to say: `SWP`, `COMMIT`, or both.
+    in property <string> swap-heading: "SWP";
+
     /// One line describing the client-daemon attachment.
     ///
     /// Empty when the attachment is healthy: there is nothing to say, and a
@@ -241,7 +382,7 @@ export component Pulldown inherits Window {
     in property <string> fleet-summary: "";
 
     /// The fleet, in display order.
-    in property <[HostRow]> hosts;
+    in property <[FleetRow]> hosts;
 
     /// The selected host's measured rows.
     in property <[MetricRow]> metrics;
@@ -268,7 +409,7 @@ export component Pulldown inherits Window {
     in property <string> tray-warning: "";
 
     /// What the panel is showing.
-    in property <PanelMode> mode: PanelMode.Metrics;
+    in property <PanelMode> mode: PanelMode.Fleet;
 
     /// The endpoint the form is editing. Bound to the form's text field.
     in-out property <string> form-endpoint: "";
@@ -305,6 +446,10 @@ export component Pulldown inherits Window {
 
     /// The operator selected a host, by its stable id.
     callback host-selected(string);
+
+    /// The operator asked for the other view: the detail of the selected
+    /// host, or the fleet again.
+    callback view-toggled();
 
     /// The operator selected a scheduler job, by name.
     callback job-selected(string);
@@ -388,6 +533,14 @@ export component Pulldown inherits Window {
     private property <color> hairline:
         Palette.color-scheme == ColorScheme.dark ? #FFFFFF19 : #00000019;
 
+    /// The colour of the text that is not the subject: a heading, a label.
+    ///
+    /// It is `NSColor.secondaryLabelColor`, the colour macOS uses for
+    /// everything that is not the label of a control: `rgba(0, 0, 0, 0.498)`
+    /// in the light scheme and `rgba(255, 255, 255, 0.549)` in the dark one.
+    private property <color> secondary-text:
+        Palette.color-scheme == ColorScheme.dark ? #FFFFFF8C : #0000007F;
+
     /// How dark the card's shadow is at its darkest.
     ///
     /// It is the shadow's *peak*, not the alpha of one step: the steps add
@@ -407,6 +560,65 @@ export component Pulldown inherits Window {
     private property <length> metric-bar-height: 6px;
     private property <length> metric-share-width: 38px;
     private property <length> metric-row-height: 18px;
+
+    /// The columns of the fleet table.
+    ///
+    /// The compact fleet view is a table: the headings sit above the rows and
+    /// every row's bar starts at the same place, so the columns line up down
+    /// the whole fleet. The widths are properties, so the headings and the
+    /// rows cannot drift apart.
+    ///
+    /// The widths are measured, not guessed: a name is set in 13px bold, a
+    /// number in 11px, and the columns are as wide as the widest thing that
+    /// goes in them.
+    private property <length> col-host-width: 136px;
+    /// The room the host's name takes, before the I/O-wait token.
+    private property <length> col-host-name-width: 82px;
+    /// The room the I/O-wait token takes, e.g. `IO 87.5%`.
+    private property <length> col-io-width: 50px;
+    /// The gap between two columns.
+    private property <length> col-gap: 6px;
+    /// The width of every bar.
+    private property <length> col-bar-width: 24px;
+    /// The height of every bar.
+    private property <length> col-bar-height: 6px;
+    /// The width of a share's column, wide enough for `100%`.
+    private property <length> col-pct-width: 26px;
+    /// The width of the frequency's column.
+    ///
+    /// It is wide enough for the longest frequency the TUI's own formatter
+    /// writes: `920.15MHz` is nine characters, and a frequency below a
+    /// megahertz is `920000Hz`.
+    private property <length> col-freq-width: 58px;
+    /// The width of the load's column, wide enough for `40.15`.
+    private property <length> col-load-width: 34px;
+    /// The gap between a bar and the number beside it.
+    private property <length> metric-gap: 4px;
+
+    /// Where each column of the fleet table starts.
+    ///
+    /// The CPU column carries the frequency after its percentage, so it is
+    /// wider than the others, and every column after it moves along.
+    private property <length> x-cpu: root.col-host-width + root.col-gap;
+    private property <length> x-cpu-pct: root.x-cpu + root.col-bar-width + root.metric-gap;
+    private property <length> x-cpu-freq: root.x-cpu-pct + root.col-pct-width + root.metric-gap;
+    private property <length> x-memory: root.x-cpu-freq + root.col-freq-width + root.col-gap;
+    private property <length> x-swap: root.x-memory + root.col-bar-width + root.metric-gap + root.col-pct-width + root.col-gap;
+    private property <length> x-disk: root.x-swap + root.col-bar-width + root.metric-gap + root.col-pct-width + root.col-gap;
+    private property <length> x-network: root.x-disk + root.col-bar-width + root.metric-gap + root.col-pct-width + root.col-gap;
+    private property <length> x-load: root.x-network + root.col-bar-width + root.metric-gap + root.col-pct-width + root.col-gap;
+
+    /// The width the fleet table needs.
+    private property <length> table-width: root.x-load + root.col-load-width;
+
+    /// The height of one host row in the fleet table.
+    private property <length> host-row-height: 19px;
+
+    /// The height of the table's headings.
+    private property <length> heading-height: 14px;
+
+    /// The height the attribution text takes when it is shown.
+    private property <length> about-height: 56px;
 
     /// Where the pointer toward the tray item sits.
     ///
@@ -619,33 +831,95 @@ export component Pulldown inherits Window {
                     }
 
                     // ------------------------------------------------ the fleet
-                    if root.mode == PanelMode.Metrics : VerticalLayout {
+                    //
+                    // The compact fleet view: the TUI's condensed fleet row,
+                    // with a bar for each of the five used shares. One row per
+                    // host and nothing else — the host's detail is behind the
+                    // footer's own control.
+                    if root.mode == PanelMode.Fleet : VerticalLayout {
                         spacing: 6px;
                         vertical-stretch: 1;
 
-                        // The host list. Clicking a row selects that host; the
+                        // The table's headings. They sit above the list and do
+                        // not scroll with it, so the columns keep their names
+                        // while the rows move under them.
+                        Rectangle {
+                            height: root.heading-height;
+                            background: #00000000;
+
+                            ColumnHeading {
+                                x: 0px;
+                                y: 0px;
+                                width: root.col-host-width;
+                                heading: "HOST";
+                                heading-color: root.secondary-text;
+                            }
+                            ColumnHeading {
+                                x: root.x-cpu;
+                                y: 0px;
+                                width: root.col-bar-width;
+                                heading: "CPU";
+                                heading-color: root.secondary-text;
+                            }
+                            ColumnHeading {
+                                x: root.x-memory;
+                                y: 0px;
+                                width: root.col-bar-width;
+                                heading: "MEM";
+                                heading-color: root.secondary-text;
+                            }
+                            ColumnHeading {
+                                x: root.x-swap;
+                                y: 0px;
+                                width: root.col-bar-width;
+                                heading: root.swap-heading;
+                                heading-color: root.secondary-text;
+                            }
+                            ColumnHeading {
+                                x: root.x-disk;
+                                y: 0px;
+                                width: root.col-bar-width;
+                                heading: "DISK";
+                                heading-color: root.secondary-text;
+                            }
+                            ColumnHeading {
+                                x: root.x-network;
+                                y: 0px;
+                                width: root.col-bar-width;
+                                heading: "NET";
+                                heading-color: root.secondary-text;
+                            }
+                            ColumnHeading {
+                                x: root.x-load;
+                                y: 0px;
+                                width: root.col-load-width;
+                                heading: "LOAD";
+                                heading-color: root.secondary-text;
+                            }
+                        }
+
+                        // The fleet. Clicking a row selects that host; the
                         // selection is keyed by the stable system id on the Rust
                         // side, so a host that reorders does not move the
                         // selection.
                         //
                         // The list is in a scroll container with a bounded
                         // height: a fleet can be large, and an unbounded list
-                        // would push the metrics, cron and `EggPool` panes out of
-                        // the pulldown.
+                        // would push the pulldown off the desktop.
                         ScrollView {
                             content-width: root.list-content-width;
                             vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
                             horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
                             preferred-height: root.host-list-height;
                             max-height: root.host-list-height;
-                            min-height: min(root.host-list-height, 46px);
+                            min-height: min(root.host-list-height, root.host-row-height);
 
                             VerticalLayout {
                                 width: root.list-content-width;
-                                spacing: 1px;
+                                spacing: 0px;
 
                                 for row in root.hosts : Rectangle {
-                                    height: 46px;
+                                    height: root.host-row-height;
                                     background: row.selected ? Palette.selection-background : #00000000;
 
                                     // Under the row's contents, so the row's
@@ -656,42 +930,145 @@ export component Pulldown inherits Window {
                                         }
                                     }
 
-                                    VerticalLayout {
-                                        padding-left: 6px;
-                                        padding-right: 4px;
-                                        spacing: 0px;
+                                    // The host's name, and the I/O-wait token
+                                    // beside it. The endpoint is not here: the
+                                    // compact row names the host and not where
+                                    // it is, the way the TUI's condensed row
+                                    // does.
+                                    Text {
+                                        x: 0px;
+                                        y: 0px;
+                                        width: root.col-host-name-width;
+                                        text: row.name;
+                                        font-size: 13px;
+                                        font-weight: 700;
+                                        color: row.selected ? Palette.selection-foreground : Palette.foreground;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        wrap: no-wrap;
+                                    }
+                                    Text {
+                                        x: root.col-host-name-width + 4px;
+                                        y: 0px;
+                                        width: root.col-io-width;
+                                        text: row.io_token;
+                                        font-size: 11px;
+                                        color: row.selected ? Palette.selection-foreground : root.secondary-text;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        wrap: no-wrap;
+                                    }
 
-                                        Text {
-                                            text: row.name + "  " + row.endpoint;
-                                            font-size: 13px;
-                                            font-weight: 700;
-                                            color: row.selected ? Palette.selection-foreground : Palette.foreground;
-                                            overflow: elide;
-                                            wrap: no-wrap;
-                                        }
-                                        Text {
-                                            text: row.status;
-                                            font-size: 11px;
-                                            color: row.selected ? Palette.selection-foreground : Palette.foreground;
-                                            overflow: elide;
-                                            wrap: no-wrap;
-                                        }
-                                        Text {
-                                            text: row.headline;
-                                            font-size: 11px;
-                                            color: row.selected ? Palette.selection-foreground : Palette.foreground;
-                                            overflow: elide;
-                                            wrap: no-wrap;
-                                        }
+                                    // A host that is not online has no
+                                    // readings, so its row says why it is
+                                    // offline instead of carrying empty bars.
+                                    // The status sits where the I/O-wait token
+                                    // would be: right after the name, the way
+                                    // the TUI's condensed row puts it.
+                                    Text {
+                                        x: root.col-host-name-width + 4px;
+                                        y: 0px;
+                                        width: root.table-width - root.col-host-name-width - 4px;
+                                        text: row.status;
+                                        font-size: 11px;
+                                        color: row.selected ? Palette.selection-foreground : root.secondary-text;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        wrap: no-wrap;
+                                        visible: !row.online;
+                                    }
+
+                                    // The CPU column: the bar, the share, and
+                                    // then the frequency — the reading that
+                                    // follows the CPU percentage, the way the
+                                    // TUI's own CPU row carries it.
+                                    FleetColumn {
+                                        x: root.x-cpu;
+                                        y: 0px;
+                                        width: root.col-bar-width + root.metric-gap + root.col-pct-width;
+                                        height: root.host-row-height;
+                                        cell: row.cpu;
+                                        selected: row.selected;
+                                    }
+                                    Text {
+                                        x: root.x-cpu-freq;
+                                        y: 0px;
+                                        width: root.col-freq-width;
+                                        text: row.cpu.extra;
+                                        font-size: 11px;
+                                        color: row.selected ? Palette.selection-foreground : root.secondary-text;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        wrap: no-wrap;
+                                    }
+
+                                    FleetColumn {
+                                        x: root.x-memory;
+                                        y: 0px;
+                                        width: root.col-bar-width + root.metric-gap + root.col-pct-width;
+                                        height: root.host-row-height;
+                                        cell: row.memory;
+                                        selected: row.selected;
+                                    }
+                                    FleetColumn {
+                                        x: root.x-swap;
+                                        y: 0px;
+                                        width: root.col-bar-width + root.metric-gap + root.col-pct-width;
+                                        height: root.host-row-height;
+                                        cell: row.swap;
+                                        selected: row.selected;
+                                    }
+                                    FleetColumn {
+                                        x: root.x-disk;
+                                        y: 0px;
+                                        width: root.col-bar-width + root.metric-gap + root.col-pct-width;
+                                        height: root.host-row-height;
+                                        cell: row.disk;
+                                        selected: row.selected;
+                                    }
+                                    FleetColumn {
+                                        x: root.x-network;
+                                        y: 0px;
+                                        width: root.col-bar-width + root.metric-gap + root.col-pct-width;
+                                        height: root.host-row-height;
+                                        cell: row.network;
+                                        selected: row.selected;
+                                    }
+
+                                    // The load: the one-minute average, the
+                                    // way the TUI's condensed row carries it.
+                                    Text {
+                                        x: root.x-load;
+                                        y: 0px;
+                                        width: root.col-load-width;
+                                        text: row.load;
+                                        font-size: 11px;
+                                        color: row.selected ? Palette.selection-foreground : Palette.foreground;
+                                        horizontal-alignment: right;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        wrap: no-wrap;
                                     }
                                 }
+
                             }
                         }
+                    }
 
-                        // The selected host's own actions. They live here,
-                        // in the pulldown's own affordances, and not on every
-                        // row: a button on every row crowds the row and blurs
-                        // into the selection tint.
+                    // ------------------------------------------------ the detail
+                    //
+                    // The selected host's own numbers: its measured rows, its
+                    // drives and its interfaces, its scheduler jobs and their
+                    // records, and the `EggPool` plane. It is behind the
+                    // footer's own control, so the fleet view stays a fleet
+                    // view.
+                    if root.mode == PanelMode.Detail : VerticalLayout {
+                        spacing: 6px;
+                        vertical-stretch: 1;
+
+                        // Which host the detail is about. The host's own
+                        // actions are in the pulldown's own footer, aimed at
+                        // the selection, and not repeated here.
                         HorizontalLayout {
                             spacing: 8px;
                             alignment: start;
@@ -707,29 +1084,10 @@ export component Pulldown inherits Window {
                                 wrap: no-wrap;
                                 vertical-alignment: center;
                             }
-
-                            Link {
-                                label: "Edit";
-                                enabled: root.selected-host-id != "";
-                                activated => {
-                                    root.edit-host-requested(root.selected-host-id);
-                                }
-                            }
-
-                            Link {
-                                label: "Remove";
-                                enabled: root.selected-host-id != "";
-                                activated => {
-                                    root.remove-host-requested(root.selected-host-id);
-                                }
-                            }
                         }
 
-                        // The selected host's detail: the measured rows, the
-                        // drives and the interfaces, the scheduler jobs and
-                        // their records, and the `EggPool` plane. It is one
-                        // scroll container, so the detail scrolls as a whole
-                        // and there is one scroll model.
+                        // The detail is one scroll container, so it scrolls as
+                        // a whole and there is one scroll model.
                         ScrollView {
                             content-width: root.list-content-width;
                             vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
@@ -858,19 +1216,30 @@ export component Pulldown inherits Window {
                                     overflow: elide;
                                     wrap: no-wrap;
                                 }
-
-                                // The attribution and about block. It is
-                                // empty — and therefore invisible — until the
-                                // operator asks for it.
-                                Text {
-                                    text: root.about-text;
-                                    font-size: 11px;
-                                    color: Palette.foreground;
-                                    wrap: word-wrap;
-                                    overflow: elide;
-                                    visible: root.about-text != "";
-                                }
                             }
+                        }
+                    }
+
+                    // The attribution and about block. It is empty — and
+                    // therefore invisible — until the operator asks for it,
+                    // and it is outside the detail so that it is readable
+                    // from the fleet view too.
+                    //
+                    // It is wrapped in a rectangle with an explicit height for
+                    // the same reason the status line and the message are: a
+                    // `Text` takes a line of its own even when it is empty,
+                    // and a line nobody asked for is a line the height
+                    // calculation does not know about.
+                    Rectangle {
+                        height: root.about-text == "" ? 0px : root.about-height;
+                        visible: root.about-text != "";
+
+                        Text {
+                            text: root.about-text;
+                            font-size: 11px;
+                            color: Palette.foreground;
+                            wrap: word-wrap;
+                            overflow: elide;
                         }
                     }
 
@@ -1068,7 +1437,7 @@ export component Pulldown inherits Window {
 
                         Link {
                             label: "Add host";
-                            visible: root.mode == PanelMode.Metrics;
+                            visible: root.mode == PanelMode.Fleet || root.mode == PanelMode.Detail;
                             activated => {
                                 root.add-host-requested();
                             }
@@ -1076,9 +1445,42 @@ export component Pulldown inherits Window {
 
                         Link {
                             label: "EggPool";
-                            visible: root.mode == PanelMode.Metrics;
+                            visible: root.mode == PanelMode.Detail;
                             activated => {
                                 root.eggpool-toggled();
+                            }
+                        }
+
+                        // The two views. The fleet is a list of hosts and
+                        // their bars; the detail is the selected host's own
+                        // numbers, its drives, its interfaces, its scheduler
+                        // and the `EggPool` plane. The control says which one
+                        // the other one is.
+                        Link {
+                            label: root.mode == PanelMode.Detail ? "Fleet" : "Detail";
+                            visible: root.mode == PanelMode.Fleet || root.mode == PanelMode.Detail;
+                            activated => {
+                                root.view-toggled();
+                            }
+                        }
+
+                        // The selected host's own actions. They live in the
+                        // pulldown's own affordances, and not on every row: a
+                        // button on every row crowds the row and blurs into
+                        // the selection tint.
+                        Link {
+                            label: "Edit";
+                            enabled: root.selected-host-id != "";
+                            activated => {
+                                root.edit-host-requested(root.selected-host-id);
+                            }
+                        }
+
+                        Link {
+                            label: "Remove";
+                            enabled: root.selected-host-id != "";
+                            activated => {
+                                root.remove-host-requested(root.selected-host-id);
                             }
                         }
 

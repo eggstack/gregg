@@ -81,13 +81,14 @@ pub mod metrics {
     /// The gap between the body's children.
     pub const BODY_SPACING: f32 = 6.0;
 
-    /// The gaps between the body's children in the fleet view: the status
-    /// line, the message, the tray warning and the fleet itself.
-    pub const BODY_GAPS: f32 = 3.0 * BODY_SPACING;
+    /// The gaps between the body's children in either view: the status line,
+    /// the message, the tray warning, the fleet or the detail, and the
+    /// attribution.
+    pub const BODY_GAPS: f32 = 4.0 * BODY_SPACING;
 
-    /// The gaps between the fleet's own children: the host list, the
-    /// selected host's actions and the detail.
-    pub const FLEET_GAPS: f32 = 2.0 * BODY_SPACING;
+    /// The gap inside the fleet or the detail: between the table's headings
+    /// and its rows, or between the selected host's actions and its panes.
+    pub const BLOCK_GAP: f32 = BODY_SPACING;
 
     /// The attachment's state line.
     pub const STATUS_LINE: f32 = 18.0;
@@ -98,16 +99,21 @@ pub mod metrics {
     /// The tray warning's line.
     pub const TRAY_WARNING_LINE: f32 = 18.0;
 
-    /// One host row in the host list.
-    pub const HOST_ROW: f32 = 46.0;
+    /// The fleet table's headings.
+    pub const HEADING_HEIGHT: f32 = 14.0;
+
+    /// One host row in the fleet table.
+    ///
+    /// A row is one line: the host's name, its I/O-wait token and a bar for
+    /// each of the five used shares.
+    pub const HOST_ROW: f32 = 19.0;
 
     /// The most host rows the host list may show at once.
     ///
-    /// The list is bounded so that a large fleet cannot push the metrics,
-    /// the cron and the `EggPool` plane out of the pulldown. The bound is a
-    /// number of *rows* and not a number of pixels, so the last row is a
-    /// whole row and not half of one.
-    pub const HOST_LIST_MAX_ROWS: usize = 4;
+    /// The list is bounded so that a large fleet cannot push the pulldown off
+    /// the desktop. The bound is a number of *rows* and not a number of
+    /// pixels, so the last row is a whole row and not half of one.
+    pub const HOST_LIST_MAX_ROWS: usize = 6;
 
     /// The selected host's own actions row.
     pub const SELECTED_ROW: f32 = 18.0;
@@ -138,7 +144,11 @@ pub mod metrics {
     pub const FORM_HEIGHT: f32 = 220.0;
 
     /// The pulldown's width.
-    pub const DEFAULT_WIDTH: f32 = 420.0;
+    ///
+    /// It is the fleet table's width plus the card's own chrome: the shadow's
+    /// margin, the pane's padding and the room the scrollbar takes. The
+    /// table's columns are measured, not guessed, so the width follows them.
+    pub const DEFAULT_WIDTH: f32 = 606.0;
 
     /// The shortest the detail below the host list may be.
     pub const MIN_DETAIL: f32 = 120.0;
@@ -174,6 +184,8 @@ pub struct Content {
     pub warning: bool,
     /// Whether the form is showing instead of the fleet.
     pub form: bool,
+    /// Whether the selected host's detail is showing instead of the fleet.
+    pub detail: bool,
 }
 
 /// The height of the bounded host list.
@@ -198,9 +210,6 @@ fn detail_height(content: &Content) -> f32 {
     height += content.jobs as f32 * metrics::JOB_ROW;
     height += content.eggpool as f32 * metrics::EGGPOOL_ROW;
     height += content.record_lines as f32 * metrics::RECORD_LINE;
-    if content.about {
-        height += metrics::ABOUT_LINES * metrics::ABOUT_LINE;
-    }
     height.clamp(metrics::MIN_DETAIL, metrics::MAX_DETAIL)
 }
 
@@ -224,14 +233,23 @@ pub fn content_height(content: &Content) -> f32 {
     if content.warning {
         height += metrics::TRAY_WARNING_LINE;
     }
+    // The attribution is outside the fleet and the detail, so it is readable
+    // from either of them.
+    if content.about {
+        height += metrics::ABOUT_LINES * metrics::ABOUT_LINE;
+    }
     if content.form {
         height += metrics::FORM_HEIGHT;
-    } else {
-        height += metrics::FLEET_GAPS + host_list_height(content.hosts);
+    } else if content.detail {
+        // The detail view: the selected host's actions and its own panes.
+        height += metrics::BLOCK_GAP;
         if content.selected {
             height += metrics::SELECTED_ROW;
         }
         height += detail_height(content);
+    } else {
+        // The fleet view: the table's headings and the rows under them.
+        height += metrics::BLOCK_GAP + metrics::HEADING_HEIGHT + host_list_height(content.hosts);
     }
     height
 }
@@ -469,6 +487,9 @@ pub fn open_position(
 /// pulldown that forgets it is a pulldown that fights the operator. The
 /// content's size is what the pulldown takes when the operator has never
 /// resized it.
+///
+/// The width has a floor: the fleet table needs its own width, and a panel
+/// narrower than that would clip the columns rather than lay them out.
 #[must_use]
 pub fn panel_size(
     remembered: Option<(f32, f32)>,
@@ -476,6 +497,7 @@ pub fn panel_size(
     area: Option<&WorkArea>,
 ) -> LogicalSize {
     let (mut width, mut height) = remembered.unwrap_or(content);
+    width = width.max(metrics::DEFAULT_WIDTH);
     if let Some(area) = area {
         width = width.min(area.width).max(MIN_PANEL_SIZE.0.min(area.width));
         height = height
@@ -629,14 +651,22 @@ mod tests {
 
     #[test]
     fn a_remembered_size_wins_over_the_content() {
-        let size = panel_size(Some((500.0, 400.0)), (420.0, 300.0), None);
-        assert_eq!((size.width, size.height), (500.0, 400.0));
+        let size = panel_size(Some((700.0, 400.0)), (420.0, 300.0), None);
+        assert_eq!((size.width, size.height), (700.0, 400.0));
+    }
+
+    #[test]
+    fn the_panel_is_never_narrower_than_the_fleet_table() {
+        // The fleet table's columns have to fit: a pulldown narrower than
+        // the table would clip the columns rather than lay them out.
+        let size = panel_size(Some((320.0, 400.0)), (420.0, 300.0), None);
+        assert_eq!(size.width, metrics::DEFAULT_WIDTH);
     }
 
     #[test]
     fn the_content_size_is_used_when_the_operator_never_resized() {
-        let size = panel_size(None, (420.0, 300.0), None);
-        assert_eq!((size.width, size.height), (420.0, 300.0));
+        let size = panel_size(None, (700.0, 300.0), None);
+        assert_eq!((size.width, size.height), (700.0, 300.0));
     }
 
     #[test]
@@ -676,12 +706,12 @@ mod tests {
     #[test]
     fn the_detail_is_bounded() {
         let few = content_height(&Content {
-            hosts: 1,
+            detail: true,
             metrics: 1,
             ..Content::default()
         });
         let many = content_height(&Content {
-            hosts: 1,
+            detail: true,
             metrics: 500,
             ..Content::default()
         });
@@ -693,16 +723,85 @@ mod tests {
     }
 
     #[test]
-    fn the_form_is_shorter_than_the_fleet() {
+    fn the_fleet_view_does_not_carry_the_detail() {
+        // The detail is behind the pulldown's own control, so the fleet
+        // view's height is the host list and nothing else.
         let fleet = content_height(&Content {
+            hosts: 5,
+            metrics: 500,
+            ..Content::default()
+        });
+        let without_metrics = content_height(&Content {
             hosts: 5,
             ..Content::default()
         });
-        let form = content_height(&Content {
+        assert_eq!(
+            fleet, without_metrics,
+            "the fleet view does not grow with the detail's rows"
+        );
+    }
+
+    #[test]
+    fn the_form_does_not_carry_the_fleet() {
+        let few = content_height(&Content {
             form: true,
+            hosts: 1,
             ..Content::default()
         });
-        assert!(form < fleet, "a form does not carry the fleet");
+        let many = content_height(&Content {
+            form: true,
+            hosts: 200,
+            ..Content::default()
+        });
+        assert_eq!(few, many, "a form does not carry the fleet");
+    }
+
+    #[test]
+    fn the_default_width_is_the_table_and_its_chrome() {
+        // The fleet table's columns decide how wide the pulldown is, and the
+        // pulldown is the table plus the card's chrome. If a column is
+        // widened and the width is not, the table is clipped.
+        let slint = include_str!("ui/main.slint");
+        let literal = |name: &str| -> f32 {
+            let needle = format!("{name}: ");
+            let start = slint
+                .find(&needle)
+                .unwrap_or_else(|| panic!("the `.slint` file has no `{name}`"))
+                + needle.len();
+            let rest = &slint[start..];
+            let end = rest.find(';').expect("the literal ends");
+            rest[..end]
+                .trim()
+                .trim_end_matches("px")
+                .parse()
+                .unwrap_or_else(|_| panic!("`{name}` is not a number"))
+        };
+
+        let bar = literal("col-bar-width");
+        let gap = literal("metric-gap");
+        let pct = literal("col-pct-width");
+        let column_gap = literal("col-gap");
+        // The host column, then the CPU column (bar, share, frequency), then
+        // the four columns that are a bar and a share, then the load.
+        let table = literal("col-host-width")
+            + column_gap
+            + bar
+            + gap
+            + pct
+            + gap
+            + literal("col-freq-width")
+            + column_gap
+            + 4.0 * (bar + gap + pct + column_gap)
+            + literal("col-load-width");
+
+        assert_eq!(
+            table,
+            metrics::DEFAULT_WIDTH
+                - 2.0 * metrics::MARGIN
+                - 2.0 * metrics::PANE_PADDING
+                - literal("scrollbar-reserve"),
+            "the pulldown's width is the fleet table and the card's chrome"
+        );
     }
 
     #[test]
@@ -718,7 +817,14 @@ mod tests {
             ("the spacing", "spacing: 6px"),
             ("the header", "height: 36px"),
             ("the footer", "height: 18px"),
-            ("the host row", "height: 46px"),
+            ("the host row", "host-row-height: 19px"),
+            ("the table's headings", "heading-height: 14px"),
+            ("the host column", "col-host-width: 136px"),
+            ("the bar's width", "col-bar-width: 24px"),
+            ("the bar's height", "col-bar-height: 6px"),
+            ("the share's width", "col-pct-width: 26px"),
+            ("the frequency's width", "col-freq-width: 58px"),
+            ("the load's width", "col-load-width: 34px"),
             ("the job row", "height: 22px"),
             ("the metric row", "metric-row-height: 18px"),
             ("the metric bar", "metric-bar-height: 6px"),
@@ -738,7 +844,8 @@ mod tests {
         assert_eq!(metrics::BODY_SPACING, 6.0);
         assert_eq!(metrics::HEADER, 36.0);
         assert_eq!(metrics::FOOTER, 18.0);
-        assert_eq!(metrics::HOST_ROW, 46.0);
+        assert_eq!(metrics::HOST_ROW, 19.0);
+        assert_eq!(metrics::HEADING_HEIGHT, 14.0);
         assert_eq!(metrics::JOB_ROW, 22.0);
         assert_eq!(metrics::STATUS_LINE, 18.0);
         assert_eq!(metrics::MESSAGE_LINE, 30.0);
