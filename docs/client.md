@@ -327,8 +327,8 @@ without touching the cache, and is therefore its own publication reason.
 ## Optional desktop GUI
 
 `apps/gregg-gui` is an **optional** Slint frontend: a system tray entry and a
-compact monitor window for the same fleet this TUI shows. It is a second way
-to *look* at the fleet, never a second way to *poll* it — it attaches to the
+pulldown panel for the same fleet this TUI shows. It is a second way to
+*look* at the fleet, never a second way to *poll* it — it attaches to the
 same per-config client daemon over the same local channel, so a TUI and a GUI
 window cost the fleet exactly what one window costs.
 
