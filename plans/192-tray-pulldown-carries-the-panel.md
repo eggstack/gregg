@@ -192,6 +192,16 @@ the GUI is **not shippable** for Windows or Linux.
 > The evidence is in `apps/gregg-gui/EVIDENCE.md`, in the section *"The panel had a band of dead
 > space above the fleet"*, with the before-and-after pixel measurements taken from the running
 > panel on the 3840×1080 display.
+>
+> The CI run that covers this work, **`39982133374`**, was **green on nine jobs and failed the
+> `GUI (ubuntu-latest)` leg** on one test — `bridge::tests::an_explicit_client_must_identify_itself`
+> — with `Text file busy (os error 26)`. That is the repository's known `ETXTBSY` flake: the test
+> writes a `/bin/sh` stub with `fs::write` and the identity probe `execve`s it a moment later, and
+> the close-to-exec boundary intermittently fails on Linux under load. It has been root-caused
+> twice before, in plans 161 and 167, where the repair was deferred because it belonged to another
+> crate. **Here it belongs to this branch's own crate**, so the repair is applied here: a
+> **test-only** retry of a probe whose diagnostic says the executable could not be run. The
+> product changed nothing — it reported the failed spawn as a diagnostic, which is correct.
 
 > **Amendment, 2026-10-23 (sixth) — the remembered placement is an offset, not a position.**
 > The direction this plan set — *the pulldown reads as a dropdown* — is unchanged and is still the

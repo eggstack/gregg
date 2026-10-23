@@ -530,6 +530,44 @@ mod tests {
         path
     }
 
+    /// The pause between a failed probe and its retry.
+    ///
+    /// It is short on purpose: the transient this tolerates is a
+    /// close-to-exec boundary, which is microseconds wide.
+    const PROBE_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_millis(50);
+
+    /// How many times a probe that could not *run* the executable is retried.
+    const PROBE_RETRIES: usize = 3;
+
+    /// Resolve the daemon, retrying a probe that could not **run** the
+    /// executable.
+    ///
+    /// The fixture is a `/bin/sh` stub that `fs::write` has just created, and
+    /// on Linux the close-to-exec boundary intermittently fails with
+    /// `ETXTBSY` under load — the transient this repository has root-caused
+    /// twice already, in plans 161 and 167. The **product** behaved
+    /// correctly: it reported a failed spawn rather than inventing a "not
+    /// found", and that is exactly what the diagnostic says.
+    ///
+    /// Only the test's own write-then-exec window is at fault, so the *test*
+    /// retries: a retry that still fails fails the test, and a retry that
+    /// succeeds proves the executable was never the problem.
+    fn resolve_daemon_retrying(explicit: &Path, frontend: &Path) -> DaemonResolution {
+        let mut resolution = resolve_daemon(Some(explicit), frontend);
+        for _ in 0..PROBE_RETRIES {
+            let retry = match &resolution {
+                DaemonResolution::Missing(reason) => reason.contains("could not run"),
+                _ => false,
+            };
+            if !retry {
+                break;
+            }
+            std::thread::sleep(PROBE_RETRY_PAUSE);
+            resolution = resolve_daemon(Some(explicit), frontend);
+        }
+        resolution
+    }
+
     fn temp_dir(tag: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
             "gregg-gui-bridge-{tag}-{}-{:?}",
@@ -549,7 +587,7 @@ mod tests {
         let frontend = dir.join("gregg-gui");
         fixture_client(&dir, "gregg-gui", "#!/bin/sh\nexit 0\n");
 
-        let resolution = resolve_daemon(Some(&client), &frontend);
+        let resolution = resolve_daemon_retrying(&client, &frontend);
         match resolution {
             DaemonResolution::Selected(DaemonExecutable::Path(path)) => {
                 assert_eq!(path, client);
@@ -571,13 +609,17 @@ mod tests {
         let other = fixture_client(&dir, "other", "#!/bin/sh\necho 'some other tool'\n");
         let frontend = dir.join("gregg-gui");
 
-        let resolution = resolve_daemon(Some(&other), &frontend);
+        let resolution = resolve_daemon_retrying(&other, &frontend);
         let DaemonResolution::Missing(reason) = resolution else {
             panic!("a tool that is not a Gregg client must be refused");
         };
         assert!(
             reason.contains("did not identify itself"),
             "the diagnostic must say what went wrong: {reason}"
+        );
+        assert!(
+            !reason.contains("could not run"),
+            "the tool must have been run and refused, not merely failed to start: {reason}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

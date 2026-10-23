@@ -1323,6 +1323,37 @@ The GUI workspace's own suite is **166 passed / 0 failed** (160 before this
 work, plus six new tests), its clippy is clean under `-D warnings`, and its
 formatting is clean.
 
+**The CI run that covers this work failed once, and the failure is recorded
+here rather than forgotten.** Run **`39982133374`** against `054fffc` was
+**green on nine jobs** — every core job and both of the other two `GUI` legs —
+and **failed the `GUI (ubuntu-latest)` leg** on one test:
+
+```text
+bridge::tests::an_explicit_client_must_identify_itself
+a genuine Gregg client must be accepted: the Gregg client at
+/tmp/gregg-gui-bridge-explicit-3538-ThreadId(8)/gregg did not identify itself:
+could not run /tmp/gregg-gui-bridge-explicit-3538-ThreadId(8)/gregg version:
+Text file busy (os error 26)
+```
+
+`ETXTBSY`. It is **not** this work's defect and not a defect in the product:
+the test writes a `/bin/sh` stub with `fs::write` and the product's identity
+probe `execve`s it a moment later, and on Linux that close-to-exec boundary
+intermittently fails under load. This repository has root-caused the very same
+transient twice already — in `plans/161` and `plans/167`, where the repair was
+left to a corrective plan because it belonged to another crate — and the
+minimal repair it names is the one applied here: **retry the probe**.
+
+The repair is **test-only** and it is in the GUI's own crate, which is where
+the flake lives: `bridge.rs`'s test helper `resolve_daemon_retrying` retries a
+probe whose diagnostic says the executable **could not be run** — three times,
+fifty milliseconds apart — and a retry that still fails still fails the test.
+Nothing in the product changed: the GUI reported the failed spawn as a
+diagnostic, which is the correct behaviour, and it still does.
+
+The sibling test now also asserts that the tool was **run and refused** rather
+than merely failed to start, so a transient cannot satisfy it by accident.
+
 ### The native exercises, on CI run `39811582623`
 
 The GUI workspace is not a member of the root workspace, so no root job
