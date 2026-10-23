@@ -1512,13 +1512,12 @@ gregg-gui: the pulldown was dismissed: the operator clicked away
 The three tray clicks in a row produced **no** "landed away" line at all: the
 menu bar's exclusion is what keeps the tray's own click from dismissing the
 pulldown, which would otherwise hide it and open it again in the same gesture.
+Those are the rows the focus rule could not pass — the tray's click is in the
+menu bar, and the watch has to leave it alone.
+
 The "away" coordinates in the log are AppKit's — the **bottom-left** origin —
 so `(800, 380)` is the same click the driver made at `(800, 700)` from the
 top-left.
-
-The **tray** rows are the ones the focus rule could not pass: the tray's click
-is in the menu bar, and the watch has to leave it alone or the pulldown would
-hide and open again.
 
 **The limits that are left are stated rather than papered over.**
 
