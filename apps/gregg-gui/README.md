@@ -304,7 +304,7 @@ outcomes, and the exact shape of the line a CI job asserts on.
 | Pulldown | The selected host's `Remove` | Removes the host from the configuration. |
 | Pulldown | **×** (in the header strip) | **Hides** the pulldown, and the tray brings it back. On a desktop with **no tray** it **ends the GUI** instead — a hidden pulldown with no tray is an application you can no longer reach. |
 | Pulldown | **Esc** | The same as ×. |
-| Pulldown | **A click away** | The same as ×. The pulldown watches the **keyboard focus**: a window that loses the focus has lost it to a click somewhere else. |
+| Pulldown | **A click away** | The same as ×. On **macOS** the pulldown watches the **mouse**, so a click that lands anywhere else closes it; on **Windows and Linux** it watches the **keyboard focus**. |
 | Pulldown | The header strip | **Drags** the pulldown. It has no window frame, so it has no title bar to drag. |
 
 The host's own actions are **the pulldown's affordances**, aimed at the
@@ -484,19 +484,46 @@ DRIVES
 
 **`Esc`, the tray's click, the pulldown's own × control, and a click away.**
 
-The click away is the **keyboard focus**. A window that loses the keyboard focus
-has lost it to a click somewhere else, and a pulldown that stays up when the
-operator clicks the desktop behind it is not a pulldown — it is a second window
-that will not go away.
+A pulldown that stays up when the operator clicks the desktop behind it is not
+a pulldown — it is a second window that will not go away. Every one of the four
+goes through the **same** path, so every one of them leaves the same thing
+behind: the fleet view, and no half-typed form.
 
-Slint 1.18 **does** expose that signal, and this was worth checking before
-believing otherwise: `FocusScope` has a `focus-lost` callback, and its argument
-is a `FocusReason` — `programmatic`, `tab-navigation`, `pointer-click`,
+The click away is **two signals on two platforms**, because another
+application's mouse is not watchable everywhere.
+
+**On macOS the pulldown watches the mouse.** The click belongs to the
+application that was clicked, so it cannot be seen from inside the pulldown's
+own window — and AppKit's global event monitor reports exactly those clicks:
+
+```rust
+NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
+    NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown | NSEventMask::OtherMouseDown,
+    &handler,
+)
+```
+
+That is the **safe** AppKit API — no event tap, no accessibility permission,
+and the GUI crate still contains no `unsafe` at all. The handler reads the
+pointer's position with `NSEvent::mouseLocation()`, another safe call, and
+asks a **pure** function where the click landed:
+
+- a click **inside** the pulldown is the operator using it, not a click away;
+- a click in the **menu bar** is the tray's own click, which **toggles** the
+  pulldown, so it is not a click away either — if it were, the tray's click
+  would hide the pulldown and open it again;
+- a click anywhere else is a click away.
+
+The whole geometry is one pure function, so it is unit-tested on **every**
+platform, including the ones that do not use the mouse watch.
+
+**On Windows and Linux the pulldown watches the keyboard focus.** Slint 1.18
+**does** expose that signal: `FocusScope` has a `focus-lost` callback, and its
+argument is a `FocusReason` — `programmatic`, `tab-navigation`, `pointer-click`,
 `popup-activation` and **`window-activation`**. The last one is the desktop
-saying *this window is no longer the active one*, which is exactly what a click
-away does. So the dismissal needs **no per-platform input hook**: no event tap,
-no global mouse monitor, no accessibility permission, and nothing that is
-macOS-only.
+saying *this window is no longer the active one*, which is what a click away
+does. There is no portable way to watch another application's mouse on those
+desktops, so the focus is the signal there.
 
 The focus can be in either of two places, and the pulldown watches both:
 
@@ -512,14 +539,34 @@ changes, the pulldown **takes the focus back**, because a form that goes away
 takes the focus with it, and the pulldown must not mistake that for a click
 away.
 
-The limit that is left is worth stating plainly: the signal is *the focus was
-lost*, not *a click landed elsewhere*. A desktop that takes the focus away for
-some other reason — another application activating on its own, a full-screen
-space being left — dismisses the pulldown too. It is a close cousin of the
-native behaviour rather than a different thing: a native status-item menu is
-**modal**, so it grabs the mouse and the keyboard and nothing else can take the
-focus while it is open; a Slint window cannot be modal, so the pulldown watches
-the focus instead of the mouse.
+### Why macOS does not use the focus
+
+The focus was tried first, on every platform, and it is **not** a reliable
+click-away signal on macOS. An application that takes the foreground for its
+own reasons — a mouse-automation tool, a screen recorder, a launcher — takes
+the focus away from the pulldown too, and the pulldown closes itself while the
+operator is reading it.
+
+**Measured on this machine**, with a mouse-automation app installed and running:
+the pulldown **self-dismissed in four opens out of five**, every time because
+something else had taken the foreground. The mouse watch has no such failure —
+it closed only when a click actually landed elsewhere.
+
+The limits that are left are worth stating plainly:
+
+- on **Windows and Linux** the signal is *the focus was lost*, not *a click
+  landed elsewhere*. A desktop that takes the focus away for some other reason
+  — another application activating on its own, a full-screen space being left —
+  dismisses the pulldown too. It is a close cousin of the native behaviour
+  rather than a different thing: a native status-item menu is **modal**, so it
+  grabs the mouse and the keyboard and nothing else can take the focus while it
+  is open; a Slint window cannot be modal, so those desktops watch the focus
+  instead of the mouse.
+- on **macOS** the watch sees the clicks that are dispatched to *other*
+  applications, so a click that another application swallows before dispatch is
+  not seen; and the pointer's position is read when the click is **delivered**,
+  not out of the click itself, which is why the menu bar's exclusion is a
+  **band** and not a line.
 
 - `Esc` works, because the pulldown's own focus scope handles the key, and the
   key reaches it even when a text field has the focus.
@@ -1138,8 +1185,8 @@ makes the difference attributable.
 | The GUI after Plan 191 (the tray pulldown, with host management) | 11,896,608 bytes (11.3 MiB) |
 | The GUI with the fleet view as a table of blocks (the previous build) | 12,012,560 bytes (11.5 MiB) |
 | The GUI with the compact fleet view and the detail view as the fleet's own block | 11,962,992 bytes (11.4 MiB) |
-| **The GUI now** (the same, and the pulldown closes when the operator clicks away) | **11,979,520 bytes** (11.4 MiB) |
-| **Difference** (before Plan 191 → now) | **+1,176,160 bytes (+10.9%)** |
+| **The GUI now** (the same, and the pulldown closes when the operator clicks away) | **11,979,536 bytes** (11.4 MiB) |
+| **Difference** (before Plan 191 → now) | **+1,176,176 bytes (+10.9%)** |
 | The same GUI calling `gregg::cli::dispatch` (the rejected alternative) | 14,761,600 bytes |
 
 So the pulldown and the host-management forms cost about **1.02 MiB** more
@@ -1151,9 +1198,13 @@ bar columns and their headings — and the vendored `softbuffer` patch costs
 **nothing measurable**: it changes one word in a pixel-format declaration that
 was already in the binary.
 
-The **click-away dismissal costs +16,528 bytes (+0.1%)**: it is a focus
-callback, an aggregate over five elements and one function, and it adds **no
-dependency** — no event tap, no global mouse monitor and nothing macOS-only.
+The **click-away dismissal costs +16,544 bytes (+0.1%)**: it is a focus
+callback, an aggregate over five elements, one function, and the macOS mouse
+watch. It adds **no new crate** to the build: `block2` — the crate that carries
+an Objective-C block, which the monitor's handler is — was **already in this
+workspace's graph** through `objc2`, so naming it directly compiles nothing
+new (the lockfile still holds the same 604 packages). The watch itself is safe
+AppKit API: no event tap and no accessibility permission.
 
 The detail view's rewrite cost **−16,496 bytes (−0.1%)**: the host's block is
 drawn by the *one* `HostBlock` component now, so the detail view's own metric

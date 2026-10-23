@@ -902,36 +902,42 @@ fn create_panel(ctx: &PanelContext) -> Pulldown {
     let callback_state = Arc::clone(&state);
     let callback_panel = panel.as_weak();
     panel.on_close_requested(move || {
-        dismiss_pulldown(&callback_panel, &callback_state);
-    });
-
-    // The pulldown no longer holds the keyboard focus: the operator clicked
-    // away from it, which is how a menu is dismissed.
-    //
-    // The panel is only dismissed while it is on screen. A panel that is
-    // already hidden has lost the focus for a different reason — it was
-    // hidden, or it was never focused — and dismissing it again would be
-    // noise.
-    let callback_state = Arc::clone(&state);
-    let callback_panel = panel.as_weak();
-    panel.on_focus_left(move || {
         let Some(panel) = callback_panel.upgrade() else {
             return;
         };
-        if !panel.window().is_visible() {
-            return;
-        }
-        {
-            let Ok(guard) = callback_state.lock() else {
-                return;
-            };
-            if !guard.panel_visible {
-                return;
-            }
-        }
-        eprintln!("gregg-gui: the pulldown was dismissed: it lost the keyboard focus");
-        dismiss_pulldown(&callback_panel, &callback_state);
+        dismiss_pulldown(&panel, &callback_state);
     });
+
+    // The click away: the pulldown is dismissed when the operator clicks
+    // somewhere else, which is how a menu is dismissed.
+    //
+    // macOS watches the **mouse**: the click belongs to the application that
+    // was clicked, so it cannot be seen from inside the pulldown's own
+    // window, and AppKit's global event monitor reports exactly those
+    // clicks. The other desktops have no portable way to watch another
+    // application's mouse, so they watch the **keyboard focus** instead: a
+    // window that loses the focus has lost it to a click somewhere else.
+    let callback_state = Arc::clone(&state);
+    let callback_panel = panel.as_weak();
+    platform::install_click_away_monitor(panel.get_window_title().to_string(), move || {
+        let panel = callback_panel.clone();
+        let state = Arc::clone(&callback_state);
+        let _ = slint::invoke_from_event_loop(move || {
+            dismiss_pulldown_if_visible(&panel, &state, "the operator clicked away");
+        });
+    });
+
+    if platform::click_away_is_the_focus() {
+        let callback_state = Arc::clone(&state);
+        let callback_panel = panel.as_weak();
+        panel.on_focus_left(move || {
+            dismiss_pulldown_if_visible(
+                &callback_panel,
+                &callback_state,
+                "it lost the keyboard focus",
+            );
+        });
+    }
 
     let callback_state = Arc::clone(&state);
     let callback_panel = panel.as_weak();
@@ -987,6 +993,34 @@ fn create_panel(ctx: &PanelContext) -> Pulldown {
     panel
 }
 
+/// Dismiss the pulldown, if it is on screen.
+///
+/// A panel that is not on screen has lost the focus for a different reason —
+/// it was hidden, or it was never focused — and dismissing it again would be
+/// noise.
+fn dismiss_pulldown_if_visible(
+    panel: &slint::Weak<Pulldown>,
+    state: &Arc<Mutex<UiState>>,
+    reason: &str,
+) {
+    let Some(panel) = panel.upgrade() else {
+        return;
+    };
+    if !panel.window().is_visible() {
+        return;
+    }
+    {
+        let Ok(guard) = state.lock() else {
+            return;
+        };
+        if !guard.panel_visible {
+            return;
+        }
+    }
+    eprintln!("gregg-gui: the pulldown was dismissed: {reason}");
+    dismiss_pulldown(&panel, state);
+}
+
 /// Dismiss the pulldown.
 ///
 /// The panel is hidden and the tray brings it back, which is what a menu
@@ -997,10 +1031,7 @@ fn create_panel(ctx: &PanelContext) -> Pulldown {
 ///
 /// Every dismissal goes through here — `Esc`, the panel's own close
 /// control, and the click away — so they all leave the same thing behind.
-fn dismiss_pulldown(panel: &slint::Weak<Pulldown>, state: &Arc<Mutex<UiState>>) {
-    let Some(panel) = panel.upgrade() else {
-        return;
-    };
+fn dismiss_pulldown(panel: &Pulldown, state: &Arc<Mutex<UiState>>) {
     let Ok(mut guard) = state.lock() else {
         return;
     };

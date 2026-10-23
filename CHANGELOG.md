@@ -14,14 +14,31 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   does too: it is dismissed by `Esc`, the tray's click, its own × control
   **and a click away**.
 
-  The signal is the **keyboard focus**. A window that loses the focus has lost
-  it to a click somewhere else, and Slint 1.18 **does** expose that —
-  `FocusScope`'s `focus-lost` callback carries the **reason**, and
-  `FocusReason.window-activation` is the desktop saying the window is no longer
-  active. The claim that Slint 1.18 exposed no focus-lost event was wrong, and
-  it is withdrawn: the dismissal needs **no per-platform input hook**, no event
-  tap, no global mouse monitor and no accessibility permission, and it is not
-  macOS-only.
+  The click away is **two signals on two platforms**, because another
+  application's mouse is not watchable everywhere. On **macOS** the pulldown
+  watches the **mouse**: AppKit's global event monitor
+  (`NSEvent::addGlobalMonitorForEventsMatchingMask_handler`) reports the
+  clicks that are dispatched to *other* applications, which is exactly a click
+  that landed outside the pulldown, and the pointer's position says where it
+  landed. On **Windows and Linux** the pulldown watches the **keyboard
+  focus**: Slint 1.18 **does** expose that — `FocusScope`'s `focus-lost`
+  callback carries the **reason**, and `FocusReason.window-activation` is the
+  desktop saying the window is no longer active — and there is no portable way
+  to watch another application's mouse there. The claim that Slint 1.18
+  exposed no focus-lost event was wrong, and it is withdrawn.
+
+  The focus was tried first, everywhere, and it is **not** a reliable
+  click-away signal on macOS: an application that takes the foreground for its
+  own reasons takes the focus away too, and the pulldown closes itself while
+  the operator is reading it. **Measured**, it self-dismissed in **four opens
+  out of five**. The mouse watch has no such failure.
+
+  The watch is **safe** AppKit API — no event tap, no accessibility
+  permission, and the GUI crate still contains no `unsafe` at all — and it adds
+  **no new crate** to the build, because `block2` was already in the graph
+  through `objc2`. The **menu bar is excluded** from "away", because the
+  tray's own click *toggles* the pulldown and the watch must not dismiss it as
+  well.
 
   The pulldown watches **everything that can hold the focus** — the scope that
   handles the keys and the four fields of the two forms — so a click away
@@ -30,9 +47,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   dismissal now goes through one path and leaves the same thing behind: the
   fleet view, and no half-typed form.
 
-  The limit that is left is stated rather than papered over: the signal is *the
-  focus was lost*, not *a click landed elsewhere*, so a desktop that takes the
-  focus away for another reason dismisses the pulldown too.
+  The limit that is left is stated rather than papered over: on Windows and
+  Linux the signal is *the focus was lost*, not *a click landed elsewhere*, so
+  a desktop that takes the focus away for another reason dismisses the
+  pulldown too.
 
 - **The desktop frontend's pulldown has two views, and the fleet view is a
   table of blocks.** The pulldown's **fleet** is now the TUI's condensed fleet
@@ -147,9 +165,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   menu and carries the fleet summary, the host list, the selected host's
   metrics, drives and interfaces, its scheduler jobs and retained records, and
   the `EggPool` plane. The panel is dismissed with `Esc`, the tray's click, its
-  own close control **or a click away**: the pulldown watches the keyboard
-  focus, and the claim that Slint 1.18 exposes no focus-lost event was wrong
-  (see the entry above). The panel is anchored to the
+  own close control **or a click away**: on macOS the pulldown watches the
+  mouse and on Windows and Linux it watches the keyboard focus (see the entry
+  above). The panel is anchored to the
   trailing edge of the display, on the side where the desktop's own shell
   lives, clamped so it can never open off the screen, and it keeps the
   position the operator gave it — a borderless panel carries its own

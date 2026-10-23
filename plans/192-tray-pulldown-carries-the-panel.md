@@ -268,9 +268,25 @@ the GUI is **not shippable** for Windows or Linux.
 > which is what a click away does. The winit backend delivers it: `Focused` → `activation_changed`
 > → `WindowEvent::WindowActiveChanged` → `WindowInner::set_active` → `FocusOut(WindowActivation)`.
 >
-> So the dismissal needs **no per-platform input hook** — no event tap, no global mouse monitor,
-> no accessibility permission — and it is **not** macOS-only: the exclusion is withdrawn, and the
-> three `GUI` legs are the authority for Windows and Linux.
+> That signal was built first, and it was **measured** before it was trusted. On macOS it is **not**
+> a reliable click-away signal: an application that takes the foreground for its own reasons takes
+> the focus away too, and the pulldown closes itself while the operator is reading it. On this
+> machine it **self-dismissed in four opens out of five**, every time because another application
+> had taken the foreground.
+>
+> So the click away is now **two signals on two platforms**, because another application's mouse is
+> not watchable everywhere:
+>
+> - **macOS watches the mouse.** A click that lands outside the pulldown belongs to the application
+>   that was clicked, so it cannot be seen from inside the pulldown's own window. AppKit's global
+>   event monitor reports exactly those events — the ones dispatched to *other* applications — and
+>   the pointer's position says where the click landed. It is **safe** AppKit API: no event tap, no
+>   accessibility permission, and the GUI crate still contains **no `unsafe` at all**. The **menu bar
+>   is excluded**, because the tray's own click *toggles* the pulldown and the watch must not
+>   dismiss it as well; the exclusion is a **band**, not a line, because the pointer's position is
+>   read when the click is delivered rather than out of the click itself.
+> - **Windows and Linux watch the keyboard focus**, which is the signal above. There is no portable
+>   way to watch another application's mouse there.
 >
 > - The pulldown aggregates **everything that can hold the keyboard focus**: the scope that handles
 >   the keys, and the **four fields** of the two forms. A text field takes the focus away from the
@@ -282,20 +298,25 @@ the GUI is **not shippable** for Windows or Linux.
 >   takes the focus with it, and the pulldown must not mistake that for a click away.
 > - Every dismissal — `Esc`, the ×, the tray's click and the click away — goes through **one**
 >   function now, so they leave the same thing behind: the fleet view, and no half-typed form.
+> - The **geometry** of the click away — inside the pulldown, in the menu bar, or elsewhere — is one
+>   **pure** function, so it is unit-tested on every platform, including the ones that do not use
+>   the mouse watch.
 >
-> The limit that is left is stated rather than papered over: the signal is *the focus was lost*,
-> not *a click landed elsewhere*, so a desktop that takes the focus away for another reason
-> dismisses the pulldown too. A native status-item menu does not have that problem, because it is
-> **modal** — it grabs the mouse and the keyboard, so nothing else can take the focus while it is
-> open. A Slint window cannot be modal, so the pulldown watches the focus instead of the mouse.
+> The limits that are left are stated rather than papered over: on Windows and Linux the signal is
+> *the focus was lost*, not *a click landed elsewhere*, so a desktop that takes the focus away for
+> another reason dismisses the pulldown too; and on macOS the watch sees the clicks dispatched to
+> *other* applications, so a click another application swallows before dispatch is not seen. A
+> native status-item menu does not have the first problem, because it is **modal** — it grabs the
+> mouse and the keyboard, so nothing else can take the focus while it is open. A Slint window
+> cannot be modal, so macOS watches the mouse instead.
 >
-> Verified natively on macOS 15 (arm64), the release build, against the live window list: a click
-> **away** dismisses the pulldown (`onscreen=false`), a click **inside** does not, and a click
-> away with a **field focused** does — the last one being the case the fields are named for. The
-> same session measured the GUI against the terminal client: **49 MB** of resident set for a GUI
-> whose pulldown was never opened and **71 MB** once it was built, against **3.4 MB** for the TUI
-> and **4.9 MB** for the client daemon that does the polling — and `lsof` on the GUI's process
-> lists **no network socket at all**, so the fleet is not polled twice.
+> Verified natively on macOS 15 (arm64) against the live window list: a click **away** dismisses
+> the pulldown (`onscreen=false`), a click **inside** does not, and the **tray's** own click — in
+> the menu bar — neither dismisses it by the watch nor fails to toggle it. The same session measured
+> the GUI against the terminal client: **49 MB** of resident set for a GUI whose pulldown was never
+> opened and **71 MB** once it was built, against **3.4 MB** for the TUI and **4.9 MB** for the
+> client daemon that does the polling — and `lsof` on the GUI's process lists **no network socket
+> at all**, so the fleet is not polled twice.
 
 ## Objective
 
@@ -384,9 +405,11 @@ is accepted as the `SystemTrayIcon`'s single `Menu` child in this workspace.
 - A **native menu cannot host Slint widgets**, so the pulldown is a Slint window. The native
   menu is reduced to what a native menu is good at — and on macOS it is detached entirely,
   which means the pulldown must carry `Quit`, `About` and `Reload` itself.
-- **Click-away dismissal is not available**: Slint 1.18.1 exposes no focus-lost event. The
-  pulldown is dismissed by `Esc`, by the tray's click, and by its own close control. This is
-  stated in the user documentation, not papered over.
+- **Click-away dismissal was not available** when this plan was written, on the stated ground that
+  Slint 1.18.1 exposes no focus-lost event. That ground was wrong, and the dismissal now ships:
+  see the eighth amendment. The pulldown is dismissed by `Esc`, by the tray's click, by its own
+  close control **and by a click away**, and the limits of that last one are stated rather than
+  papered over.
 - On **Linux the `Activate` gesture is decided by the desktop environment** or its shell
   extension, so on some desktops the primary click may be claimed by the host. Which gesture
   opens the pulldown has to be observed in a real session, and the plan records which.
@@ -448,11 +471,22 @@ operator drags the panel once and expects it to stay there.
 - click-away dismissal, per-platform input hooks, and hand-rolled tray icons;
   > **Amended by the eighth amendment.** Click-away dismissal is **no longer excluded**, and the
   > ground for excluding it was wrong: Slint 1.18 **does** expose a focus-lost event, with the
-  > reason attached, and `FocusReason.window-activation` is the signal a click away produces. It
-  > needs no per-platform input hook, so the rest of this line still holds: there is no event tap,
-  > no global mouse monitor and no hand-rolled tray icon.
+  > reason attached, and `FocusReason.window-activation` is the signal a click away produces.
+  > **Amended again by the same amendment.** The focus turned out to be an unreliable click-away
+  > signal on macOS — **measured**, the pulldown dismissed itself in four opens out of five because
+  > another application took the foreground — so macOS now watches the **mouse** through AppKit's
+  > global event monitor, and only Windows and Linux watch the focus. There is **no event tap** and
+  > **no accessibility permission**: the watch is safe AppKit API, and the GUI crate still contains
+  > no `unsafe`. There is still no hand-rolled tray icon, and `block2` — the crate that carries the
+  > monitor's Objective-C block — was **already in the GUI workspace's graph** through `objc2`, so
+  > naming it directly adds no new crate to the build.
 - a GPU renderer, and a vendored patch of Slint's runtime code;
 - a new dependency in the GUI workspace;
+  > **Amended by the eighth amendment.** `block2` is now a **direct** dependency of the GUI
+  > workspace, because the macOS mouse watch's handler is an Objective-C block and the type has
+  > to be named. It is **already in the graph** through `objc2`, so **no new crate** is built and
+  > the lockfile still holds the same 604 packages — the same rule the `std-widgets` and `zbus`
+  > edges follow. `objc2-app-kit` also gains the `NSEvent`, `NSScreen` and `block2` features.
 - a new CI job, workflow, matrix, artifact or evidence bundle;
 - a release asset, installer, bundle, packaging job or publication step;
 - rewriting the historical records of Plans 187-190.
@@ -805,12 +839,18 @@ to the GUI workspace.
   > **Amended by the eighth amendment.** The exclusion rested on the claim that Slint 1.18
   > exposes no focus-lost event, which was never checked against the source and is wrong:
   > `FocusScope` carries `focus-lost(reason: FocusReason)`, and `FocusReason.window-activation`
-  > is the desktop saying the window is no longer active — which is what a click away does. The
-  > pulldown watches the keyboard focus, aggregates every element that can hold it (the scope
+  > is the desktop saying the window is no longer active — which is what a click away does.
+  > The pulldown watches the keyboard focus, aggregates every element that can hold it (the scope
   > that handles the keys and the four fields of the two forms), and takes the focus back when
   > the view changes. The limit that is left is that the signal is *the focus was lost*, not *a
   > click landed elsewhere*: a desktop that takes the focus away for another reason dismisses
   > the pulldown too.
+  > **Amended again by the same amendment.** That limit is what macOS could not live with: the
+  > pulldown dismissed itself in **four opens out of five** on this machine, because an
+  > application took the foreground for its own reasons. macOS now watches the **mouse**
+  > (AppKit's global event monitor, safe API, no event tap, no accessibility permission) and
+  > excludes the menu bar, because the tray's own click toggles the pulldown. Windows and Linux
+  > keep the focus rule, and the limit above is theirs to carry.
 
 ### What was not performed
 

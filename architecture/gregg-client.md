@@ -500,17 +500,40 @@ still gains no message.
 Closing the panel **hides** it and leaves the tray and the observation
 running; Quit is the only thing that ends the GUI, and it never ends the client
 daemon. `Esc`, the tray's click, the panel's own close control **and a click
-away** all dismiss it. The click away is the **keyboard focus**: a window that
-loses the focus has lost it to a click somewhere else, and Slint 1.18 does
-expose that — `FocusScope`'s `focus-lost` callback carries the **reason**, and
+away** all dismiss it, and every one of them goes through the same path, so
+they all leave the same thing behind: the fleet view, and no half-typed form.
+
+The click away is **two signals on two platforms**, because another
+application's mouse is not watchable everywhere. On **macOS** the pulldown
+watches the **mouse**: AppKit's global event monitor
+(`NSEvent::addGlobalMonitorForEventsMatchingMask_handler`) reports the mouse
+events that are dispatched to *other* applications, which is exactly a click
+that landed outside the pulldown, and the pointer's position at that moment
+says where it landed. The **menu bar is excluded** from "away", because the
+tray's own click *toggles* the pulldown and the watch must not dismiss it as
+well — or the pulldown would hide and open again. On **Windows and Linux** the
+pulldown watches the **keyboard focus** instead: Slint 1.18 does expose that —
+`FocusScope`'s `focus-lost` callback carries the **reason**, and
 `FocusReason.window-activation` is the desktop saying the window is no longer
-active. The pulldown aggregates every element that can hold the focus — the
+active — and there is no portable way to watch another application's mouse
+there. The pulldown aggregates every element that can hold the focus — the
 scope that handles the keys and the four fields of the two forms — so a click
 away dismisses it with a form open, and it takes the focus back when the view
-changes, so a form that goes away does not look like a lost focus. The limit
-that is left: the signal is *the focus was lost*, not *a click landed
-elsewhere*, so a desktop that takes the focus away for another reason
-dismisses the pulldown too.
+changes, so a form that goes away does not look like a lost focus.
+
+The macOS signal is the **measured** one. The focus was tried first, and it
+is not reliable there: an application that takes the foreground for its own
+reasons — a mouse-automation tool, a screen recorder, a launcher — takes the
+focus away from the pulldown too, and the pulldown would close itself while
+the operator was reading it. On this machine that happened in **four opens out
+of five**. The mouse watch has no such failure: the pulldown closed only when
+a click actually landed elsewhere. The limits that are left are stated rather
+than papered over: the macOS watch sees the clicks dispatched to *other*
+applications, so a click another application swallows before dispatch is not
+seen, and the pointer's position is read when the click is delivered rather
+than out of the click itself; on Windows and Linux the signal is *the focus
+was lost*, not *a click landed elsewhere*, so a desktop that takes the focus
+away for another reason dismisses the pulldown too.
 
 The panel is placed on the display it opens on, and it keeps the position the
 operator gave it. Slint 1.18 exposes no tray-icon position and no pointer

@@ -92,7 +92,8 @@ slint = { version = "=1.18.1", default-features = false, features = [
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
 
 # macOS only: AppKit bindings, so the GUI can **activate itself** when it
-# raises the monitor window.
+# raises the monitor window, and so it can **watch the mouse** for a click
+# that lands outside the pulldown.
 #
 # WHY THIS EXISTS: on macOS, `NSWindow.orderFront:` from a *background*
 # application does not bring the window to the front, and an `NSStatusItem`
@@ -102,9 +103,21 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", 
 # from the tray would do nothing at all. The fix is `NSApplication
 # activateIgnoringOtherApps:`, which Slint 1.18 does not expose.
 #
-# The feature set is minimal (`default-features = false`): only `NSApplication`
-# is needed, so the whole of AppKit is not linked. These crates are macOS-only
-# and never enter the Linux or Windows builds.
+# The second feature is `NSEvent`: the pulldown is dismissed when the
+# operator clicks away, and the click belongs to the application that was
+# clicked, so it cannot be seen from inside the pulldown's own window. AppKit's
+# global event monitor reports the mouse events that are dispatched to *other*
+# applications, which is exactly that click.
+#
+# The feature set is minimal (`default-features = false`): only
+# `NSApplication`, `NSWindow` and `NSEvent` are needed, so the whole of AppKit
+# is not linked. These crates are macOS-only and never enter the Linux or
+# Windows builds.
+#
+# `block2` is the crate that carries an Objective-C block, and it is **already
+# in this workspace's graph** through `objc2`: naming it here adds no new crate
+# to the build and no new code to the binary. It is a direct dependency only
+# because the monitor's handler is a block and the type has to be named.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = [
@@ -113,7 +126,11 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "AppKitErrors",
     "NSApplication",
     "NSWindow",
+    "NSEvent",
+    "NSScreen",
+    "block2",
 ] }
+block2 = { version = "0.6", default-features = false, features = ["alloc"] }
 
 # Linux only: the desktop's system tray is a `StatusNotifierItem`, and the
 # GUI has to know whether this desktop runs a host for it — a desktop without

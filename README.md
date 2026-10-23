@@ -271,9 +271,12 @@ translucent material with a hairline edge, a soft shadow and a pointer toward
 the tray item — and it **wastes no vertical space**: there is no band of dead
 space between the title and the first host, because a Slint layout counts an
 empty row as a row. And it **behaves** like a dropdown too: `Esc`, the tray's
-click, its own × control **and a click away** dismiss it, the last one because
-the pulldown watches the **keyboard focus** — a window that loses the focus has
-lost it to a click somewhere else.
+click, its own × control **and a click away** dismiss it. The click away is
+watched differently on each desktop, because another application's mouse is not
+watchable everywhere: on **macOS** the pulldown watches the **mouse**, through
+AppKit's global event monitor, so it closes only when a click really lands
+elsewhere; on **Windows and Linux** it watches the **keyboard focus**, which is
+the desktop saying the window is no longer active.
 
 On a desktop with **no system tray** — a plain GNOME session has no
 `StatusNotifierItem` host — the tray cannot appear at all. The GUI notices,

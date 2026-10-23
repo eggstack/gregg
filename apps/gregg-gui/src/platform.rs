@@ -380,6 +380,175 @@ fn activate_macos() {
     application.activateIgnoringOtherApps(true);
 }
 
+/// Whether the click away is detected by the **keyboard focus**.
+///
+/// macOS watches the **mouse** instead — see
+/// [`install_click_away_monitor`] — and the focus is not a reliable signal
+/// there: an application that takes the foreground for its own reasons (a
+/// screen recorder, a launcher, anything that re-asserts itself) takes the
+/// focus away from the pulldown too, and the pulldown would close itself
+/// while the operator is reading it. The other desktops have no portable way
+/// to watch another application's mouse, so they use the focus.
+#[must_use]
+pub fn click_away_is_the_focus() -> bool {
+    !MOUSE_WATCH.get().copied().unwrap_or(false)
+}
+
+/// The desktop's mouse watch, once it has been installed.
+static MOUSE_WATCH: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Watch the desktop for a click that lands **outside** the pulldown.
+///
+/// macOS only. The pulldown is dismissed when the operator clicks elsewhere,
+/// the way a menu is, and the click **cannot be seen from inside the
+/// pulldown's own window**: it belongs to the application that was clicked.
+/// AppKit's global event monitor reports the mouse events that are dispatched
+/// to *other* applications, which is exactly that click, and the pointer's
+/// position at that moment says where it landed.
+///
+/// The monitor is installed once and lives for the rest of the process; the
+/// returned token is what keeps it alive. `on_click` is called when a click
+/// landed outside the pulldown's own window.
+///
+/// Returns whether the watch is in place. A `false` means the caller should
+/// fall back to the keyboard focus.
+#[cfg(target_os = "macos")]
+pub fn install_click_away_monitor(title: String, on_click: impl Fn() + Send + 'static) -> bool {
+    use block2::RcBlock;
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2_app_kit::{NSEvent, NSEventMask};
+
+    // The monitor is a piece of AppKit state: dropping it takes the watch
+    // down, so it is kept for the life of the process. It is a thread-local
+    // because AppKit's objects are not `Send`, and the watch belongs to the
+    // main thread anyway.
+    thread_local! {
+        static MONITOR: std::cell::RefCell<Option<Retained<AnyObject>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    let handler = RcBlock::new(move |_event: std::ptr::NonNull<NSEvent>| {
+        // The click's position, in the desktop's own coordinates. The event
+        // itself is not read: the pointer is where the click landed, and
+        // reading the event would mean dereferencing a raw pointer.
+        let point = NSEvent::mouseLocation();
+        if click_landed_away(title.as_str(), point.x, point.y) {
+            eprintln!(
+                "gregg-gui: a click landed away from the pulldown at ({:.0}, {:.0})",
+                point.x, point.y
+            );
+            on_click();
+        }
+    });
+    let mask =
+        NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown | NSEventMask::OtherMouseDown;
+    let Some(monitor) = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(mask, &handler)
+    else {
+        return false;
+    };
+    MONITOR.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(monitor);
+        }
+    });
+    let _ = MOUSE_WATCH.set(true);
+    true
+}
+
+/// Whether a click at this point landed **away** from the pulldown.
+///
+/// The window is found by its title, the same way the overlay finds it, and
+/// both coordinates are the desktop's own: `NSEvent`'s mouse location and
+/// `NSWindow`'s frame are both measured from the bottom-left of the screen.
+#[cfg(target_os = "macos")]
+fn click_landed_away(title: &str, x: f64, y: f64) -> bool {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSScreen};
+
+    let Some(marker) = MainThreadMarker::new() else {
+        return false;
+    };
+    let application = NSApplication::sharedApplication(marker);
+    let Some(window) = application
+        .windows()
+        .iter()
+        .find(|window| window.title().to_string() == title)
+    else {
+        return false;
+    };
+    let frame = window.frame();
+    let panel = Frame {
+        x: frame.origin.x,
+        y: frame.origin.y,
+        width: frame.size.width,
+        height: frame.size.height,
+    };
+    // The menu bar is above the screen's visible frame, and the coordinates
+    // grow upwards, so the menu bar is the band above the frame's top edge.
+    let Some(screen) = NSScreen::mainScreen(marker) else {
+        return true;
+    };
+    let visible = screen.visibleFrame();
+    let menu_bar = visible.origin.y + visible.size.height;
+    landed_away(panel, menu_bar, MENU_BAR_BAND, x, y)
+}
+
+/// How far below the menu bar a click still counts as a click on the menu
+/// bar.
+///
+/// The pointer's position is read when the desktop delivers the click, not
+/// out of the click itself, and a pointer that moves in between would
+/// otherwise put the tray's own click outside the band.
+#[cfg(target_os = "macos")]
+const MENU_BAR_BAND: f64 = 40.0;
+
+/// A rectangle in the desktop's own coordinates.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Frame {
+    /// The left edge.
+    x: f64,
+    /// The bottom edge.
+    y: f64,
+    /// The width.
+    width: f64,
+    /// The height.
+    height: f64,
+}
+
+/// Whether a click at this point landed **away** from the pulldown.
+///
+/// This is the whole geometry of the click away, and it is a pure function so
+/// that it can be tested without a desktop:
+///
+/// - a click **inside** the pulldown is the operator using it, not a click
+///   away;
+/// - a click in the **menu bar** is the tray's own click, which toggles the
+///   pulldown, so it is not a click away either — if it were, the tray's
+///   click would hide the pulldown and open it again;
+/// - a click anywhere else is a click away.
+///
+/// `menu_bar` is the line the menu bar's lower edge is on, and `band` is how
+/// far below it a click still counts as a click on the menu bar.
+#[cfg(any(target_os = "macos", test))]
+fn landed_away(panel: Frame, menu_bar: f64, band: f64, x: f64, y: f64) -> bool {
+    let inside =
+        x >= panel.x && x <= panel.x + panel.width && y >= panel.y && y <= panel.y + panel.height;
+    if inside {
+        return false;
+    }
+    y <= menu_bar - band
+}
+
+/// The other desktops watch the keyboard focus instead — see
+/// [`click_away_is_the_focus`].
+#[cfg(not(target_os = "macos"))]
+pub fn install_click_away_monitor(_title: String, _on_click: impl Fn() + Send + 'static) -> bool {
+    false
+}
+
 /// Ask the desktop whether it has a system tray.
 ///
 /// macOS and Windows have a native tray that always works: the desktop has a
@@ -473,6 +642,68 @@ fn probe_linux_now() -> LinuxProbe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pulldown's own frame, and the menu bar's line, for the geometry.
+    fn desk() -> (Frame, f64, f64) {
+        (
+            Frame {
+                x: 3226.0,
+                y: 62.0,
+                width: 606.0,
+                height: 446.0,
+            },
+            // The menu bar's lower edge, and the band below it that still
+            // counts as the menu bar.
+            1044.0,
+            40.0,
+        )
+    }
+
+    /// A click inside the pulldown is the operator using it.
+    #[test]
+    fn a_click_inside_the_pulldown_is_not_a_click_away() {
+        let (panel, menu_bar, band) = desk();
+        assert!(!landed_away(panel, menu_bar, band, 3300.0, 200.0));
+        assert!(
+            !landed_away(panel, menu_bar, band, 3226.0, 62.0),
+            "the edge"
+        );
+        assert!(
+            !landed_away(panel, menu_bar, band, 3832.0, 508.0),
+            "the corner"
+        );
+    }
+
+    /// A click in the menu bar is the tray's own click.
+    ///
+    /// It **toggles** the pulldown, so if the mouse watch also dismissed the
+    /// pulldown on it, the tray's click would hide it and open it again.
+    #[test]
+    fn a_click_in_the_menu_bar_is_the_trays_click_and_not_a_click_away() {
+        let (panel, menu_bar, band) = desk();
+        assert!(
+            !landed_away(panel, menu_bar, band, 3126.0, 1064.0),
+            "the tray"
+        );
+        assert!(
+            !landed_away(panel, menu_bar, band, 3126.0, 1010.0),
+            "the band below it"
+        );
+    }
+
+    /// A click anywhere else is a click away.
+    #[test]
+    fn a_click_anywhere_else_is_a_click_away() {
+        let (panel, menu_bar, band) = desk();
+        assert!(
+            landed_away(panel, menu_bar, band, 400.0, 380.0),
+            "the desktop"
+        );
+        assert!(
+            landed_away(panel, menu_bar, band, 3100.0, 900.0),
+            "below the pulldown"
+        );
+    }
 
     #[test]
     fn activating_the_application_is_safe_on_this_platform() {

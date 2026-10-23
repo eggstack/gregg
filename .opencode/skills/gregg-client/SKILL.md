@@ -211,16 +211,22 @@ monitor window is gone. A borderless, always-on-top panel carries every pane —
 the fleet summary, the host list, the selected host's metrics, drives,
 interfaces, cron, records and `EggPool` — plus the forms that add, remove,
 rename and re-point hosts. It is dismissed with `Esc`, the tray's click, its
-own close control **or a click away**: the pulldown watches the **keyboard
-focus**, and a window that loses the focus has lost it to a click somewhere
-else. Slint 1.18 **does** expose that — `FocusScope`'s `focus-lost` callback
-carries the **reason**, and `FocusReason.window-activation` is the desktop
-saying the window is no longer active — so the click-away needs **no
-per-platform input hook**. The focus can be in the scope that handles the keys
-**or in a field of the form**, and both count, so a click away dismisses the
-pulldown with a form open. The limit that is left is stated rather than
-papered over: the signal is *the focus was lost*, not *a click landed
-elsewhere*. It is anchored to the trailing edge of
+own close control **or a click away**. The click away is **two signals on two
+platforms**: **macOS watches the mouse** — AppKit's global event monitor
+reports the clicks dispatched to *other* applications, which is exactly a click
+that landed elsewhere — and **Windows and Linux watch the keyboard focus**,
+because Slint 1.18 exposes `FocusScope`'s `focus-lost` callback and its
+`FocusReason.window-activation` is the desktop saying the window is no longer
+active, and there is no portable way to watch another application's mouse.
+The focus is **not** a reliable click-away signal on macOS — **measured**, a
+desktop that took the foreground for its own reasons closed the pulldown in
+**4 of 5** opens — so macOS does not use it. The **menu bar is excluded** from
+"away" on macOS, because the tray's own click *toggles* the pulldown. The
+focus can be in the scope that handles the keys **or in a field of the form**,
+and both count, so a click away dismisses the pulldown with a form open. The
+limit that is left is stated rather than papered over: on Windows and Linux
+the signal is *the focus was lost*, not *a click landed elsewhere*.
+It is anchored to the trailing edge of
 the display, on the side where the desktop's own shell lives, clamped so it can
 never open off the screen, and it keeps the placement the operator gave
 it — a borderless panel carries its own header strip to drag it, and its

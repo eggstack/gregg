@@ -67,17 +67,27 @@ the host list, the selected host's metrics, drives, interfaces, cron, records
 and the EggPool plane, plus the forms that add, remove and edit hosts. The
 lists scroll with **bounded** heights: a large fleet must not push the metrics,
 cron and EggPool panes — or the buttons — out of the panel. It is dismissed by
-`Esc`, the tray's click, its own Close control **and a click away**: the
-pulldown watches the **keyboard focus**, and a window that loses the focus has
-lost it to a click somewhere else. Slint 1.18 **does** expose that signal —
-`FocusScope`'s `focus-lost` callback carries the **reason**, and
+`Esc`, the tray's click, its own Close control **and a click away**. The click
+away is **two signals on two platforms**, because another application's mouse
+is not watchable everywhere: **macOS watches the mouse** — AppKit's global
+event monitor reports the clicks that are dispatched to *other* applications,
+which is exactly a click that landed elsewhere, and the pointer's position says
+where — while **Windows and Linux watch the keyboard focus**, because Slint
+1.18 exposes `FocusScope`'s `focus-lost` callback and its
 `FocusReason.window-activation` is the desktop saying the window is no longer
-active — so the click-away needs **no per-platform input hook**. The focus can
-be in the scope that handles the keys **or in a field of the form**, and both
-count, so a click away dismisses the pulldown with a form open. The limit that
-is left is stated rather than papered over: the signal is *the focus was lost*,
-not *a click landed elsewhere*, so a desktop that takes the focus away for
-another reason dismisses the pulldown too.
+active, and there is no portable way to watch another application's mouse.
+The focus is **not** a reliable click-away signal on macOS: **measured**, a
+desktop that took the foreground for its own reasons closed the pulldown in
+**4 of 5** opens, so macOS does not use it. The **menu bar is excluded** from
+"away" on macOS, because the tray's own click *toggles* the pulldown — the
+watch must not also dismiss it, or the pulldown would hide and open again —
+and a 40-point band below the bar absorbs the drift between the click and the
+pointer's position. The watch uses **safe** AppKit API only: no event tap, no
+accessibility permission, and the GUI crate still contains no `unsafe` at all.
+The limit that is left is stated rather than papered over: on Windows and
+Linux the signal is *the focus was lost*, not *a click landed elsewhere*, so a
+desktop that takes the focus away for another reason dismisses the pulldown
+too.
 
 **The pulldown has two views, and the fleet view is a table of blocks.** The
 **fleet** is the TUI's condensed fleet row turned on its side: every host is a

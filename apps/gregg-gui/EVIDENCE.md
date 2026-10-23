@@ -1429,9 +1429,49 @@ becomes `activation_changed(have_focus)`, which dispatches
 sends `FocusEvent::FocusOut(FocusReason::WindowActivation)` to the focused
 item.
 
-So the click away needs **no per-platform input hook**: no event tap, no global
-mouse monitor, no accessibility permission, and nothing that is macOS-only. The
-signal was there the whole time.
+So the signal exists, and it is cross-platform. It was built first, and it was
+**measured** before it was trusted.
+
+**The focus is not a reliable click-away signal on macOS.** With the focus rule
+in place, the pulldown was opened five times and it **dismissed itself four
+times** — every time because something else had taken the foreground. The
+frontmost application during every sample was `Rio.app`
+(`com.raphaelamorim.rio`), a mouse-automation tool that was installed and
+running on this machine and that clicks the screen and re-asserts itself on its
+own. A pulldown that closes itself while the operator is reading it is worse
+than one that stays up, so the focus rule was **not** kept on macOS.
+
+**What macOS uses instead: the mouse.** A click that lands outside the pulldown
+belongs to the application that was clicked, so it **cannot** be seen from
+inside the pulldown's own window. AppKit's global event monitor reports exactly
+those events — the ones dispatched to *other* applications:
+
+```rust
+NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
+    NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown | NSEventMask::OtherMouseDown,
+    &handler,
+)
+```
+
+Both that call and `NSEvent::mouseLocation()` are **safe** objc2-app-kit API,
+so the GUI crate still contains **no `unsafe` at all**, and the watch needs
+**no event tap and no accessibility permission**.
+
+**The menu bar is excluded from "away".** The tray's own click **toggles** the
+pulldown, so a watch that also dismissed on it would hide the pulldown and
+open it again in the same gesture. The exclusion is a **band** and not a line,
+because the pointer's position is read when the click is *delivered* rather
+than out of the click itself, and a pointer that moves in between would
+otherwise put the tray's own click outside the band. The band is 40 points.
+
+**The geometry is one pure function**, so it is unit-tested on every platform,
+including the ones that do not use the mouse watch:
+
+```text
+a click inside the pulldown            -> not a click away
+a click in the menu bar (or its band)  -> not a click away
+a click anywhere else                  -> a click away
+```
 
 **What was built.**
 
@@ -1449,31 +1489,41 @@ signal was there the whole time.
 - Every dismissal — `Esc`, the ×, the tray's click and the click away — now
   goes through **one** function, so they leave the same thing behind: the
   fleet view, and no half-typed form.
+- The **focus** rule is kept where the mouse cannot be watched: **Windows and
+  Linux** use it, and macOS uses the mouse.
 
-**Measured, natively**, on macOS 15 arm64, the release build, against the live
+**Measured, natively**, on macOS 15 arm64, the debug build, against the live
 window list:
 
 | what the operator did | the pulldown |
 | --- | --- |
-| clicked **away** (the desktop) | `onscreen=false` — dismissed |
-| clicked **inside** (a host row) | `onscreen=true` — still there |
-| clicked **into a field**, then away | `onscreen=false` — dismissed |
+| clicked the **tray** (the menu bar) | `onscreen=1` — opened, and **not** dismissed by the watch |
+| clicked the **tray** again | `onscreen=0` — closed by the toggle, and **not** dismissed by the watch |
+| clicked **inside** (a host row) | `onscreen=1` — still there |
+| clicked **away** (the work area) | `onscreen=0` — dismissed |
 
 ```text
-gregg-gui: the pulldown was dismissed: it lost the keyboard focus
+gregg-gui: a click landed away from the pulldown at (400, 380)
+gregg-gui: the pulldown was dismissed: the operator clicked away
 ```
 
-The third row is the one that needed the fields: the field held the focus, so
-the scope that handles the keys never saw the window lose it, and a pulldown
-that only watched the scope would have stayed on screen.
+The **tray** rows are the ones the focus rule could not pass: the tray's click
+is in the menu bar, and the watch has to leave it alone or the pulldown would
+hide and open again.
 
-**The limit that is left is stated rather than papered over.** The signal is
-*the focus was lost*, not *a click landed elsewhere*. A desktop that takes the
-focus away for another reason — another application activating on its own, a
-full-screen space being left — dismisses the pulldown too. A native status-item
-menu does not have that problem, because it is **modal**: it grabs the mouse
-and the keyboard, so nothing else can take the focus while it is open. A Slint
-window cannot be modal, so the pulldown watches the focus instead of the mouse.
+**The limits that are left are stated rather than papered over.**
+
+- On **Windows and Linux** the signal is *the focus was lost*, not *a click
+  landed elsewhere*. A desktop that takes the focus away for another reason —
+  another application activating on its own, a full-screen space being left —
+  dismisses the pulldown too. A native status-item menu does not have that
+  problem, because it is **modal**: it grabs the mouse and the keyboard, so
+  nothing else can take the focus while it is open. A Slint window cannot be
+  modal, so those desktops watch the focus instead of the mouse.
+- On **macOS** the watch sees the clicks that are dispatched to *other*
+  applications, so a click that another application swallows before dispatch is
+  not seen; and the pointer's position is read at delivery time rather than out
+  of the click itself, which is why the menu bar's exclusion is a band.
 
 ### What the GUI costs, and what it polls (2026-10-23)
 
@@ -1521,13 +1571,25 @@ the client daemon existed — the current release is 1.0.15, and it is a
 frontend. It is a leftover, not the current client, and it is the one process
 on this machine that polls the fleet outside the client daemon.
 
-**What the dismissal cost.** The release binary is **11,979,520 bytes**, which
-is **+16,528 bytes (+0.1%)** on top of the previous build: a focus callback, an
-aggregate over five elements and one function. It adds **no dependency** — no
-event tap, no global mouse monitor, and nothing that is macOS-only — and the
-GUI workspace's suite is **171 passed / 0 failed** (166 before this work, plus
-five new tests), with clippy clean under `-D warnings` and the formatting
-clean.
+**What the dismissal cost.** The release binary is **11,979,536 bytes**, which
+is **+16,544 bytes (+0.1%)** on top of the previous build: a focus callback, an
+aggregate over five elements, one function and the macOS mouse watch. It adds
+**no new crate** to the build — `block2`, the crate that carries an Objective-C
+block, was **already in this workspace's graph** through `objc2`, and the
+lockfile still holds the same **604 packages** — and it adds no event tap and
+no accessibility permission. The GUI workspace's suite is **174 passed / 0
+failed** (166 before this work, plus eight new tests), with clippy clean under
+`-D warnings` and the formatting clean.
+
+**The non-macOS branch was checked too.** The macOS build never compiles the
+`not(target_os = "macos")` path, and a branch that no local job compiles is
+exactly how a broken Windows build ships, so it was checked **cross-wise**:
+`cargo clippy --target x86_64-pc-windows-gnu --all-targets --all-features --
+-D warnings` is **clean**, which compiles the stub and the geometry tests on a
+Windows target. A Linux cross-run was **not** possible on this machine: the
+build needs a Linux C toolchain for `ring` and `yeslogic-fontconfig-sys`, and
+there is none here. The Linux leg of the GUI CI job is the authority for that,
+and it compiles the same `not(macos)` stub that the Windows cross-run did.
 
 ### The native exercises, on CI run `39811582623`
 
