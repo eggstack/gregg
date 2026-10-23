@@ -41,6 +41,12 @@ Plans 188, 189, 191 and 192 are implemented. What exists:
   convention**: it opens in the trailing corner of the work area, and the
   operator's own placement is **remembered across restarts** in a small state
   file beside the configuration;
+- a pulldown that **reaches another application's full screen** on macOS: the
+  GUI is a **menu-bar-only** application, and its window is told to join every
+  space and to sit at the level a native status item's own menu is drawn at,
+  so the tray's click opens the pulldown *over* the application the operator
+  is looking at, with that application still in full screen behind it (see
+  [Another application's full screen](#another-applications-full-screen));
 - **host management** in the pulldown: add, remove, rename and re-point a
   host. The pulldown writes the configuration through the **CLI's own library
   code** against the same `ConfigStore`, so the endpoint grammar, the config
