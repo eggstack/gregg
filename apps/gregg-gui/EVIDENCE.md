@@ -1390,6 +1390,20 @@ appear once the first fleet document has arrived. The exercise's
 `--expect-host-name` became `--host-name`, and the pass it prints is now
 `tray-tooltip-carries-the-counts-not-the-names`.
 
+**The CI run that closes this work is green.** Run **`39989322526`** against
+`e303d05` is **green on all ten jobs** — the core `Linux`, `macOS (macos-15)`,
+`macOS (macos-15-intel)`, `Windows`, `Scripts (shellcheck + pytest)`,
+`MSRV (Rust 1.89)` and `FreeBSD (gregg-host native)` jobs, and the three `GUI`
+legs (`macos-15`, `windows-2022`, `ubuntu-latest`). The `GUI` legs are the
+only authority for this workspace's Windows and Linux behaviour, because the
+workspace is not a member of the root workspace and no root job compiles it —
+and the `ubuntu-latest` leg is where the **native** Linux tray exercise runs,
+against a real `StatusNotifierItem` host, with the *new* summary.
+
+The GUI workspace's own suite is **166 passed / 0 failed** (160 before this
+work, plus six new tests), its clippy is clean under `-D warnings`, its
+formatting is clean, and its release binary is **11,962,992 bytes**.
+
 ### The native exercises, on CI run `39811582623`
 
 The GUI workspace is not a member of the root workspace, so no root job

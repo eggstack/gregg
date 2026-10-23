@@ -210,6 +210,10 @@ the GUI is **not shippable** for Windows or Linux.
 > for the tooltip to name the fixture's host, which is exactly what this amendment removed. The
 > exercise now asserts what the summary **is** (the counts) and what it **is not** (a host's
 > name), and its `--expect-host-name` became `--host-name`.
+>
+> The run that closes this work, **`39989322526`** against `e303d05`, is **green on all ten jobs**,
+> including the three `GUI` legs — and the `ubuntu-latest` leg is where the **native** Linux tray
+> exercise runs against a real `StatusNotifierItem` host, with the *new* summary.
 
 > **Amendment, 2026-10-23 (sixth) — the remembered placement is an offset, not a position.**
 > The direction this plan set — *the pulldown reads as a dropdown* — is unchanged and is still the

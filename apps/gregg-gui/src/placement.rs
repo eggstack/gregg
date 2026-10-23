@@ -179,8 +179,9 @@ pub mod metrics {
     /// The width the pane's content gets, in logical pixels.
     ///
     /// It is the fleet table's rows: the label column, the bar and the share
-    /// column, with the room the vertical scrollbar takes out of them. The
-    /// table is measured, not guessed, so the width follows it.
+    /// column. The vertical scrollbar takes its own room out of this width
+    /// when the fleet is long enough to scroll. The table is measured, not
+    /// guessed, so the width follows it.
     pub const PANE_CONTENT_WIDTH: f32 = 554.0;
 
     /// The pulldown's width.
