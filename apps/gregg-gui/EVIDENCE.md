@@ -1602,7 +1602,8 @@ the_gui_crate_depends_on_no_http_client` reads the manifest and refuses
 
 **One stale process was found while measuring this**, and it is worth naming:
 `~/.local/bin/gregg`, version **1.0.14**, has been running since 2026-10-20 and
-**does** hold TCP connections to the fleet's hosts. It is a build from before
+**does** hold TCP connections to the fleet's hosts — **seven** of them, on a
+re-measurement. It is a build from before
 the client daemon existed — the current release is 1.0.15, and it is a
 frontend. It is a leftover, not the current client, and it is the one process
 on this machine that polls the fleet outside the client daemon.
