@@ -92,6 +92,35 @@ a size and no explicit `x`/`y` inside a parent that is not a layout, so every
 element the pulldown places inside another element carries its own `x` and
 `y`.
 
+**The detail view is the fleet view's own block, and its extra facts are one
+condensed list.** The detail view is **not** a second rendering of the selected
+host: it is the selected host's **own block**, drawn by the **same `HostBlock`
+component** the fleet view draws every host with, so there is **exactly one
+bar per used share in the whole panel** and the two views cannot drift apart.
+Do not give the detail view its own bars, its own column widths or its own
+headings for the readings. The extra facts under the block are **one
+condensed list**: a quiet heading and a two-column row under it — the name on
+the left, the value on the right, in the quiet colour. `RESOURCES` carries the
+numbers **behind the shares** the block already shows, under the block's own
+row labels; `DRIVES` carries each mount's own facts, with the free space
+falling back to what is left of the total when the platform reported none
+(the TUI's own rule); `NETWORK` carries the aggregate first and then each
+interface, and a link capacity that was **not measured** is **not stated**.
+
+**A hidden pulldown does not rebuild the view, and the window is not built
+until it is opened.** The daemon publishes a document every few seconds and
+the whole model is a few thousand formatted strings; building that for a panel
+nobody is looking at is work nobody can see. A hidden pulldown is **not**
+re-rendered — the tray keeps the fleet's counts and its summary line straight
+from the document — and the pulldown is rebuilt **the moment it is opened**,
+so it shows the newest document. The pulldown's **component** is built on the
+**first tray click** rather than at start-up: a window costs about thirty
+megabytes before it draws anything, and a background GUI nobody has opened
+yet should not be paying for it. `--panel` and a desktop with no tray still
+open it at start-up, because that is what those two paths are for. Note that
+**dropping the window does not give the memory back** (measured: flat over
+ninety-six seconds), so this is a one-off saving, not a running one.
+
 **The pulldown moves under the tray's click — Plan 192.** The interaction
 model above is what Plan 191 built; Plan 192 **replaced** it, and this is the
 shape now: **the tray's click opens the pulldown, and the pulldown carries the

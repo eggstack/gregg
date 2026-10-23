@@ -392,30 +392,51 @@ NET   [░░░░░░░░░░░░░░░░░░░░░░░░�
 
 ### The detail pane
 
-The **detail view** is behind the pulldown's own footer control: it is the
-selected host's own numbers, and it is the pane an operator actually reads,
-so its rows carry the **same shape the TUI's metric rows carry**: a label, a
-**usage bar**, the share in per cent, and the reading.
+The **detail view** is behind the pulldown's own footer control, and it is the
+pane an operator actually reads. It is **the fleet view's own block, opened
+up** — the selected host's block, drawn by the very same component the fleet
+view draws every host with — and then the extra facts underneath it in one
+condensed list.
 
-- The rows are the TUI's: `CPU`, `MEM`, `SWP` (or `COMMIT`), `DISK`, `NET`,
-  `LOAD`, `FREQ` and `IO`, with the same aggregates and the same "no reading"
-  rules. A metric with no observation is `—`, never `0`.
-- A row that **has a share** gets a bar: `CPU`, `MEM`, `SWP`/`COMMIT`, `DISK`
-  and `NET` — the TUI's five metric rows. `NET`'s bar is the maximum of the
-  two directions, which is the TUI's rule for network utilisation, and
-  loopback is not in the aggregate. `LOAD`, `FREQ` and `IO` are **not** used
-  shares, so they draw no bar: the bar column means *used share of a
-  capacity* everywhere in the pane, and I/O wait in particular is a fraction
-  of *time*, so a bar that meant something else would misread. Their reading
-  sits in the value column instead, and an empty bar means *not measured*,
-  never *measured as zero*.
-- The bar's **track** is the foreground at 15 % and its **fill** is the
-  accent colour, and it is a pill: the fill's radius is half the bar's
-  height. The fill starts at the bar's **left edge**: Slint centres a child
-  that has a size and no `x`, so the fill's origin is written down.
-- The value beside the bar is **condensed**: a pair is written with its unit
-  once (`6.1 / 15.5 GiB`, `4.2 / 16.1 KiB/s`) rather than twice, and a pair
-  whose two parts do not share a unit keeps both.
+```
+Deadpool  IO 0.1%  1.73/2.22/4.72  16C  3.05GHz
+CPU   [████████░░░░░░░░░░░░░░░░░░░░]  11%
+MEM   [██████████████░░░░░░░░░░░░░░]  39%
+SWP   [███░░░░░░░░░░░░░░░░░░░░░░░░░░]   9%
+DISK  [█████████████████████████░░░░░]  86%
+NET   [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░]   0%
+
+RESOURCES
+  MEM         6.0 / 15.5 GiB
+  SWP         7.3 / 84.0 GiB
+
+DRIVES
+  /              791.2 GiB / 914.8 GiB · 86.5% · 77.1 GiB free
+  /boot/efi        6.1 MiB / 1.0 GiB · 0.6% · 1.0 GiB free
+  /snap/core22     74.0 MiB / 74.0 MiB · 100% · 0 B free
+```
+
+- **There is no second set of progress bars.** The detail view has exactly the
+  one block the fleet view draws, drawn by the one `HostBlock` component, so
+  the two views cannot drift apart and a host is never shown twice with two
+  different bar styles. The bars are the fleet's bars, in the fleet's columns,
+  at the fleet's widths.
+- The groups underneath are **one condensed list**: a quiet heading and a
+  two-column row under it — the name on the left, the value on the right, in
+  the quiet colour, because the name is what the row is about.
+- **`RESOURCES` carries the numbers behind the shares** the block already
+  shows: the block says `MEM 39%`, and this says how much memory that is. The
+  row's name is the block's own label, so the two are obviously the same
+  measure.
+- **`DRIVES` carries each mount's own facts**, in the TUI's own words: the
+  used and the total, the drive's own share, what is left of it, and — when
+  the platform reported it — the read and write rates. The free space falls
+  back to what is left of the total when the platform reported none, which is
+  the TUI's own rule.
+- **`NETWORK` carries the aggregate first and then each interface**, because
+  the block's network share is the aggregate's share of its link. A link
+  capacity that was not measured is **not stated**: the row says `RX` and
+  `TX` and no `LINK`.
 - The detail is **one scroll container**, so it scrolls as a whole and there
   is one scroll model.
 
@@ -500,6 +521,74 @@ There is **no polling timer**. The bridge wakes the UI only when it actually
 published something, and the update is scheduled on the UI thread with
 `slint::invoke_from_event_loop`. An idle GUI redraws for no reason at all, and
 a redraw only ever happens because something changed.
+
+### What a background GUI costs
+
+The GUI is meant to **run constantly in the background**, so the numbers that
+matter are the ones it costs while nobody is looking at it.
+
+**The pulldown is built when the operator first opens it.** A window costs
+about thirty megabytes before it draws anything — the software renderer's
+buffer, its scene and its first frame — and a background GUI that nobody has
+opened yet should not be paying for it. So the panel's component is created on
+the first tray click, not at start-up, and it lives for as long as the process
+does once it exists. `--panel` (and a desktop with no tray at all) still opens
+it at start-up, because that is what those two paths are for.
+
+**A hidden panel does not rebuild the view.** The daemon publishes a document
+every few seconds, and the whole model is a few thousand formatted strings —
+every host's every measurement, formatted. Building that for a panel nobody is
+looking at is work nobody can see, and it churned the heap for nothing. So a
+hidden panel is **not** re-rendered: the tray keeps its two facts — the
+fleet's counts and the summary line — straight from the document, and the
+pulldown is rebuilt **the moment it is opened**, so what it shows is the
+newest document and not the last one it happened to be open for.
+
+The measured cost, on this machine (macOS 15, arm64), with the real daemon and
+a seven-host fleet:
+
+| | resident set | CPU |
+| --- | --- | --- |
+| **idle, the pulldown never opened** | **45.5 MB** (35.8 min, 45.5 max over 60 s) | **about 1.6 %** of one core |
+| the pulldown open | 107 MB | about 8 % of one core |
+
+**Before the pulldown was built on demand** the same idle binary measured
+**82 MB** (82.0 MB median over a minute) — so the deferred window is worth
+**about 37 MB**, and the idle footprint is now close to what a Slint app costs
+with **no window at all** on this desktop.
+
+**The floor is Slint's, not ours.** The same measurements on a *trivial* Slint
+app — the same features, the same software renderer — give:
+
+| | resident set |
+| --- | --- |
+| an event loop with no component at all | 27–35 MB |
+| a tray icon and no window | 44 MB |
+| a window component, never shown | 62–74 MB |
+
+So a Slint app on this desktop costs about 65 MB before it draws anything, and
+a window is about 30 MB of that. There is **no leak**: `leaks` reports 287
+leaks for 14 KB, all of them in Apple's own XPC and Objective-C machinery.
+
+Two honest consequences:
+
+- **A background GUI on this desktop still costs tens of megabytes, and that is
+  Slint's software renderer and the window server, not the model.** The
+  cheapest way to make it smaller would be a different renderer, and Plan 192
+  pins the software renderer.
+- **The model is not the cost.** The same binary measured before and after the
+  hidden-panel rule differs by **0.6 MB** of resident set and **0.06 s** of
+  CPU over a minute — noise. The cost is the daemon's document arriving and
+  being decoded, which the TUI pays too.
+- **Destroying the window does not give the memory back.** Dropping the panel's
+  component and watching for ninety-six seconds left the resident set exactly
+  where it was (75,168 KB, flat), so the deferred window is a **one-off**
+  saving: it is worth thirty megabytes to a GUI that has never been opened,
+  and nothing to one that has.
+- **macOS reclaims most of it over hours.** A five-hour-old instance of the
+  same binary measured **14–30 MB** — the dirty pages the allocator was
+  holding are purged under the system's memory pressure. The number `ps`
+  reports for a *fresh* process is the high-water mark, not the steady state.
 
 ## Build
 
@@ -791,11 +880,12 @@ makes the difference attributable.
 | ------ | ---- |
 | The GUI before Plan 191 (the separate monitor window) | 10,803,360 bytes (10.3 MiB) |
 | The GUI after Plan 191 (the tray pulldown, with host management) | 11,896,608 bytes (11.3 MiB) |
-| **The GUI now** (the pulldown with the revised chrome, the metric bars, the vendored `softbuffer` patch, and the fleet view as a table of blocks) | **12,012,560 bytes** (11.5 MiB) |
-| **Difference** (before Plan 191 → now) | **+1,209,200 bytes (+11.2%)** |
+| The GUI with the fleet view as a table of blocks (the previous build) | 12,012,560 bytes (11.5 MiB) |
+| **The GUI now** (the same fleet view, and a detail view that is the *same block* plus one condensed list) | **11,996,064 bytes** (11.4 MiB) |
+| **Difference** (before Plan 191 → now) | **+1,192,704 bytes (+11.0%)** |
 | The same GUI calling `gregg::cli::dispatch` (the rejected alternative) | 14,761,600 bytes |
 
-So the pulldown and the host-management forms cost about **1.04 MiB** more
+So the pulldown and the host-management forms cost about **1.02 MiB** more
 than the monitor window they replaced. The revised chrome and the metric bars
 cost **+66,224 bytes (+0.6%)** on top of Plan 191, the fleet view as a table of
 blocks costs **−49,568 bytes (−0.4%)** on top of the two-view fleet table it
@@ -803,6 +893,12 @@ replaced — the block's rows are five `Text`s and one bar each instead of five
 bar columns and their headings — and the vendored `softbuffer` patch costs
 **nothing measurable**: it changes one word in a pixel-format declaration that
 was already in the binary.
+
+The detail view's rewrite cost **−16,496 bytes (−0.1%)**: the host's block is
+drawn by the *one* `HostBlock` component now, so the detail view's own metric
+table — a second set of bar columns, a second set of headings and a second
+set of column widths — is gone, and the condensed list of groups is a heading
+and two `Text`s per row.
 
 **Where that megabyte goes**, from `cargo bloat --release --crates`, which
 attributes the linked binary per crate:

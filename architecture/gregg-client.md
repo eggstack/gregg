@@ -619,28 +619,70 @@ colour is a saturated accent, and the palette's own foreground for it is black
 on macOS, which draws a bar as what reads as a hole. A bar is a *measurement*,
 and a measurement looks the same wherever it is.
 
-The **detail pane** carries the **same shape the TUI's metric rows carry**: a
-label, a usage bar, the share in per cent, and the reading. The rows, the
-aggregates and the "no reading" rules are the TUI's — `CPU`, `MEM`,
-`SWP`/`COMMIT`, `DISK`, `NET`, `LOAD`, `FREQ`, `IO`, with `NET`'s bar the
-maximum of the two directions and loopback out of the aggregate — so the two
-frontends cannot drift. A metric with no observation is `—` and **no bar**:
-an empty bar means *not measured*, never *measured as zero*, so a row with no
-reading carries a negative fraction rather than a zero one. The pane's value
-is **condensed** (a pair writes its unit once: `6.1 / 15.5 GiB`). **The bar
-column means "used share of a capacity", so only the TUI's five metric rows
-draw a bar**: `LOAD`, `FREQ` and `IO` are extra readings the TUI's condensed
-table carries, and none of them is a used share — I/O wait is a fraction of
-*time*, and a bar that meant something different from every other bar in the
-pane would misread. Their reading goes in the value column instead, and in the
-fleet view beside the row.
+The **detail pane** is **the fleet view's own block, opened up** — not a second
+rendering of the same numbers. The selected host's block is drawn by the
+**same `HostBlock` component** the fleet view draws every host with, so the
+two views cannot drift apart and there is **exactly one bar per used share in
+the whole panel**. The detail view has no second set of bars, no second set of
+column widths and no second set of headings for the readings: the block says
+`MEM 39%` and the detail says the same thing in the same bar, in the same
+columns, at the same widths.
 
-**A bar fills from its left edge, and that is written down.** Slint centres a
-child that has a size and no explicit `x`/`y` inside a parent that is not a
-layout (`maybe_center_in_parent` in the compiler's `default_geometry` pass),
-so a bar's fill without an `x` grows out of the *middle* of its track. Every
-element the pulldown places inside another element therefore carries its own
-`x` and `y`.
+Under the block, the extra facts are **one condensed list**: a quiet heading
+and a two-column row under it — the name on the left, the value on the right,
+in the quiet colour, because the name is what the row is about and the value
+is what the name says. The groups are:
+
+- **`RESOURCES`** — the numbers **behind the shares** the block already shows.
+  The block says `MEM 39%`; this says `MEM  6.0 / 15.5 GiB`. The row's name is
+  the block's own label, so the two are obviously the same measure. The swap
+  or commit row is named by what the host reported, like the block's.
+- **`DRIVES`** — each mount's own facts in the TUI's own words: the used and
+  the total, the drive's own share, and what is left of it. The free space
+  falls back to what is left of the total when the platform reported none,
+  which is the TUI's own rule. The read and write rates are added when the
+  platform reported them, and **not** invented when it did not.
+- **`NETWORK`** — the **aggregate first** and then each interface, because the
+  block's network share is the aggregate's share of its link. A link capacity
+  that was **not measured** is **not stated**: the row says `RX` and `TX` and
+  no `LINK`. A capacity of zero is a capacity, and a missing one is a missing
+  one; they are not the same fact.
+
+The detail is **one scroll container**, so it scrolls as a whole and there is
+one scroll model.
+
+**A hidden pulldown does not rebuild the view, and the window is not built
+until it is opened.** The daemon publishes a document every few seconds, and
+the whole model is a few thousand formatted strings. Building that for a panel
+nobody is looking at is work nobody can see, so a hidden panel is **not**
+re-rendered: the tray keeps its two facts — the fleet's counts and the summary
+line — straight from the document, and the pulldown is rebuilt **the moment it
+is opened**, so what it shows is the newest document and not the last one it
+happened to be open for.
+
+The pulldown's **component** is built on the **first tray click**, not at
+start-up: a window costs about thirty megabytes before it draws anything, and
+a background GUI that nobody has opened yet should not be paying for it.
+`--panel` and a desktop with no tray still open it at start-up.
+
+**What the background GUI costs, measured.** On macOS 15 (arm64) with the real
+daemon and a seven-host fleet, the idle GUI's resident set is **45.5 MB** and
+its CPU is **about 1.6 %** of one core; the same binary with the panel built
+at start-up measured **82 MB**, so the deferred window is worth about
+**37 MB**. The rest of the cost is **Slint's software renderer and the window
+server, not the model**: the same measurements on a *trivial* Slint app give
+**27–35 MB** for an event loop with no component at all, **44 MB** with a tray
+icon and no window, and **62–74 MB** with a window that is never shown. The
+hidden-panel rule itself is **measurably neutral** (the same binary before and
+after differs by 0.6 MB of resident set and 0.06 s of CPU over a minute), and
+that is reported as what it is: the cost of an idle GUI is the daemon's
+document arriving and being decoded, which the TUI pays too. There is **no
+leak** (`leaks` reports 287 leaks for 14 KB, all in Apple's own XPC and
+Objective-C machinery), and **dropping the window does not give the memory
+back** — a dropped component's resident set stayed flat over ninety-six
+seconds — so the deferred window is a **one-off** saving. macOS reclaims most
+of the rest over hours: a five-hour-old instance of the same binary measured
+**14–30 MB**.
 
 A tray application is a **background** application, and on macOS that has a
 concrete consequence: an `NSStatusItem` menu does not activate the app that

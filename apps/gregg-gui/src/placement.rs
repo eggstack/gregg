@@ -124,20 +124,17 @@ pub mod metrics {
     /// half in view — which is the scroll's own sign that there is more.
     pub const HOST_LIST_MAX_HEIGHT: f32 = 4.0 * (HOST_BLOCK + HOST_BLOCK_GAP);
 
-    /// The selected host's own actions row.
-    pub const SELECTED_ROW: f32 = 18.0;
+    /// The height of one group's heading in the detail view.
+    ///
+    /// A group is a heading and the rows under it, and the heading is what
+    /// makes a list of facts readable.
+    pub const DETAIL_HEADING: f32 = 15.0;
 
-    /// One measured metric row.
-    pub const METRIC_ROW: f32 = 18.0;
-
-    /// One drive or interface row.
-    pub const DETAIL_ROW: f32 = 18.0;
+    /// One row of a group: a name and its value.
+    pub const DETAIL_ROW: f32 = 15.0;
 
     /// One scheduler job row.
     pub const JOB_ROW: f32 = 22.0;
-
-    /// One `EggPool` row.
-    pub const EGGPOOL_ROW: f32 = 18.0;
 
     /// One line of retained scheduler records.
     pub const RECORD_LINE: f32 = 14.0;
@@ -145,9 +142,6 @@ pub mod metrics {
     /// The attribution text, which takes four lines.
     pub const ABOUT_LINES: f32 = 4.0;
     pub const ABOUT_LINE: f32 = 14.0;
-
-    /// The thin rules between the panes.
-    pub const SEPARATOR: f32 = 1.0;
 
     /// The form's height.
     pub const FORM_HEIGHT: f32 = 220.0;
@@ -178,14 +172,17 @@ pub struct Content {
     pub online_hosts: usize,
     /// Whether a host is selected.
     pub selected: bool,
-    /// How many measured rows the selected host has.
-    pub metrics: usize,
-    /// How many drive and interface rows it has.
-    pub details: usize,
+    /// Whether the selected host answered its last poll.
+    ///
+    /// A host that is not online has a header line alone in its block, so the
+    /// block is shorter — and the detail pane is shorter with it.
+    pub selected_online: bool,
+    /// How many groups of detail the selected host has.
+    pub detail_sections: usize,
+    /// How many rows those groups hold.
+    pub detail_rows: usize,
     /// How many scheduler jobs it has.
     pub jobs: usize,
-    /// How many `EggPool` rows are shown.
-    pub eggpool: usize,
     /// How many lines the retained scheduler records take.
     pub record_lines: usize,
     /// Whether the attribution text is shown.
@@ -223,13 +220,19 @@ pub fn host_list_height(content: &Content) -> f32 {
 /// The detail is one scroll container, so this is an estimate of what it
 /// holds: the estimate only decides how much of it is on screen, and the
 /// scroll container keeps the rest reachable when the estimate is short.
+///
+/// It is the selected host's **own block** — the same block the fleet view
+/// draws — and then the groups of detail under it.
 #[must_use]
 fn detail_height(content: &Content) -> f32 {
-    let mut height = 3.0 * metrics::SEPARATOR;
-    height += content.metrics as f32 * metrics::METRIC_ROW;
-    height += content.details as f32 * metrics::DETAIL_ROW;
+    let mut height = if content.selected_online {
+        metrics::HOST_BLOCK
+    } else {
+        metrics::HOST_HEADER
+    };
+    height += content.detail_sections as f32 * metrics::DETAIL_HEADING;
+    height += content.detail_rows as f32 * metrics::DETAIL_ROW;
     height += content.jobs as f32 * metrics::JOB_ROW;
-    height += content.eggpool as f32 * metrics::EGGPOOL_ROW;
     height += content.record_lines as f32 * metrics::RECORD_LINE;
     height.clamp(metrics::MIN_DETAIL, metrics::MAX_DETAIL)
 }
@@ -262,11 +265,9 @@ pub fn content_height(content: &Content) -> f32 {
     if content.form {
         height += metrics::FORM_HEIGHT;
     } else if content.detail {
-        // The detail view: the selected host's actions and its own panes.
+        // The detail view: the selected host's own block and the groups of
+        // detail under it.
         height += metrics::BLOCK_GAP;
-        if content.selected {
-            height += metrics::SELECTED_ROW;
-        }
         height += detail_height(content);
     } else {
         // The fleet view: the blocks, one per host.
@@ -752,12 +753,14 @@ mod tests {
     fn the_detail_is_bounded() {
         let few = content_height(&Content {
             detail: true,
-            metrics: 1,
+            detail_sections: 1,
+            detail_rows: 1,
             ..Content::default()
         });
         let many = content_height(&Content {
             detail: true,
-            metrics: 500,
+            detail_sections: 500,
+            detail_rows: 500,
             ..Content::default()
         });
         assert!(many > few, "more rows make the pulldown taller");
@@ -773,15 +776,16 @@ mod tests {
         // view's height is the host list and nothing else.
         let fleet = content_height(&Content {
             hosts: 5,
-            metrics: 500,
+            detail_sections: 500,
+            detail_rows: 500,
             ..Content::default()
         });
-        let without_metrics = content_height(&Content {
+        let without_detail = content_height(&Content {
             hosts: 5,
             ..Content::default()
         });
         assert_eq!(
-            fleet, without_metrics,
+            fleet, without_detail,
             "the fleet view does not grow with the detail's rows"
         );
     }
@@ -801,18 +805,47 @@ mod tests {
         assert_eq!(few, many, "a form does not carry the fleet");
     }
 
+    /// The room the vertical scrollbar takes, as the `.slint` file says it.
+    ///
+    /// It lives on the pulldown and not on the block, because it is the
+    /// pulldown's own scrollbar.
+    fn scrollbar_reserve(slint: &str) -> f32 {
+        let needle = "scrollbar-reserve: ";
+        let start = slint
+            .find(needle)
+            .unwrap_or_else(|| panic!("the `.slint` file has no `scrollbar-reserve`"))
+            + needle.len();
+        let rest = &slint[start..];
+        let end = rest.find(';').expect("the literal ends");
+        rest[..end]
+            .trim()
+            .trim_end_matches("px")
+            .parse()
+            .expect("the scrollbar's reserve is a number")
+    }
+
     #[test]
     fn the_bar_takes_the_rest_of_the_row() {
         // The bar reaches the panel's own edge: it takes everything the row
         // does not spend on the label, the share and the gaps between them.
+        //
+        // The numbers are read out of the `HostBlock` component, because that
+        // is where the block's geometry lives now — the fleet view and the
+        // detail view draw their host with it, so one set of numbers is the
+        // whole panel's.
         let slint = include_str!("ui/main.slint");
+        let block = slint
+            .split("component HostBlock inherits Rectangle {")
+            .nth(1)
+            .and_then(|rest| rest.split("component SectionHeading").next())
+            .expect("the `.slint` file has a `HostBlock` component");
         let literal = |name: &str| -> f32 {
             let needle = format!("{name}: ");
-            let start = slint
+            let start = block
                 .find(&needle)
-                .unwrap_or_else(|| panic!("the `.slint` file has no `{name}`"))
+                .unwrap_or_else(|| panic!("the block has no `{name}`"))
                 + needle.len();
-            let rest = &slint[start..];
+            let rest = &block[start..];
             let end = rest.find(';').expect("the literal ends");
             rest[..end]
                 .trim()
@@ -824,10 +857,10 @@ mod tests {
         let content = metrics::DEFAULT_WIDTH
             - 2.0 * metrics::MARGIN
             - 2.0 * metrics::PANE_PADDING
-            - literal("scrollbar-reserve");
-        let label = literal("fleet-label-width");
-        let pct = literal("fleet-pct-width");
-        let gap = literal("fleet-gap");
+            - scrollbar_reserve(slint);
+        let label = literal("label-width");
+        let pct = literal("pct-width");
+        let gap = literal("gap");
         let bar = content - label - pct - 3.0 * gap;
 
         assert!(bar > 0.0, "the bar has room in the row");
@@ -836,9 +869,8 @@ mod tests {
             "the bar is the row's own width, not a column of it"
         );
         assert!(
-            slint.contains(
-                "fleet-bar-width: root.list-content-width - root.fleet-label-width \
-                 - root.fleet-pct-width - 3 * root.fleet-gap"
+            block.contains(
+                "bar-width: root.content-width - root.label-width - root.pct-width - 3 * root.gap"
             ),
             "the bar's width is the row less the label, the share and the gaps"
         );
@@ -857,20 +889,18 @@ mod tests {
             ("the spacing", "spacing: 6px"),
             ("the header", "height: 36px"),
             ("the footer", "height: 18px"),
-            ("the host's header line", "host-header-height: 16px"),
+            ("the host's header line", "header-height: 16px"),
             ("the gap between two hosts", "host-block-gap: 6px"),
-            ("the fleet's row", "fleet-row-height: 13px"),
-            ("the fleet's bar", "fleet-bar-height: 6px"),
-            ("the label's width", "fleet-label-width: 64px"),
-            ("the share's width", "fleet-pct-width: 32px"),
-            ("the fleet's gap", "fleet-gap: 6px"),
+            ("the fleet's row", "row-height: 13px"),
+            ("the fleet's bar", "bar-height: 6px"),
+            ("the label's width", "label-width: 64px"),
+            ("the share's width", "pct-width: 32px"),
+            ("the fleet's gap", "gap: 6px"),
             ("the job row", "height: 22px"),
-            ("the metric row", "metric-row-height: 18px"),
-            ("the metric bar", "metric-bar-height: 6px"),
+            ("the group's heading", "height: 15px"),
             ("the status line", "0px : 18px"),
             ("the message", "0px : 30px"),
             ("the tray warning", "0px : 18px"),
-            ("the selected host row", "0px : 18px"),
             ("the form's height", "form-height: 220px"),
         ] {
             assert!(
@@ -889,10 +919,11 @@ mod tests {
         assert_eq!(metrics::HOST_BLOCK_GAP, 6.0);
         assert_eq!(metrics::HOST_LIST_MAX_HEIGHT, 348.0);
         assert_eq!(metrics::JOB_ROW, 22.0);
+        assert_eq!(metrics::DETAIL_HEADING, 15.0);
+        assert_eq!(metrics::DETAIL_ROW, 15.0);
         assert_eq!(metrics::STATUS_LINE, 18.0);
         assert_eq!(metrics::MESSAGE_LINE, 30.0);
         assert_eq!(metrics::TRAY_WARNING_LINE, 18.0);
-        assert_eq!(metrics::SELECTED_ROW, 18.0);
         assert_eq!(metrics::FORM_HEIGHT, 220.0);
     }
 }

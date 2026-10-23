@@ -795,6 +795,114 @@ module is not compiled, and the macOS CI job runs `cargo check`, not clippy.
 Re-verified on a pristine worktree at `cf05ad0` with none of this work present:
 the same lints fire there. Nothing under `crates/gregg-host/` was changed here.
 
+### The detail view became the fleet view's own block, and the idle GUI lost its window (2026-10-23)
+
+The detail view used to be a **second rendering** of the selected host: its
+own metric table, with its own bar columns, its own column widths and its own
+headings, and after it the drives, the interfaces and the `EggPool` plane as
+bare `name  value` lines. It is now **the fleet view's own block, opened up**
+— the selected host's block, drawn by the very same `HostBlock` component the
+fleet view draws every host with — and one condensed list of groups under it.
+
+**There is exactly one bar per used share in the panel.** The `HostBlock`
+component carries the geometry (the label column, the share column, the gap,
+the bar's height and the row's height), so the two views *cannot* drift apart:
+a host that is shown twice is shown twice the same way. The detail view has no
+second set of bars, and the old metric table — a second `MetricRow` struct,
+a second set of `metric-*` properties and a second set of headings — is gone.
+
+**The groups are one condensed list.** A quiet heading and a two-column row
+under it: the name on the left, the value on the right, in the quiet colour.
+
+```text
+Deadpool  IO 0.1%  1.73/2.22/4.72  16C  3.05GHz
+CPU   [████████░░░░░░░░░░░░░░░░░░░░]  11%
+MEM   [██████████████░░░░░░░░░░░░░░]  39%
+SWP   [███░░░░░░░░░░░░░░░░░░░░░░░░░░]   9%
+DISK  [█████████████████████████░░░░░]  86%
+NET   [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░]   0%
+
+RESOURCES
+  MEM         6.0 / 15.5 GiB
+  SWP         7.3 / 84.0 GiB
+
+DRIVES
+  /              791.2 GiB / 914.8 GiB · 86.5% · 77.1 GiB free
+  /boot/efi        6.1 MiB / 1.0 GiB · 0.6% · 1.0 GiB free
+```
+
+`RESOURCES` carries the numbers **behind the shares** the block already shows,
+under the block's own row labels. `DRIVES` carries each mount's own facts in
+the TUI's own words, and the free space falls back to what is left of the
+total when the platform reported none — the TUI's own rule. `NETWORK` carries
+the aggregate first (the block's network share is the aggregate's share of its
+link) and then each interface, and a link capacity that was **not measured** is
+**not stated**: the row says `RX` and `TX` and no `LINK`.
+
+**The detail view was rendered natively**, on macOS 15 (arm64), against the
+live daemon and the real seven-host fleet — in the dark scheme and in the
+light scheme (the light capture was taken with the appearance switched and the
+switch reverted afterwards). The dark capture is the one reproduced above; the
+light one shows the same layout in the light palette, with the card at
+`(224,224,224)`.
+
+**The idle GUI lost its window.** The pulldown's component is now **built when
+the operator first opens it**, not at start-up: a window costs about thirty
+megabytes before it draws anything, and a background GUI nobody has opened yet
+should not be paying for it. The measurement, on this machine, against the real
+daemon:
+
+| | resident set | CPU |
+| --- | --- | --- |
+| **idle, the pulldown never opened** | **45.5 MB** (35.8 min, 45.5 max over 60 s) | about 1.6 % of one core |
+| the pulldown open | 107 MB | about 8 % of one core |
+| the same binary with the panel built at start-up | 82 MB | about 1.6 % of one core |
+
+**The floor is Slint's, not ours.** The same measurements on a *trivial* Slint
+app with the same features give **27–35 MB** for an event loop with no
+component at all, **44 MB** with a tray icon and no window, and **62–74 MB**
+with a window that is never shown. So the idle GUI is now within about ten
+megabytes of a Slint app with **no window at all** on this desktop.
+
+**The model is not the cost.** The hidden-panel rule — a hidden pulldown is
+not re-rendered; the tray keeps its two facts straight from the document — was
+measured **before and after** on the same machine, in the same minute: the
+resident set differs by **0.6 MB** (82.0 → 82.6) and the CPU by **0.06 s over
+sixty seconds**. That is noise, and it is reported as noise: the cost of an
+idle GUI is the daemon's document arriving and being decoded, which the TUI
+pays too.
+
+**Destroying the window does not give the memory back.** A trivial Slint app
+whose window component was dropped was watched for ninety-six seconds: the
+resident set stayed flat at **75,168 KB**. So the deferred window is a
+**one-off** saving — worth thirty megabytes to a GUI that has never been
+opened, and nothing to one that has — and that is stated rather than implied.
+
+**There is no leak.** `leaks` on the running GUI reports **287 leaks for
+14 KB**, every one of them in Apple's own XPC and Objective-C machinery. And
+macOS reclaims most of the rest over hours: a five-hour-old instance of the
+same binary measured **14–30 MB**.
+
+**The tray's click was exercised natively.** The GUI was started **without**
+`--panel`, so the pulldown did not exist: the window list showed **no**
+`gregg-gui` window and the resident set was **46,320 KB**. The tray icon was
+clicked in the menu bar, and the pulldown appeared — the window list showed it
+at `844,36 606x478` and the machine-readable line `pulldown=placed x=844.28125
+y=36 width=606 height=478 area=8,36,1496x938` was printed. A second click hid
+it and a third showed it again, so the panel is built **once** and toggled
+after that.
+
+**What was not done:** the pulldown's footer control was **not** clicked
+natively. The panel's window is on another macOS Space in this environment —
+which is environmental and not the change's doing: the **previous** binary was
+started and clicked the same way and its window was on another Space too — so
+a global click cannot reach the panel's own controls. The detail view was
+therefore rendered from a build whose panel opened **directly** in the detail
+view (a temporary start-up default, since reverted); the rendering path is the
+pulldown's own and is the same one the footer control reaches. The Windows and
+Linux legs are authority in the GUI CI job, not here, and the macOS Intel
+build was not produced locally.
+
 ### The native exercises, on CI run `39811582623`
 
 The GUI workspace is not a member of the root workspace, so no root job

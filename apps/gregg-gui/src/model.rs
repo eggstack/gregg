@@ -30,10 +30,11 @@ use gregg::clientd::snapshot::SystemSnapshotDto;
 use gregg::clientd::snapshot::{EggpoolSnapshotDto, FrontendSnapshot, SystemCronDto};
 use gregg::cron::CronCapability;
 use gregg::eggpool::EggpoolPeriod;
-use gregg::normalized::{aggregate_drives, NormalizedSnapshot};
+use gregg::normalized::{aggregate_drives, NormalizedNetwork, NormalizedSnapshot};
 use gregg::state::Reachability;
 use gregg::ui::text::{
-    format_bytes, format_capacity, format_frequency, format_load, format_pct, format_rate,
+    format_bytes, format_capacity, format_directional_capacity, format_frequency, format_load,
+    format_pct, format_rate,
 };
 
 /// How a missing reading looks.
@@ -217,6 +218,32 @@ pub struct FleetBlock {
     pub rows: Vec<FleetRow>,
 }
 
+/// One row of a detail group: a name and its value.
+///
+/// The name is what the row is *about* and the value is what the name says,
+/// so the two are drawn in different weights: the name in the foreground and
+/// the value in the quiet colour.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValueRow {
+    /// The name: a mount point, an interface name, a resource's own name.
+    pub label: String,
+    /// The value, already formatted in the TUI's own words.
+    pub value: String,
+}
+
+/// One group of the selected host's detail.
+///
+/// A group is a heading and the rows under it. The heading is what makes a
+/// list of facts readable: an undifferentiated wall of `name  value` lines is
+/// a dump, not a pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetailSection {
+    /// The group's heading, e.g. `DRIVES`.
+    pub heading: String,
+    /// The group's rows.
+    pub rows: Vec<ValueRow>,
+}
+
 /// One drive's row in the selected host's detail.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DriveRow {
@@ -224,8 +251,13 @@ pub struct DriveRow {
     pub mount: String,
     /// `used / total`.
     pub usage: String,
-    /// Remaining space, when the platform reported it.
-    pub remaining: Option<String>,
+    /// The share of the drive that is used, e.g. `25%`.
+    pub percent: String,
+    /// Remaining space.
+    ///
+    /// It is what the platform reported, and what is left of the total when
+    /// it reported none: the TUI's own rule.
+    pub remaining: String,
     /// Read/write throughput, when the platform reported it.
     pub throughput: Option<String>,
 }
@@ -235,8 +267,10 @@ pub struct DriveRow {
 pub struct InterfaceRow {
     /// The interface name.
     pub name: String,
-    /// `Rx/s` and `Tx/s`.
-    pub throughput: String,
+    /// The receive rate.
+    pub rx: String,
+    /// The transmit rate.
+    pub tx: String,
     /// Link capacity, when the platform reported it.
     pub capacity: Option<String>,
     /// Whether this is a loopback interface.
@@ -390,7 +424,7 @@ pub fn project(
     connection: &ConnectionState,
     now_unix_ms: u64,
 ) -> GuiViewModel {
-    let counts = FleetCounts::from_systems(&snapshot.systems);
+    let (counts, tray_summary) = tray_facts(snapshot);
     // The swap-or-commit heading is the fleet's, so it is settled before the
     // cards are built: a host that reports neither takes the fleet's heading
     // for its row, and the fleet's heading is what the other hosts report.
@@ -415,8 +449,6 @@ pub fn project(
         .map(|entry| cron_view(entry, selection, now_unix_ms));
 
     let eggpool = snapshot.eggpool.as_ref().map(eggpool_view);
-
-    let tray_summary = tray_summary(&counts, &systems);
 
     GuiViewModel {
         connection: connection.clone(),
@@ -882,41 +914,101 @@ fn headline(metrics: &[MetricRow]) -> String {
         .join("  ")
 }
 
-/// The detail rows for the selected host.
+/// The detail groups for the selected host.
+///
+/// The groups are the numbers behind the shares the block already shows, the
+/// drives and the interfaces. Every row is a name and a value in the TUI's
+/// own words, so the panel and the terminal say the same thing about the
+/// same host.
 #[must_use]
-pub fn detail_rows(
-    snapshot: &FrontendSnapshot,
-    system_id: &str,
-) -> (Vec<DriveRow>, Vec<InterfaceRow>) {
+pub fn detail_sections(snapshot: &FrontendSnapshot, system_id: &str) -> Vec<DetailSection> {
     let Some(system) = snapshot.system(system_id) else {
-        return (Vec::new(), Vec::new());
+        return Vec::new();
     };
     let Some(latest) = system.latest.as_ref() else {
-        return (Vec::new(), Vec::new());
+        return Vec::new();
     };
 
-    let drives: Vec<DriveRow> = latest
-        .drives
-        .as_ref()
-        .map(|drives| {
-            drives
-                .iter()
-                .map(|drive| DriveRow {
-                    mount: truncate(&drive.name, MAX_NAME_CHARS),
-                    usage: format!(
-                        "{} / {}",
-                        format_bytes(drive.used_bytes),
-                        format_bytes(drive.total_bytes)
-                    ),
-                    remaining: drive.available_bytes.map(format_bytes),
-                    throughput: None,
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut sections = Vec::new();
 
-    // The per-device throughput belongs to the disk-IO plane, which is
-    // reported separately from the capacity plane.
+    // The numbers behind the shares. The block says `MEM 21%`; this says how
+    // much memory that is, under the same label, so the two are obviously the
+    // same measure.
+    let mut resources = vec![ValueRow {
+        label: "MEM".to_owned(),
+        value: format_pair(
+            &format_bytes(latest.memory.used_bytes),
+            &format_bytes(latest.memory.total_bytes),
+        ),
+    }];
+    if let Some(swap) = latest.swap.as_ref() {
+        resources.push(ValueRow {
+            label: "SWP".to_owned(),
+            value: format_pair(
+                &format_bytes(swap.used_bytes),
+                &format_bytes(swap.total_bytes),
+            ),
+        });
+    } else if let Some(commit) = latest.commit.as_ref() {
+        resources.push(ValueRow {
+            label: "COMMIT".to_owned(),
+            value: format_pair(
+                &format_bytes(commit.used_bytes),
+                &format_bytes(commit.limit_bytes),
+            ),
+        });
+    }
+    sections.push(DetailSection {
+        heading: "RESOURCES".to_owned(),
+        rows: resources,
+    });
+
+    // The drives.
+    let drives = drive_rows(latest);
+    if !drives.is_empty() {
+        let rows = drives
+            .iter()
+            .map(|drive| ValueRow {
+                label: drive.mount.clone(),
+                value: drive_value(drive),
+            })
+            .collect();
+        sections.push(DetailSection {
+            heading: "DRIVES".to_owned(),
+            rows,
+        });
+    }
+
+    // The interfaces, with the aggregate first: the block's network share is
+    // the aggregate's share of its link, so the aggregate is what that share
+    // was taken against.
+    let interfaces = interface_rows(latest);
+    if !interfaces.is_empty() {
+        let mut rows = Vec::new();
+        if let Some(network) = latest.network.as_ref() {
+            rows.push(ValueRow {
+                label: "TOTAL".to_owned(),
+                value: network_value(network),
+            });
+        }
+        rows.extend(interfaces.iter().map(|interface| ValueRow {
+            label: interface.name.clone(),
+            value: interface_value(interface),
+        }));
+        sections.push(DetailSection {
+            heading: "NETWORK".to_owned(),
+            rows,
+        });
+    }
+
+    sections
+}
+
+/// One drive's facts, as the daemon reported them.
+///
+/// The per-device throughput belongs to the disk-IO plane, which is reported
+/// separately from the capacity plane, so it is joined in here.
+fn drive_rows(latest: &NormalizedSnapshot) -> Vec<DriveRow> {
     let throughput: std::collections::HashMap<&str, String> = latest
         .disk_io
         .as_ref()
@@ -928,7 +1020,7 @@ pub fn detail_rows(
                         (
                             name.as_str(),
                             format!(
-                                "{} R / {} W",
+                                "R {} · W {}",
                                 format_rate(device.read_bytes_per_sec),
                                 format_rate(device.write_bytes_per_sec)
                             ),
@@ -939,17 +1031,49 @@ pub fn detail_rows(
         })
         .unwrap_or_default();
 
-    let drives = drives
-        .into_iter()
-        .map(|mut drive| {
-            drive.throughput = throughput.get(drive.mount.as_str()).cloned();
-            drive
+    latest
+        .drives
+        .as_ref()
+        .map(|drives| {
+            drives
+                .iter()
+                .map(|drive| {
+                    let used = drive.used_bytes;
+                    let total = drive.total_bytes;
+                    // A share is only a share when the drive reported a total
+                    // it did not exceed. A drive that reported nonsense gets
+                    // no share at all, rather than one computed from it.
+                    let percent = if total > 0 && used <= total {
+                        format_pct((used as f64 * 100.0 / total as f64) as f32)
+                    } else {
+                        MISSING.to_owned()
+                    };
+                    DriveRow {
+                        mount: truncate(&drive.name, MAX_NAME_CHARS),
+                        usage: format!("{} / {}", format_bytes(used), format_bytes(total)),
+                        percent,
+                        // The TUI's own rule: the free space is what the
+                        // platform reported, and what is left of the total
+                        // when it reported none.
+                        remaining: format_bytes(
+                            drive
+                                .available_bytes
+                                .unwrap_or_else(|| total.saturating_sub(used)),
+                        ),
+                        throughput: throughput.get(drive.name.as_str()).cloned(),
+                    }
+                })
+                .collect()
         })
-        .collect();
+        .unwrap_or_default()
+}
 
-    // Loopback appears in the interface detail only. It is never part of an
-    // aggregate, because a loopback's traffic is the host talking to itself.
-    let interfaces = latest
+/// One network interface's facts, as the daemon reported them.
+///
+/// Loopback appears in the interface detail only. It is never part of an
+/// aggregate, because a loopback's traffic is the host talking to itself.
+fn interface_rows(latest: &NormalizedSnapshot) -> Vec<InterfaceRow> {
+    latest
         .network
         .as_ref()
         .map(|network| {
@@ -958,22 +1082,59 @@ pub fn detail_rows(
                 .iter()
                 .map(|interface| InterfaceRow {
                     name: truncate(&interface.name, MAX_NAME_CHARS),
-                    throughput: format!(
-                        "{} Rx / {} Tx",
-                        format_rate(interface.rx_bytes_per_sec),
-                        format_rate(interface.tx_bytes_per_sec)
+                    rx: format_rate(interface.rx_bytes_per_sec),
+                    tx: format_rate(interface.tx_bytes_per_sec),
+                    capacity: format_directional_capacity(
+                        interface.rx_capacity_bps,
+                        interface.tx_capacity_bps,
                     ),
-                    capacity: interface
-                        .rx_capacity_bps
-                        .or(interface.tx_capacity_bps)
-                        .map(|capacity| format_capacity(Some(capacity))),
                     loopback: interface.is_loopback,
                 })
                 .collect()
         })
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
 
-    (drives, interfaces)
+/// One drive's line, in the TUI's own words.
+///
+/// The TUI's drive table says `used / total (remaining) percent` and adds the
+/// read and write rates. This says the same facts in one line, separated by
+/// middots, so that the eye can find the parts.
+fn drive_value(drive: &DriveRow) -> String {
+    let mut value = format!(
+        "{} · {} · {} free",
+        drive.usage, drive.percent, drive.remaining
+    );
+    if let Some(throughput) = drive.throughput.as_ref() {
+        value.push_str(&format!(" · {throughput}"));
+    }
+    value
+}
+
+/// One interface's line, in the TUI's own words.
+fn interface_value(interface: &InterfaceRow) -> String {
+    let mut value = format!("RX {} · TX {}", interface.rx, interface.tx);
+    if let Some(capacity) = interface.capacity.as_ref() {
+        value.push_str(&format!(" · LINK {capacity}"));
+    }
+    value
+}
+
+/// The network's aggregate line, in the TUI's own words.
+fn network_value(network: &NormalizedNetwork) -> String {
+    let mut value = format!(
+        "RX {} · TX {}",
+        format_rate(network.aggregate_rx_bytes_per_sec),
+        format_rate(network.aggregate_tx_bytes_per_sec)
+    );
+    let capacity = format_directional_capacity(
+        network.aggregate_rx_capacity_bps,
+        network.aggregate_tx_capacity_bps,
+    );
+    if let Some(capacity) = capacity {
+        value.push_str(&format!(" · LINK {capacity}"));
+    }
+    value
 }
 
 /// The cron plane of one host.
@@ -1121,7 +1282,30 @@ fn eggpool_view(snapshot: &EggpoolSnapshotDto) -> EggpoolView {
 }
 
 /// The one-line fleet summary the tray shows.
-fn tray_summary(counts: &FleetCounts, systems: &[SystemCard]) -> String {
+/// The two facts the tray shows: the fleet's counts and the summary line.
+///
+/// They are the counts and the first few names, and computing them costs
+/// nothing: a GUI that is not on screen does not need every host's every
+/// measurement formatted, and the daemon publishes a document every few
+/// seconds.
+///
+/// The summary is built here and not in [`project`], so that the tray's line
+/// and the pulldown's header cannot say different things about the same
+/// fleet.
+#[must_use]
+pub fn tray_facts(snapshot: &FrontendSnapshot) -> (FleetCounts, String) {
+    let counts = FleetCounts::from_systems(&snapshot.systems);
+    let names: Vec<String> = snapshot
+        .systems
+        .iter()
+        .map(|system| truncate(&display_name(system), MAX_NAME_CHARS))
+        .collect();
+    let summary = tray_summary(&counts, &names, snapshot.systems.len());
+    (counts, summary)
+}
+
+/// The one-line summary of the fleet, for the tray and the pulldown's header.
+fn tray_summary(counts: &FleetCounts, names: &[String], total: usize) -> String {
     let mut summary = format!(
         "{} online, {} pending, {} offline",
         counts.online, counts.pending, counts.offline
@@ -1130,15 +1314,15 @@ fn tray_summary(counts: &FleetCounts, systems: &[SystemCard]) -> String {
         summary.push_str(" — no systems configured");
         return summary;
     }
-    let names: Vec<&str> = systems
+    let shown: Vec<&str> = names
         .iter()
         .take(MAX_TRAY_HOSTS)
-        .map(|card| card.name.as_str())
+        .map(|name| name.as_str())
         .collect();
     summary.push_str(" — ");
-    summary.push_str(&names.join(", "));
-    if systems.len() > MAX_TRAY_HOSTS {
-        summary.push_str(&format!(" (+{} more)", systems.len() - MAX_TRAY_HOSTS));
+    summary.push_str(&shown.join(", "));
+    if total > MAX_TRAY_HOSTS {
+        summary.push_str(&format!(" (+{} more)", total - MAX_TRAY_HOSTS));
     }
     summary
 }
@@ -1278,6 +1462,14 @@ mod tests {
             protocol_version: 1,
             daemon_id: "abc".to_owned(),
         }
+    }
+
+    /// One group of a detail projection, by its heading.
+    fn group<'a>(groups: &'a [DetailSection], heading: &str) -> &'a DetailSection {
+        groups
+            .iter()
+            .find(|group| group.heading == heading)
+            .unwrap_or_else(|| panic!("a {heading} group"))
     }
 
     /// A scheduler summary carrying the given jobs.
@@ -2013,20 +2205,99 @@ mod tests {
             }],
         });
         let snapshot = snapshot_of(vec![with_snapshot(0, latest)]);
-        let (drives, interfaces) = detail_rows(&snapshot, "system-0");
-        assert_eq!(drives.len(), 1);
-        assert_eq!(drives[0].mount, "/");
-        assert_eq!(drives[0].remaining.as_deref(), Some("46.6 GiB"));
-        assert_eq!(interfaces.len(), 1);
-        assert!(interfaces[0].loopback);
+        let groups = detail_sections(&snapshot, "system-0");
+
+        let drives = group(&groups, "DRIVES");
+        assert_eq!(drives.rows.len(), 1);
+        assert_eq!(drives.rows[0].label, "/");
+        assert!(
+            drives.rows[0].value.contains("46.6 GiB free"),
+            "{}",
+            drives.rows[0].value
+        );
+
+        // The aggregate comes first: the block's network share is the
+        // aggregate's share of its link.
+        let network = group(&groups, "NETWORK");
+        assert_eq!(network.rows.len(), 2);
+        assert_eq!(network.rows[0].label, "TOTAL");
+        assert_eq!(network.rows[1].label, "lo");
     }
 
     #[test]
     fn a_detail_projection_for_an_unknown_host_is_empty_rather_than_stale() {
         let snapshot = snapshot_of(vec![with_snapshot(0, normalized())]);
-        let (drives, interfaces) = detail_rows(&snapshot, "system-9");
-        assert!(drives.is_empty());
-        assert!(interfaces.is_empty());
+        assert!(detail_sections(&snapshot, "system-9").is_empty());
+    }
+
+    #[test]
+    fn the_detail_carries_the_numbers_behind_the_shares() {
+        let snapshot = snapshot_of(vec![with_snapshot(0, normalized())]);
+        let groups = detail_sections(&snapshot, "system-0");
+        let resources = group(&groups, "RESOURCES");
+        assert_eq!(resources.rows[0].label, "MEM");
+        assert!(
+            resources.rows[0].value.contains("3.7"),
+            "the memory's absolute: {}",
+            resources.rows[0].value
+        );
+        assert!(
+            resources.rows[0].value.contains("14.9"),
+            "the memory's total: {}",
+            resources.rows[0].value
+        );
+    }
+
+    #[test]
+    fn a_drive_says_its_share_and_what_is_left_of_it() {
+        let snapshot = snapshot_of(vec![with_snapshot(0, normalized())]);
+        let groups = detail_sections(&snapshot, "system-0");
+        let drives = group(&groups, "DRIVES");
+        let value = &drives.rows[0].value;
+        assert!(value.contains("50.0%"), "the drive's own share: {value}");
+        assert!(
+            value.contains("46.6 GiB free"),
+            "what is left of it: {value}"
+        );
+    }
+
+    #[test]
+    fn a_link_capacity_that_was_not_measured_is_not_stated() {
+        let mut latest = normalized();
+        latest.network = Some(NormalizedNetwork {
+            aggregate_rx_bytes_per_sec: 1_000,
+            aggregate_tx_bytes_per_sec: 2_000,
+            aggregate_rx_capacity_bps: None,
+            aggregate_tx_capacity_bps: None,
+            interfaces: vec![NormalizedNetworkInterface {
+                id: "en0".to_owned(),
+                name: "en0".to_owned(),
+                rx_bytes_per_sec: 1_000,
+                tx_bytes_per_sec: 2_000,
+                rx_capacity_bps: None,
+                tx_capacity_bps: None,
+                is_loopback: false,
+                aggregate_member: true,
+            }],
+        });
+        let snapshot = snapshot_of(vec![with_snapshot(0, latest)]);
+        let groups = detail_sections(&snapshot, "system-0");
+        let network = group(&groups, "NETWORK");
+        assert!(
+            !network.rows[0].value.contains("LINK"),
+            "a capacity nobody measured is not stated: {}",
+            network.rows[0].value
+        );
+        assert!(
+            !network.rows[1].value.contains("LINK"),
+            "a capacity nobody measured is not stated: {}",
+            network.rows[1].value
+        );
+        assert!(
+            network.rows[0].value.contains("RX 1000 B/s"),
+            "{}",
+            network.rows[0].value
+        );
     }
 
     // ---------------------------------------------------------------------
@@ -2473,13 +2744,21 @@ mod tests {
         );
 
         // And so do the detail rows.
-        let (drives, _) = detail_rows(&snapshot, "system-0");
-        assert_eq!(drives.len(), 1);
-        assert!(drives[0].usage.contains("9.3 GiB"), "{}", drives[0].usage);
+        let groups = detail_sections(&snapshot, "system-0");
+        let drives = groups
+            .iter()
+            .find(|group| group.heading == "DRIVES")
+            .expect("a drives group");
+        assert_eq!(drives.rows.len(), 1);
         assert!(
-            !drives[0].usage.contains("46.6 GiB"),
+            drives.rows[0].value.contains("9.3 GiB"),
+            "{}",
+            drives.rows[0].value
+        );
+        assert!(
+            !drives.rows[0].value.contains("46.6 GiB"),
             "the previous endpoint's drive must not survive: {}",
-            drives[0].usage
+            drives.rows[0].value
         );
     }
 

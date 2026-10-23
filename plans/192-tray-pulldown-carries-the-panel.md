@@ -627,3 +627,40 @@ a left-click that opens the pulldown, and the pulldown's content being usable on
 desktop — on macOS, on Windows and on a real GNOME session, recording which gesture opens it
 there. Until that is done, the GUI stays a **source build** and is not shippable for Windows or
 Linux.
+
+### Third amendment — the detail view became the fleet view's own block (2026-10-23)
+
+The plan's fleet view is a table of blocks, and the detail view was a
+**second rendering** of the selected host: its own metric table, with its own
+bar columns, its own column widths and its own headings, and after it the
+drives, the interfaces and the `EggPool` plane as bare `name  value` lines.
+Two things changed, and both are visible in the plan's own terms:
+
+- **The detail view is now the fleet view's own block.** The selected host's
+  block is drawn by the **same `HostBlock` component** the fleet view draws
+  every host with, so there is **exactly one bar per used share in the panel**
+  and the two views cannot drift apart. The geometry moved into that one
+  component with them. The detail view's own metric table is gone.
+- **The extra facts are one condensed list**, under quiet group headings: a
+  two-column row — the name on the left, the value on the right — for the
+  numbers behind the shares, for each drive's own facts and for each
+  interface. The `EggPool` plane is a group of the same list rather than a
+  pane of its own.
+
+The pulldown's **window** is now built on the **first tray click** rather
+than at start-up, and a hidden pulldown is not re-rendered. That is the plan's
+"one surface, no second poller, no chrome" taken to its conclusion for the
+background case: a menu-bar app that nobody has opened yet should not be
+paying for a window it never shows. The measured effect, on macOS 15 (arm64)
+against the real daemon and a seven-host fleet: the idle resident set fell
+from **82 MB** to **45.5 MB**. The tray's click was exercised natively: the
+pulldown did not exist before the click, and the click built it, placed it
+and showed it. `--panel` and a desktop with no tray still open it at
+start-up.
+
+**What was not performed:** the pulldown's own footer control was not clicked
+natively — the panel's window is on another macOS Space in this environment,
+which is environmental and not the change's doing, so the previous binary was
+started and clicked the same way and behaved the same. The detail view was
+rendered natively from a build whose panel opened directly in the detail view
+(a temporary start-up default, since reverted).

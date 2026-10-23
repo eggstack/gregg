@@ -37,6 +37,7 @@
 //! GUI redraws for no reason at all, and a redraw only ever happens because
 //! something actually changed.
 
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -69,6 +70,70 @@ fn fleet_row(row: &model::FleetRow) -> FleetRow {
         label: row.label.clone().into(),
         pct_text: row.pct_text.clone().into(),
         fraction: row.fraction,
+    }
+}
+
+/// One host's block, as the panel draws it.
+///
+/// The fleet view and the detail view draw their host with the **same** Slint
+/// component, and this is what puts the block into it: the detail view is the
+/// fleet view's host opened up, and not a second rendering of it.
+fn fleet_host(block: &model::FleetBlock, selected_id: Option<&str>) -> FleetHost {
+    let rows: Vec<FleetRow> = block.rows.iter().map(fleet_row).collect();
+    FleetHost {
+        id: block.id.clone().into(),
+        name: block.name.clone().into(),
+        detail: block.detail.clone().into(),
+        online: block.online,
+        selected: selected_id == Some(block.id.as_str()),
+        rows: slint::ModelRc::from(rows.as_slice()),
+    }
+}
+
+/// A block for a host that is not selected.
+///
+/// The detail view has a host even when nothing is selected, and an empty
+/// block is what says "there is nothing to show" rather than leaving the last
+/// host's numbers on screen.
+fn empty_fleet_host() -> FleetHost {
+    let rows: Vec<FleetRow> = Vec::new();
+    FleetHost {
+        id: "".into(),
+        name: "".into(),
+        detail: "".into(),
+        online: false,
+        selected: false,
+        rows: slint::ModelRc::from(rows.as_slice()),
+    }
+}
+
+/// The `EggPool` plane, as a group of the detail.
+///
+/// The plane's four periodized measures are the values, and the service's own
+/// health and last failure are the facts about them: a summary without the
+/// health is a number from a service that may not be answering.
+fn eggpool_section(eggpool: &model::EggpoolView) -> model::DetailSection {
+    let mut rows: Vec<model::ValueRow> = eggpool
+        .values
+        .iter()
+        .map(|(label, value)| model::ValueRow {
+            label: label.clone(),
+            value: value.clone(),
+        })
+        .collect();
+    rows.push(model::ValueRow {
+        label: "health".to_owned(),
+        value: eggpool.health.clone(),
+    });
+    if let Some(error) = eggpool.error.as_ref() {
+        rows.push(model::ValueRow {
+            label: "error".to_owned(),
+            value: error.clone(),
+        });
+    }
+    model::DetailSection {
+        heading: "EGGPOOL".to_owned(),
+        rows,
     }
 }
 
@@ -339,18 +404,11 @@ fn main() {
         }
     };
 
-    let panel = Pulldown::new().expect("the panel component is constructible");
     let tray = TrayIcon::new().expect("the tray component is constructible");
     tray.set_tray_icon(tray_icon(TrayHealth::Pending));
     // macOS carries no native menu: a menu attached to the status item
     // swallows the click that opens the pulldown.
     tray.set_native_menu(platform::native_tray_menu());
-    panel.set_transparent_window(platform::transparent_window());
-    panel.set_pointer_at_top(matches!(
-        placement::Anchor::for_platform(),
-        placement::Anchor::TopRight
-    ));
-    panel.set_tray_warning(platform::tray_warning_text(&tray_support).into());
 
     // Where the operator left the pulldown is remembered across restarts: it
     // is read from a small file beside the configuration.
@@ -378,12 +436,16 @@ fn main() {
     // callback can read once the bridge exists.
     let bridge_slot: Arc<OnceLock<Arc<Bridge>>> = Arc::new(OnceLock::new());
     let notify_state = Arc::clone(&state);
-    let notify_panel = panel.as_weak();
+    // The pulldown does not exist until the operator opens it, so the
+    // notification path reads its handle from a slot rather than holding one.
+    let notify_panel: Arc<Mutex<Option<slint::Weak<Pulldown>>>> = Arc::new(Mutex::new(None));
     let notify_tray = tray.as_weak();
     let notify_slot = Arc::clone(&bridge_slot);
+    let notify_panel_slot = Arc::clone(&notify_panel);
     let notify = Arc::new(move || {
         let state = Arc::clone(&notify_state);
-        let panel = notify_panel.clone();
+        let panel_slot = Arc::clone(&notify_panel_slot);
+        let panel = panel_slot.lock().ok().and_then(|panel| panel.clone());
         let tray = notify_tray.clone();
         let slot = Arc::clone(&notify_slot);
         // `invoke_from_event_loop` fails when the event loop is not running
@@ -393,12 +455,161 @@ fn main() {
             let Some(bridge) = slot.get() else {
                 return;
             };
-            apply_pending(bridge, &state, &panel, &tray);
+            apply_pending(bridge, &state, panel.as_ref(), &tray);
         });
     });
 
     let bridge = Arc::new(Bridge::spawn(options.config.clone(), daemon, notify));
     let _ = bridge_slot.set(Arc::clone(&bridge));
+
+    // Everything the pulldown's own callbacks need, in one place: the panel
+    // is built on demand, so its wiring cannot be registered at start-up.
+    let context = PanelContext {
+        state: Arc::clone(&state),
+        bridge: Arc::clone(&bridge),
+        manager: Arc::clone(&manager),
+        geometry_path: geometry_path.clone(),
+        tray_support: tray_support.clone(),
+    };
+
+    // ------------------------------------------------------- the tray's click
+    // The tray's **click** opens the pulldown, and the pulldown carries the
+    // content: the fleet, the metrics, the cron, the records, the `EggPool`
+    // plane and the forms. The native menu is the context menu where there is
+    // one, and it carries `Quit` and nothing else.
+    //
+    // The pulldown is **built on the first click**, not at start-up. A window
+    // costs about thirty megabytes before it draws anything, and a background
+    // GUI that the operator has not opened yet should not be paying for it.
+    let callback_state = Arc::clone(&state);
+    let callback_context = context.clone();
+    let callback_panel = Arc::clone(&notify_panel);
+    tray.on_tray_clicked(move || {
+        with_or_create_panel(&callback_context, &callback_panel, |panel| {
+            toggle_pulldown(panel, &callback_state);
+        });
+    });
+
+    tray.on_quit_requested(move || {
+        let _ = slint::quit_event_loop();
+    });
+
+    // A desktop with no tray service still needs a usable surface, and a
+    // process the operator can always quit. The panel is shown either way:
+    // with a tray it is opened from the tray, and without one it is the only
+    // control surface there is.
+    //
+    // `--panel` opens it whatever the desktop has: an operator who launches
+    // the GUI that way wants to see it, and the native exercises need a
+    // panel on screen to prove the windowing works on that platform.
+    //
+    // The first open waits for the event loop. The pulldown's placement is
+    // read from the display its *native* window is on, and the native window
+    // does not exist until the event loop has resumed it — so an open before
+    // the loop starts is a panel the window manager places by guesswork, and
+    // it lands under the menu bar.
+    if options.panel || tray_support != platform::TraySupport::Available {
+        let context = context.clone();
+        let panel_slot = Arc::clone(&notify_panel);
+        let state = Arc::clone(&state);
+        slint::Timer::single_shot(Duration::ZERO, move || {
+            with_or_create_panel(&context, &panel_slot, |panel| {
+                show_pulldown(panel, &state);
+            });
+        });
+    }
+
+    // The first drain happens after the event loop is running, so a message
+    // published before it started is not lost.
+    //
+    // `run_event_loop_until_quit` rather than `run_event_loop`: closing the
+    // panel must **hide** it and leave the tray and the observation running,
+    // and the daemon must keep polling. Slint's own close handling hides the
+    // window on a close request, and an event loop that quits when its last
+    // window closes would turn that into "the GUI exited". Quit is the only
+    // thing that ends the GUI.
+    if let Err(error) = slint::run_event_loop_until_quit() {
+        eprintln!("gregg-gui: the event loop ended with an error: {error}");
+    }
+
+    // The pulldown is dropped here, while the platform is still alive: a
+    // thread's own storage is emptied after `main` returns, which is too
+    // late for a component that belongs to the platform.
+    PANEL.with(|panel| panel.borrow_mut().take());
+}
+
+thread_local! {
+    /// The pulldown, once it has been built.
+    ///
+    /// It lives in the UI thread's own storage because a Slint component is
+    /// not `Send`, and it is reached through the thread's storage rather than
+    /// captured by the closures that need it.
+    static PANEL: RefCell<Option<Pulldown>> = const { RefCell::new(None) };
+}
+
+/// Build the pulldown if it does not exist yet, and run `action` with it.
+///
+/// The panel is built on demand, so this is where it is built: a window costs
+/// about thirty megabytes before it draws anything, and a background GUI that
+/// the operator has not opened yet should not be paying for it.
+///
+/// The panel lives in the UI thread's own storage because a Slint component is
+/// not `Send`, and Slint's own `show()` keeps the component alive only while
+/// the window is visible — so the thread's storage is what keeps the pulldown
+/// from being built and thrown away on every open.
+fn with_or_create_panel(
+    context: &PanelContext,
+    slot: &Arc<Mutex<Option<slint::Weak<Pulldown>>>>,
+    action: impl FnOnce(&Pulldown),
+) {
+    PANEL.with(|panel_slot| {
+        let mut panel_slot = panel_slot.borrow_mut();
+        if panel_slot.is_none() {
+            let panel = create_panel(context);
+            *slot.lock().expect("the panel slot lock") = Some(panel.as_weak());
+            *panel_slot = Some(panel);
+        }
+        action(panel_slot.as_ref().expect("the pulldown"));
+    });
+}
+
+/// Everything the pulldown's own callbacks need.
+///
+/// The pulldown is **created when the operator first opens it**, so its
+/// callbacks cannot be registered at start-up: they are registered when the
+/// component is built, and this is what they need then.
+#[derive(Clone)]
+struct PanelContext {
+    /// The UI's own state.
+    state: Arc<Mutex<UiState>>,
+    /// The client daemon's bridge.
+    bridge: Arc<Bridge>,
+    /// The configuration mutations, through the CLI's own code.
+    manager: Arc<dyn HostMutations + Send + Sync>,
+    /// Where the operator left the pulldown.
+    geometry_path: PathBuf,
+    /// Whether this desktop has a tray.
+    tray_support: platform::TraySupport,
+}
+
+/// Build the pulldown and register its callbacks.
+///
+/// The panel is created on demand, so this is where its own wiring lives.
+/// Everything it needs is in the context, and the context is `Clone`, so the
+/// caller keeps one.
+fn create_panel(ctx: &PanelContext) -> Pulldown {
+    let panel = Pulldown::new().expect("the panel component is constructible");
+    panel.set_transparent_window(platform::transparent_window());
+    panel.set_pointer_at_top(matches!(
+        placement::Anchor::for_platform(),
+        placement::Anchor::TopRight
+    ));
+    panel.set_tray_warning(platform::tray_warning_text(&ctx.tray_support).into());
+
+    let state = Arc::clone(&ctx.state);
+    let bridge = Arc::clone(&ctx.bridge);
+    let manager = Arc::clone(&ctx.manager);
+    let geometry_path = ctx.geometry_path.clone();
 
     // The callbacks run on the UI thread, so the state is taken behind its
     // mutex rather than through a `RefCell` borrow that could conflict with
@@ -699,61 +910,7 @@ fn main() {
         }
     });
 
-    // ------------------------------------------------------- the tray's click
-    // The tray's **click** opens the pulldown, and the pulldown carries the
-    // content: the fleet, the metrics, the cron, the records, the `EggPool`
-    // plane and the forms. The native menu is the context menu where there is
-    // one, and it carries `Quit` and nothing else.
-    let callback_state = Arc::clone(&state);
-    let callback_panel = panel.as_weak();
-    tray.on_tray_clicked(move || {
-        let Some(panel) = callback_panel.upgrade() else {
-            return;
-        };
-        toggle_pulldown(&panel, &callback_state);
-    });
-
-    tray.on_quit_requested(move || {
-        let _ = slint::quit_event_loop();
-    });
-
-    // A desktop with no tray service still needs a usable surface, and a
-    // process the operator can always quit. The panel is shown either way:
-    // with a tray it is opened from the tray, and without one it is the only
-    // control surface there is.
-    //
-    // `--panel` opens it whatever the desktop has: an operator who launches
-    // the GUI that way wants to see it, and the native exercises need a
-    // panel on screen to prove the windowing works on that platform.
-    //
-    // The first open waits for the event loop. The pulldown's placement is
-    // read from the display its *native* window is on, and the native window
-    // does not exist until the event loop has resumed it — so an open before
-    // the loop starts is a panel the window manager places by guesswork, and
-    // it lands under the menu bar.
-    if options.panel || platform::tray_support() != platform::TraySupport::Available {
-        let weak = panel.as_weak();
-        let state = Arc::clone(&state);
-        slint::Timer::single_shot(Duration::ZERO, move || {
-            let Some(panel) = weak.upgrade() else {
-                return;
-            };
-            show_pulldown(&panel, &state);
-        });
-    }
-
-    // The first drain happens after the event loop is running, so a message
-    // published before it started is not lost.
-    //
-    // `run_event_loop_until_quit` rather than `run_event_loop`: closing the
-    // panel must **hide** it and leave the tray and the observation running,
-    // and the daemon must keep polling. Slint's own close handling hides the
-    // window on a close request, and an event loop that quits when its last
-    // window closes would turn that into "the GUI exited". Quit is the only
-    // thing that ends the GUI.
-    if let Err(error) = slint::run_event_loop_until_quit() {
-        eprintln!("gregg-gui: the event loop ended with an error: {error}");
-    }
+    panel
 }
 
 /// Bring the pulldown up, and place it on the display.
@@ -773,6 +930,16 @@ fn show_pulldown(panel: &Pulldown, state: &Arc<Mutex<UiState>>) {
         state.panel_visible = true;
     }
     let _ = panel.show();
+    {
+        // The panel is rebuilt as it opens. While it was hidden it was not
+        // rebuilt at all, so what it shows is the newest document and not the
+        // last one it happened to be open for.
+        let Ok(mut guard) = state.lock() else {
+            return;
+        };
+        let weak = panel.as_weak();
+        render_panel(&mut guard, Some(&weak));
+    }
     place_pulldown(panel, state, PLACEMENT_ATTEMPTS);
 
     let weak = panel.as_weak();
@@ -801,7 +968,7 @@ fn place_pulldown(panel: &Pulldown, state: &Arc<Mutex<UiState>>, attempts_left: 
     let area = placement::work_area(panel.window());
     let content = (
         placement::metrics::DEFAULT_WIDTH,
-        placement::content_height(&content_for(&guard, panel)),
+        placement::content_height(&content_from_state(&guard, panel)),
     );
     let size = placement::panel_size(guard.panel_size, content, area.as_ref());
     panel.window().set_size(size);
@@ -859,21 +1026,48 @@ fn toggle_pulldown(panel: &Pulldown, state: &Arc<Mutex<UiState>>) {
     show_pulldown(panel, state);
 }
 
-/// What the pulldown is showing, as the height calculation sees it.
+/// The groups of detail for the selected host.
 ///
-/// The lines the pulldown shows are read from the pulldown itself: they are
-/// what is on screen, and the height has to answer for what is on screen.
-fn content_for(state: &UiState, panel: &Pulldown) -> placement::Content {
+/// The numbers behind the shares, the drives, the interfaces, and — when the
+/// operator asked for it — the `EggPool` plane.
+fn detail_groups(state: &UiState, model: &GuiViewModel) -> Vec<model::DetailSection> {
+    let mut groups: Vec<model::DetailSection> = state
+        .snapshot
+        .as_ref()
+        .zip(model.selected_id.as_deref())
+        .map(|(snapshot, selected)| model::detail_sections(snapshot, selected))
+        .unwrap_or_default();
+    if state.eggpool_visible {
+        if let Some(eggpool) = model.eggpool.as_ref() {
+            groups.push(eggpool_section(eggpool));
+        }
+    }
+    groups
+}
+
+/// The content, for the height calculation, from the state alone.
+///
+/// The placement asks for the height a few times while the native window
+/// appears, and it is the only caller that does not already have a model.
+fn content_from_state(state: &UiState, panel: &Pulldown) -> placement::Content {
     let Some(snapshot) = state.snapshot.as_ref() else {
         return placement::Content::default();
     };
     let model = model::project(snapshot, &state.selection, &state.connection, now_unix_ms());
-    let metrics = model.selected.as_ref().map_or(0, |card| card.metrics.len());
-    let (drives, interfaces) = model
-        .selected_id
-        .as_deref()
-        .map(|selected| model::detail_rows(snapshot, selected))
-        .unwrap_or_default();
+    let groups = detail_groups(state, &model);
+    content_for(state, panel, &model, &groups)
+}
+
+/// What the pulldown is showing, as the height calculation sees it.
+///
+/// The lines the pulldown shows are read from the pulldown itself: they are
+/// what is on screen, and the height has to answer for what is on screen.
+fn content_for(
+    state: &UiState,
+    panel: &Pulldown,
+    model: &GuiViewModel,
+    sections: &[model::DetailSection],
+) -> placement::Content {
     let jobs = model.cron.as_ref().map_or(0, |cron| cron.jobs.len());
     let record_lines = model.cron.as_ref().map_or(0, |cron| {
         cron.records
@@ -881,11 +1075,6 @@ fn content_for(state: &UiState, panel: &Pulldown) -> placement::Content {
             .map(|record| record.lines().count().max(1))
             .sum::<usize>()
     });
-    let eggpool = model
-        .eggpool
-        .as_ref()
-        .filter(|_| state.eggpool_visible)
-        .map_or(0, |eggpool| eggpool.values.len());
     placement::Content {
         hosts: model.systems.len(),
         online_hosts: model
@@ -894,10 +1083,13 @@ fn content_for(state: &UiState, panel: &Pulldown) -> placement::Content {
             .filter(|card| card.block.online)
             .count(),
         selected: model.selected_id.is_some(),
-        metrics,
-        details: drives.len() + interfaces.len(),
+        selected_online: model
+            .selected
+            .as_ref()
+            .is_some_and(|card| card.block.online),
+        detail_sections: sections.len(),
+        detail_rows: sections.iter().map(|section| section.rows.len()).sum(),
         jobs,
-        eggpool,
         record_lines,
         about: !panel.get_about_text().is_empty(),
         status: !panel.get_status_text().is_empty(),
@@ -1063,14 +1255,14 @@ fn push_view(state: &mut UiState, panel: &slint::Weak<Pulldown>) {
         }
     }
 
-    resize_panel(state, &panel);
+    resize_panel(state, &panel, &content_from_state(state, &panel));
 }
 
 /// Take everything the bridge published and push it into the components.
 fn apply_pending(
     bridge: &Arc<Bridge>,
     state: &Arc<Mutex<UiState>>,
-    panel: &slint::Weak<Pulldown>,
+    panel: Option<&slint::Weak<Pulldown>>,
     tray: &slint::Weak<TrayIcon>,
 ) {
     let messages = bridge.drain();
@@ -1136,11 +1328,35 @@ fn apply_pending(
 }
 
 /// Push the current model into the components.
-fn render(state: &mut UiState, panel: &slint::Weak<Pulldown>, tray: &slint::Weak<TrayIcon>) {
-    let Some(panel) = panel.upgrade() else {
+fn render(
+    state: &mut UiState,
+    panel: Option<&slint::Weak<Pulldown>>,
+    tray: &slint::Weak<TrayIcon>,
+) {
+    // A GUI that is not on screen does not rebuild its view.
+    //
+    // The daemon publishes a document every few seconds, and the model is a
+    // few thousand formatted strings. Building it for a panel nobody is
+    // looking at is work nobody can see, and it is what kept a background
+    // GUI busy — and it churned the heap for nothing. The tray still gets
+    // its two facts, and the pulldown is rebuilt the moment it is opened.
+    if !state.panel_visible {
+        if let Some(tray) = tray.upgrade() {
+            update_tray(state, &tray);
+        }
         return;
-    };
-    let Some(tray) = tray.upgrade() else {
+    }
+
+    render_panel(state, panel);
+
+    if let Some(tray) = tray.upgrade() {
+        update_tray(state, &tray);
+    }
+}
+
+/// Push the current model into the panel.
+fn render_panel(state: &mut UiState, panel: Option<&slint::Weak<Pulldown>>) {
+    let Some(panel) = panel.and_then(|panel| panel.upgrade()) else {
         return;
     };
 
@@ -1160,64 +1376,42 @@ fn render(state: &mut UiState, panel: &slint::Weak<Pulldown>, tray: &slint::Weak
     let hosts: Vec<FleetHost> = model
         .systems
         .iter()
-        .map(|card| {
-            let block = &card.block;
-            let rows: Vec<FleetRow> = block.rows.iter().map(fleet_row).collect();
-            FleetHost {
-                id: block.id.clone().into(),
-                name: block.name.clone().into(),
-                detail: block.detail.clone().into(),
-                online: block.online,
-                selected: model.selected_id.as_deref() == Some(card.id.as_str()),
-                rows: slint::ModelRc::from(rows.as_slice()),
-            }
-        })
+        .map(|card| fleet_host(&card.block, model.selected_id.as_deref()))
         .collect();
     let hosts = slint::ModelRc::from(hosts.as_slice());
     panel.set_hosts(hosts.clone());
 
-    let metrics: Vec<MetricRow> = model
+    // The selected host's own block: the very block the fleet view draws,
+    // pushed into the detail view so the two are the same block and not two
+    // renderings of the same numbers.
+    let detail_host: FleetHost = model
         .selected
         .as_ref()
-        .map(|card| {
-            card.metrics
+        .map(|card| fleet_host(&card.block, model.selected_id.as_deref()))
+        .unwrap_or_else(empty_fleet_host);
+    panel.set_detail_host(detail_host);
+
+    // The groups of detail: the numbers behind the shares, the drives, the
+    // interfaces and — when the operator asked for it — the `EggPool` plane.
+    let groups = detail_groups(state, &model);
+    let sections: Vec<DetailSection> = groups
+        .iter()
+        .map(|section| {
+            let rows: Vec<ValueRow> = section
+                .rows
                 .iter()
-                .map(|row| MetricRow {
+                .map(|row| ValueRow {
                     label: row.label.clone().into(),
-                    pct_text: row.pct_text.clone().into(),
-                    // A row with no reading leaves its bar empty, and an empty
-                    // bar is not a zero: the share is negative, not zero.
-                    fraction: row.pct.map_or(-1.0, |pct| pct / 100.0),
                     value: row.value.clone().into(),
                 })
-                .collect()
-        })
-        .unwrap_or_default();
-    panel.set_metrics(slint::ModelRc::from(metrics.as_slice()));
-
-    // The drive and interface rows come from the document, not from the
-    // card: only the selected host has them.
-    let details: Vec<ValueRow> = state
-        .snapshot
-        .as_ref()
-        .zip(model.selected_id.as_deref())
-        .map(|(snapshot, selected)| {
-            let (drives, interfaces) = model::detail_rows(snapshot, selected);
-            let mut rows: Vec<ValueRow> = drives
-                .into_iter()
-                .map(|drive| ValueRow {
-                    label: drive.mount.clone().into(),
-                    value: drive.usage.clone().into(),
-                })
                 .collect();
-            rows.extend(interfaces.into_iter().map(|interface| ValueRow {
-                label: interface.name.clone().into(),
-                value: interface.throughput.clone().into(),
-            }));
-            rows
+            DetailSection {
+                heading: section.heading.clone().into(),
+                rows: slint::ModelRc::from(rows.as_slice()),
+            }
         })
-        .unwrap_or_default();
-    panel.set_details(slint::ModelRc::from(details.as_slice()));
+        .collect();
+    panel.set_detail_sections(slint::ModelRc::from(sections.as_slice()));
 
     let jobs: Vec<JobRow> = model
         .cron
@@ -1247,53 +1441,42 @@ fn render(state: &mut UiState, panel: &slint::Weak<Pulldown>, tray: &slint::Weak
         .unwrap_or_default();
     panel.set_cron_records(records.into());
 
-    let eggpool: Vec<ValueRow> = model
-        .eggpool
-        .as_ref()
-        .filter(|_| state.eggpool_visible)
-        .map(|eggpool| {
-            eggpool
-                .values
-                .iter()
-                .map(|(label, value)| ValueRow {
-                    label: label.clone().into(),
-                    value: value.clone().into(),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    panel.set_eggpool(slint::ModelRc::from(eggpool.as_slice()));
-
     panel.set_fleet_summary(model.tray_summary.clone().into());
     panel.set_status_text(SharedString::from(connection_text(&state.connection)));
 
-    // The tray shows the fleet health, not the connection state: the tray is
-    // what the operator glances at. The fleet itself is in the pulldown.
-    tray.set_status_text(SharedString::from(tray_status(&model)));
-
     // The selected host's own actions are in the pulldown, aimed at the
     // selection and not at a row's place in the list.
-    let (selected_id, selected_label) = match model.selected_id.as_deref() {
-        Some(selected) => {
-            let label = model
-                .systems
-                .iter()
-                .find(|card| card.id == selected)
-                .map(|card| format!("{}  {}", card.name, card.endpoint))
-                .unwrap_or_default();
-            (selected.to_owned(), label)
-        }
-        None => (String::new(), String::new()),
+    let selected_id = model.selected_id.clone().unwrap_or_default();
+    panel.set_selected_host_id(selected_id.into());
+
+    // The pulldown's size follows what it carries. The host list's height
+    // and the form's height are the two parts of it that are the content's,
+    // and the rest is computed from them.
+    let content = content_for(state, &panel, &model, &groups);
+    panel.set_host_list_height(placement::host_list_height(&content));
+    panel.set_form_height(placement::metrics::FORM_HEIGHT);
+    resize_panel(state, &panel, &content);
+}
+
+/// The tray's two facts: the fleet's health and the fleet's summary.
+///
+/// They are the counts and the first few names, and they are computed from
+/// the document alone — so the tray can be brought up to date without
+/// building the whole view for a panel nobody is looking at.
+fn update_tray(state: &mut UiState, tray: &TrayIcon) {
+    let Some(snapshot) = state.snapshot.as_ref() else {
+        tray.set_status_text(SharedString::from("Gregg"));
+        return;
     };
-    panel.set_selected_host_id(selected_id.clone().into());
-    panel.set_selected_host_label(selected_label.into());
+    let (counts, summary) = model::tray_facts(snapshot);
+    tray.set_status_text(SharedString::from(tray_status(&counts, &summary)));
 
     // The icon carries the health too, so the fleet's state is readable
     // without opening the menu. It is only re-rendered when the health
     // actually changes, because every re-render replaces the platform icon.
-    let health = if model.counts.offline > 0 {
+    let health = if counts.offline > 0 {
         TrayHealth::Offline
-    } else if model.counts.pending > 0 {
+    } else if counts.pending > 0 {
         TrayHealth::Pending
     } else {
         TrayHealth::Healthy
@@ -1302,14 +1485,6 @@ fn render(state: &mut UiState, panel: &slint::Weak<Pulldown>, tray: &slint::Weak
         state.tray_health = Some(health);
         tray.set_tray_icon(tray_icon(health));
     }
-
-    // The pulldown's size follows what it carries. The host list's height
-    // and the form's height are the two parts of it that are the content's,
-    // and the rest is computed from them.
-    let content = content_for(state, &panel);
-    panel.set_host_list_height(placement::host_list_height(&content));
-    panel.set_form_height(placement::metrics::FORM_HEIGHT);
-    resize_panel(state, &panel);
 }
 
 /// Give the pulldown the size its content calls for.
@@ -1317,17 +1492,16 @@ fn render(state: &mut UiState, panel: &slint::Weak<Pulldown>, tray: &slint::Weak
 /// The pulldown is as tall as what it shows, and it is as wide as the fleet
 /// table needs. The operator's own size wins, though: a placement they chose
 /// is not something a new host may overrule.
-fn resize_panel(state: &mut UiState, panel: &Pulldown) {
+fn resize_panel(state: &mut UiState, panel: &Pulldown, content: &placement::Content) {
     if !state.panel_visible {
         return;
     }
-    let content = content_for(state, panel);
     let area = placement::work_area(panel.window());
     let size = placement::panel_size(
         state.panel_size,
         (
             placement::metrics::DEFAULT_WIDTH,
-            placement::content_height(&content),
+            placement::content_height(content),
         ),
         area.as_ref(),
     );
@@ -1354,11 +1528,14 @@ fn connection_text(connection: &ConnectionState) -> String {
 /// It carries the summary — the counts *and* the names of the hosts the
 /// summary can fit — so that the tray alone tells the operator what the
 /// fleet is doing, and the pulldown is opened for the detail.
-fn tray_status(model: &GuiViewModel) -> String {
-    if model.counts.total == 0 {
+///
+/// It is built from the document alone, so the tray can be brought up to date
+/// without building the whole view for a panel nobody is looking at.
+fn tray_status(counts: &model::FleetCounts, summary: &str) -> String {
+    if counts.total == 0 {
         return "Gregg — no systems configured".to_owned();
     }
-    format!("Gregg — {}", model.tray_summary)
+    format!("Gregg — {summary}")
 }
 
 #[cfg(test)]
@@ -1386,9 +1563,8 @@ mod tests {
     /// The components are never constructed: a test has no desktop session,
     /// and the mapping is about the state, not about what is drawn.
     fn apply(bridge: &Arc<Bridge>, state: &Arc<Mutex<UiState>>) {
-        let panel: slint::Weak<Pulldown> = slint::Weak::default();
         let tray: slint::Weak<TrayIcon> = slint::Weak::default();
-        apply_pending(bridge, state, &panel, &tray);
+        apply_pending(bridge, state, None, &tray);
     }
 
     /// A document with the given generation and number of hosts.
@@ -1422,13 +1598,28 @@ mod tests {
     }
 
     #[test]
-    fn the_pulldown_drops_the_application_chrome() {
-        for heading in ["METRICS", "CRON", "EGGPOOL"] {
-            assert!(
-                !SLINT.contains(heading),
-                "the {heading} heading is chrome a dropdown does not have"
-            );
-        }
+    fn the_detail_is_one_condensed_list_and_not_a_stack_of_panes() {
+        // The old detail was a metrics table, a drives table, an interfaces
+        // table, a cron table and an `EggPool` table: a desktop application
+        // wearing a dropdown's clothes. It is now the host's **own block** —
+        // the very block the fleet view draws — and one condensed list under
+        // quiet group labels.
+        assert!(
+            !SLINT.contains("METRICS"),
+            "the metrics pane is gone: the host's block carries the readings"
+        );
+        assert!(
+            !SLINT.contains("metric-label-width") && !SLINT.contains("metric-row-height"),
+            "the metrics table's own geometry is gone"
+        );
+        assert!(
+            SLINT.contains("component HostBlock"),
+            "the host's block is drawn by one component"
+        );
+        assert!(
+            SLINT.contains("component DetailSectionView"),
+            "the detail's groups are drawn by one component"
+        );
         assert!(
             !SLINT.contains("text: \"Close\""),
             "the Close button that overhung the header is gone"

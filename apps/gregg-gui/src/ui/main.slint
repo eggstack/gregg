@@ -119,23 +119,17 @@ export struct ValueRow {
     value: string,
 }
 
-/// One measured row, with the bar that shows its share.
+/// One group of the selected host's detail.
 ///
-/// The TUI draws the same measures as `label [bar] share value`, so the two
-/// read the same way: the bar is the share, the share is a column of its
-/// own, and the value is what the share does not say.
-export struct MetricRow {
-    /// The short label, e.g. `CPU`.
-    label: string,
-    /// The share as text, e.g. `39.4%`. Empty when the platform reported none.
-    pct_text: string,
-    /// The share of the row that is used, in `0..=1`.
-    ///
-    /// Negative when there is no reading at all, so that an empty bar says
-    /// "not measured" rather than "measured as zero".
-    fraction: float,
-    /// The value that is not a share, e.g. `6.1 / 15.5 GiB`.
-    value: string,
+/// A section is a quiet heading and the rows under it: the numbers behind the
+/// shares, the drives, the interfaces, the `EggPool` plane. The heading is
+/// what makes a list of facts readable: an undifferentiated wall of
+/// `name  value` lines is a dump, not a pane.
+export struct DetailSection {
+    /// The section's heading, e.g. `DRIVES`.
+    heading: string,
+    /// The section's rows.
+    rows: [ValueRow],
 }
 
 /// One scheduler job, as the cron pane shows it.
@@ -304,6 +298,216 @@ component FleetMetricRow inherits Rectangle {
     }
 }
 
+/// One host's block: a header line and the five used shares under it.
+///
+/// The fleet view and the detail view draw their host with **this** component,
+/// so the two cannot drift apart: the detail view is the fleet view's own
+/// block and not a second rendering of the same numbers. There is exactly one
+/// bar per used share in the panel, and it is this one's — a host that is
+/// shown twice is shown twice the same way, and never with a second set of
+/// bars.
+component HostBlock inherits Rectangle {
+    /// The host this block is about.
+    in property <FleetHost> host;
+
+    /// The width of the block.
+    in property <length> content-width: 100px;
+
+    /// The colour the quiet text is drawn in.
+    ///
+    /// The caller owns the colour: the window knows the desktop's scheme.
+    in property <color> quiet-color: #0000007F;
+
+    /// The operator clicked this host's block.
+    ///
+    /// The click carries the host's stable id, so an action aimed at a block
+    /// cannot land on whichever host took its place in the list.
+    callback host-clicked(string);
+
+    /// The width of a row's label column, wide enough for `SWP/COMMIT`.
+    private property <length> label-width: 64px;
+    /// The width of a share's column, wide enough for `100%`.
+    private property <length> pct-width: 32px;
+    /// The gap between the label, the bar and the share.
+    private property <length> gap: 6px;
+    /// The height of every bar.
+    private property <length> bar-height: 6px;
+    /// The height of one measured row.
+    private property <length> row-height: 13px;
+    /// The height of the header line.
+    private property <length> header-height: 16px;
+    /// The width of the bar: the whole row less the label, the share and the
+    /// gaps between them.
+    private property <length> bar-width: root.content-width - root.label-width - root.pct-width - 3 * root.gap;
+
+    /// The height of the block: its header and its five rows — or its header
+    /// alone, when the host is not online and has no readings to show.
+    height: root.host.online ? root.header-height + 5 * root.row-height : root.header-height;
+
+    // The selection is a **quiet** tint, not the platform's selection
+    // colour: that colour is a saturated accent, and the palette's own
+    // foreground for it is black on macOS — a bar drawn in it reads as a hole
+    // rather than as a measurement. The host's name carries the accent
+    // instead.
+    background: root.host.selected ? Palette.foreground.with-alpha(0.07) : #00000000;
+
+    // Under the block's contents, so the block's own contents still get their
+    // clicks.
+    TouchArea {
+        clicked => {
+            root.host-clicked(root.host.id);
+        }
+    }
+
+    // The header line: the host's name, and the readings that are not used
+    // shares beside it. The endpoint is not here: the block names the host
+    // and not where it is, the way the TUI's condensed row does.
+    HorizontalLayout {
+        x: 0px;
+        y: 0px;
+        width: root.content-width;
+        height: root.header-height;
+        spacing: 8px;
+
+        Text {
+            text: root.host.name;
+            font-size: 13px;
+            font-weight: 700;
+            color: root.host.selected ? Palette.accent-background : Palette.foreground;
+            horizontal-stretch: 0;
+            vertical-alignment: center;
+            overflow: elide;
+            wrap: no-wrap;
+        }
+
+        Text {
+            text: root.host.detail;
+            font-size: 11px;
+            color: root.quiet-color;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            overflow: elide;
+            wrap: no-wrap;
+        }
+    }
+
+    // The five used shares, one bar each.
+    for metric[index] in root.host.rows : FleetMetricRow {
+        x: 0px;
+        y: root.header-height + index * root.row-height;
+        width: root.content-width;
+        height: root.row-height;
+        metric: metric;
+        label-width: root.label-width;
+        bar-width: root.bar-width;
+        bar-height: root.bar-height;
+        pct-width: root.pct-width;
+        gap: root.gap;
+        quiet-color: root.quiet-color;
+    }
+}
+
+/// A quiet section heading.
+///
+/// It is the heading a menu groups its items under: small, bold, and in the
+/// colour of the text that is not the subject.
+component SectionHeading inherits Rectangle {
+    /// The heading's text.
+    in property <string> text: "";
+
+    /// The width of the heading.
+    in property <length> content-width: 100px;
+
+    /// The colour the heading is drawn in.
+    in property <color> quiet-color: #0000007F;
+
+    height: 15px;
+
+    Text {
+        x: 0px;
+        y: 0px;
+        width: root.content-width;
+        height: root.height;
+        text: root.text;
+        font-size: 10px;
+        font-weight: 700;
+        color: root.quiet-color;
+        vertical-alignment: center;
+        overflow: elide;
+        wrap: no-wrap;
+    }
+}
+
+/// One group of the detail: a heading and the rows under it.
+///
+/// The rows are two columns: the name on the left and the value on the right,
+/// so the values line up and the eye can run down them. The value is in the
+/// quiet colour, because the name is what the row is about and the value is
+/// what the name says.
+component DetailSectionView inherits Rectangle {
+    /// The section this view draws.
+    in property <DetailSection> section;
+
+    /// The width of the section.
+    in property <length> content-width: 100px;
+
+    /// The colour the quiet text is drawn in.
+    in property <color> quiet-color: #0000007F;
+
+    /// The height of one row.
+    private property <length> row-height: 15px;
+    /// The height of the heading.
+    private property <length> heading-height: 15px;
+    /// The width of the name column.
+    private property <length> name-width: 104px;
+    /// How far the rows are indented under the heading.
+    private property <length> indent: 10px;
+
+    height: root.heading-height + root.section.rows.length * root.row-height;
+
+    SectionHeading {
+        x: 0px;
+        y: 0px;
+        width: root.content-width;
+        height: root.heading-height;
+        text: root.section.heading;
+        quiet-color: root.quiet-color;
+    }
+
+    for row[index] in root.section.rows : Rectangle {
+        x: 0px;
+        y: root.heading-height + index * root.row-height;
+        width: root.content-width;
+        height: root.row-height;
+
+        Text {
+            x: root.indent;
+            y: 0px;
+            width: max(0px, root.name-width - root.indent);
+            height: root.row-height;
+            text: row.label;
+            font-size: 11px;
+            color: Palette.foreground;
+            vertical-alignment: center;
+            overflow: elide;
+            wrap: no-wrap;
+        }
+
+        Text {
+            x: root.name-width;
+            y: 0px;
+            width: max(0px, root.content-width - root.name-width);
+            height: root.row-height;
+            text: row.value;
+            font-size: 11px;
+            color: root.quiet-color;
+            vertical-alignment: center;
+            overflow: elide;
+            wrap: no-wrap;
+        }
+    }
+}
+
 export component Pulldown inherits Window {
     title: "Gregg";
     // The pulldown is a popover, not a window: no chrome, and it stays above
@@ -362,20 +566,24 @@ export component Pulldown inherits Window {
     /// The fleet, in display order.
     in property <[FleetHost]> hosts;
 
-    /// The selected host's measured rows.
-    in property <[MetricRow]> metrics;
+    /// The selected host's own block.
+    ///
+    /// It is the same block the fleet view draws, and it is drawn by the same
+    /// component: the detail view is the fleet view's host, opened up, and
+    /// not a second rendering of it.
+    in property <FleetHost> detail-host: {
+        id: "", name: "", detail: "", online: false, selected: true, rows: []
+    };
 
-    /// The selected host's drive and interface rows.
-    in property <[ValueRow]> details;
+    /// The selected host's groups of detail: the numbers behind the shares,
+    /// the drives, the interfaces and the `EggPool` plane.
+    in property <[DetailSection]> detail-sections: [];
 
     /// The selected host's scheduler jobs.
     in property <[JobRow]> jobs;
 
     /// The retained records of the open scheduler job.
     in property <string> cron-records: "";
-
-    /// The `EggPool` plane.
-    in property <[ValueRow]> eggpool;
 
     /// The attribution and about text. Empty until the operator asks for it.
     in property <string> about-text: "";
@@ -480,9 +688,6 @@ export component Pulldown inherits Window {
     /// the moment the operator acts.
     in property <string> selected-host-id: "";
 
-    /// The selected host's name and endpoint, for the actions' row.
-    in property <string> selected-host-label: "";
-
     /// The room the vertical scrollbar takes out of the viewport.
     ///
     /// The scrollbar is drawn over the right-hand edge of the viewport, so
@@ -528,46 +733,16 @@ export component Pulldown inherits Window {
     /// The card's corner radius.
     private property <length> radius: 12px;
 
-    /// The columns of a measured row.
-    ///
-    /// The label's column is wide enough for the longest label the model
-    /// uses (`COMMIT`), the bar has a fixed width so every row's bar starts
-    /// at the same place, and the share's column is wide enough for `100%`.
-    private property <length> metric-label-width: 42px;
-    private property <length> metric-bar-width: 76px;
-    private property <length> metric-bar-height: 6px;
-    private property <length> metric-share-width: 38px;
-    private property <length> metric-row-height: 18px;
-
-    /// The columns of a host's block.
-    ///
-    /// The fleet view is the table turned on its side: each host is a column
-    /// of its own, with a header line above it and one measured row per used
-    /// share under it. The label's column is wide enough for the longest
-    /// label the model uses (`SWP/COMMIT`), and the bar takes everything
-    /// that is left, so it reaches the panel's own edge.
-    private property <length> fleet-label-width: 64px;
-    /// The width of a share's column, wide enough for `100%`.
-    private property <length> fleet-pct-width: 32px;
-    /// The gap between the label, the bar and the share.
-    private property <length> fleet-gap: 6px;
-    /// The height of every bar.
-    private property <length> fleet-bar-height: 6px;
-    /// The height of one measured row.
-    private property <length> fleet-row-height: 13px;
-
-    /// The width of the bar: the whole row less the label, the share and the
-    /// gaps between them.
-    private property <length> fleet-bar-width: root.list-content-width - root.fleet-label-width - root.fleet-pct-width - 3 * root.fleet-gap;
+    /// The columns of a host's block live in the `HostBlock` component
+    /// itself, because the fleet view and the detail view draw their host
+    /// with that one component: a column width that lived here would be a
+    /// width the two views could disagree about.
 
     /// The height of a host's header line.
     private property <length> host-header-height: 16px;
 
     /// The gap between two hosts' blocks.
     private property <length> host-block-gap: 6px;
-
-    /// The height of a host's block: its header and its five rows.
-    private property <length> host-block-height: root.host-header-height + 5 * root.fleet-row-height;
 
     /// The height the attribution text takes when it is shown.
     private property <length> about-height: 56px;
@@ -813,82 +988,22 @@ export component Pulldown inherits Window {
                                 width: root.list-content-width;
                                 spacing: root.host-block-gap;
 
-                                for host in root.hosts : Rectangle {
-                                    // A host that is not online has no
-                                    // readings, so its block is its header
-                                    // line alone: it says why it is offline
-                                    // instead of carrying five empty bars.
-                                    height: host.online ? root.host-block-height : root.host-header-height;
-                                    // The selection is a **quiet** tint, not
-                                    // the platform's selection colour: that
-                                    // colour is a saturated accent, and the
-                                    // palette's own foreground for it is
-                                    // black on macOS — a bar drawn in it
-                                    // reads as a hole rather than as a
-                                    // measurement. The host's name carries
-                                    // the accent instead.
-                                    background: host.selected ? Palette.foreground.with-alpha(0.07) : #00000000;
-
-                                    // Under the block's contents, so the
-                                    // block's own contents still get their
-                                    // clicks.
-                                    TouchArea {
-                                        clicked => {
-                                            root.host-selected(host.id);
-                                        }
-                                    }
-
-                                    // The header line: the host's name, and
-                                    // the readings that are not used shares
-                                    // beside it. The endpoint is not here:
-                                    // the block names the host and not where
-                                    // it is, the way the TUI's condensed row
-                                    // does.
-                                    HorizontalLayout {
-                                        x: 0px;
-                                        y: 0px;
-                                        width: root.list-content-width;
-                                        height: root.host-header-height;
-                                        spacing: 8px;
-
-                                        Text {
-                                            text: host.name;
-                                            font-size: 13px;
-                                            font-weight: 700;
-                                            color: host.selected ? Palette.accent-background : Palette.foreground;
-                                            horizontal-stretch: 0;
-                                            vertical-alignment: center;
-                                            overflow: elide;
-                                            wrap: no-wrap;
-                                        }
-
-                                        Text {
-                                            text: host.detail;
-                                            font-size: 11px;
-                                            color: root.secondary-text;
-                                            horizontal-stretch: 1;
-                                            vertical-alignment: center;
-                                            overflow: elide;
-                                            wrap: no-wrap;
-                                        }
-                                    }
-
-                                    // The five used shares, one bar each.
-                                    for metric[index] in host.rows : FleetMetricRow {
-                                        x: 0px;
-                                        y: root.host-header-height + index * root.fleet-row-height;
-                                        width: root.list-content-width;
-                                        height: root.fleet-row-height;
-                                        metric: metric;
-                                        label-width: root.fleet-label-width;
-                                        bar-width: root.fleet-bar-width;
-                                        bar-height: root.fleet-bar-height;
-                                        pct-width: root.fleet-pct-width;
-                                        gap: root.fleet-gap;
-                                        quiet-color: root.secondary-text;
+                                // Each host is a block: a header line and the
+                                // five used shares under it, one bar each.
+                                //
+                                // The block is drawn by the same component the
+                                // detail view draws the selected host with, so
+                                // the two views cannot drift apart and there
+                                // is one bar per used share in the whole
+                                // panel.
+                                for host in root.hosts : HostBlock {
+                                    host: host;
+                                    content-width: root.list-content-width;
+                                    quiet-color: root.secondary-text;
+                                    host-clicked(id) => {
+                                        root.host-selected(id);
                                     }
                                 }
-
                             }
                         }
                     }
@@ -904,26 +1019,6 @@ export component Pulldown inherits Window {
                         spacing: 6px;
                         vertical-stretch: 1;
 
-                        // Which host the detail is about. The host's own
-                        // actions are in the pulldown's own footer, aimed at
-                        // the selection, and not repeated here.
-                        HorizontalLayout {
-                            spacing: 8px;
-                            alignment: start;
-                            height: root.selected-host-id == "" ? 0px : 18px;
-                            visible: root.selected-host-id != "";
-
-                            Text {
-                                text: root.selected-host-label;
-                                font-size: 11px;
-                                color: Palette.foreground;
-                                horizontal-stretch: 1;
-                                overflow: elide;
-                                wrap: no-wrap;
-                                vertical-alignment: center;
-                            }
-                        }
-
                         // The detail is one scroll container, so it scrolls as
                         // a whole and there is one scroll model.
                         ScrollView {
@@ -934,83 +1029,39 @@ export component Pulldown inherits Window {
 
                             VerticalLayout {
                                 width: root.list-content-width;
-                                spacing: 0px;
+                                spacing: 8px;
 
-                                Rectangle {
-                                    min-height: 1px;
-                                    max-height: 1px;
-                                    background: root.hairline;
+                                // The selected host's own block, drawn by the
+                                // very component the fleet view draws its
+                                // hosts with. The detail view is the fleet
+                                // view's host opened up, and not a second
+                                // rendering of it: there is no second set of
+                                // bars, and the one set there is looks the
+                                // same in both views.
+                                HostBlock {
+                                    host: root.detail-host;
+                                    content-width: root.list-content-width;
+                                    quiet-color: root.secondary-text;
                                 }
 
-                                // A measured row: the label, the bar that shows
-                                // the share, the share itself, and the value
-                                // the share does not say. The columns are
-                                // properties, so every row's bar starts at the
-                                // same place and the row cannot drift from
-                                // the pane it is laid out in.
-                                for row in root.metrics : Rectangle {
-                                    height: root.metric-row-height;
-
-                                    Text {
-                                        x: 0px;
-                                        y: 0px;
-                                        width: root.metric-label-width;
-                                        text: row.label;
-                                        font-size: 12px;
-                                        color: Palette.foreground;
-                                        vertical-alignment: center;
-                                        overflow: elide;
-                                        wrap: no-wrap;
-                                    }
-
-                                    UsageBar {
-                                        x: root.metric-label-width + 4px;
-                                        y: (root.metric-row-height - root.metric-bar-height) / 2;
-                                        width: root.metric-bar-width;
-                                        height: root.metric-bar-height;
-                                        fraction: row.fraction;
-                                        measured: row.fraction >= 0;
-                                    }
-
-                                    Text {
-                                        x: root.metric-label-width + 4px + root.metric-bar-width + 6px;
-                                        y: 0px;
-                                        width: root.metric-share-width;
-                                        text: row.pct_text;
-                                        font-size: 12px;
-                                        color: Palette.foreground;
-                                        vertical-alignment: center;
-                                        horizontal-alignment: right;
-                                        overflow: elide;
-                                        wrap: no-wrap;
-                                    }
-
-                                    Text {
-                                        x: root.metric-label-width + 4px + root.metric-bar-width + 6px + root.metric-share-width + 8px;
-                                        y: 0px;
-                                        width: max(0px, root.list-content-width - (root.metric-label-width + 4px + root.metric-bar-width + 6px + root.metric-share-width + 8px));
-                                        text: row.value;
-                                        font-size: 12px;
-                                        color: Palette.foreground;
-                                        vertical-alignment: center;
-                                        overflow: elide;
-                                        wrap: no-wrap;
-                                    }
+                                // The groups of detail: the numbers behind
+                                // the shares, the drives, the interfaces and
+                                // the `EggPool` plane. A heading and two
+                                // columns make a list of facts readable; a
+                                // wall of `name  value` lines is a dump.
+                                for section in root.detail-sections : DetailSectionView {
+                                    section: section;
+                                    content-width: root.list-content-width;
+                                    quiet-color: root.secondary-text;
                                 }
 
-                                for row in root.details : Text {
-                                    text: row.label + "  " + row.value;
-                                    font-size: 12px;
-                                    color: Palette.foreground;
-                                    overflow: elide;
-                                    wrap: no-wrap;
-                                }
-
-                                Rectangle {
-                                    min-height: 1px;
-                                    max-height: 1px;
-                                    background: root.hairline;
-                                    visible: root.jobs.length > 0;
+                                // The scheduler's jobs. They are their own
+                                // group, because a job is a thing the
+                                // operator acts on and not a reading.
+                                if root.jobs.length > 0 : SectionHeading {
+                                    text: "CRON";
+                                    content-width: root.list-content-width;
+                                    quiet-color: root.secondary-text;
                                 }
 
                                 for job in root.jobs : Rectangle {
@@ -1023,36 +1074,40 @@ export component Pulldown inherits Window {
                                         }
                                     }
 
+                                    // The job's name, its state and its last
+                                    // outcome. The text carries its own
+                                    // place: a `Text` inside a rectangle that
+                                    // is not a layout is centred by Slint
+                                    // unless it says where it is.
                                     Text {
+                                        x: 10px;
+                                        y: 0px;
+                                        width: max(0px, root.list-content-width - 20px);
+                                        height: 22px;
                                         text: job.name + "  " + job.state + "  " + job.outcome;
                                         font-size: 12px;
                                         color: job.selected ? Palette.accent-background : Palette.foreground;
+                                        vertical-alignment: center;
                                         overflow: elide;
                                         wrap: no-wrap;
                                     }
                                 }
 
-                                Text {
-                                    text: root.cron-records;
-                                    font-size: 11px;
-                                    color: Palette.foreground;
-                                    wrap: word-wrap;
-                                    overflow: elide;
-                                }
-
+                                // The records of the open job.
                                 Rectangle {
-                                    min-height: 1px;
-                                    max-height: 1px;
-                                    background: root.hairline;
-                                    visible: root.eggpool.length > 0;
-                                }
+                                    min-height: 0px;
+                                    max-height: 0px;
 
-                                for row in root.eggpool : Text {
-                                    text: row.label + "  " + row.value;
-                                    font-size: 12px;
-                                    color: Palette.foreground;
-                                    overflow: elide;
-                                    wrap: no-wrap;
+                                    Text {
+                                        x: 10px;
+                                        y: 0px;
+                                        width: max(0px, root.list-content-width - 20px);
+                                        text: root.cron-records;
+                                        font-size: 11px;
+                                        color: Palette.foreground;
+                                        wrap: word-wrap;
+                                        overflow: elide;
+                                    }
                                 }
                             }
                         }

@@ -39,6 +39,41 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   pulldown's affordances, aimed at the selection, rather than a button on
   every row.
 
+- **The desktop frontend's detail view is the fleet view's own block, and its
+  extra facts are one condensed list.** The detail view used to be a **second
+  rendering** of the selected host — its own metric table, with its own bar
+  columns, its own column widths and its own headings. It is now the selected
+  host's **own block**, drawn by the **same component** the fleet view draws
+  every host with, so there is **exactly one bar per used share in the panel**
+  and the two views cannot drift apart.
+
+  The extra facts underneath are **one condensed list**: a quiet heading and a
+  two-column row under it, the name on the left and the value on the right. A
+  `RESOURCES` group carries the numbers **behind the shares** the block
+  already shows (`MEM 39%` and `MEM 6.0 / 15.5 GiB`), a `DRIVES` group each
+  mount's own facts — the used and the total, the drive's own share, and what
+  is left of it, with the free space falling back to what is left of the
+  total when the platform reported none, which is the TUI's own rule — and a
+  `NETWORK` group the aggregate first and then each interface, with a link
+  capacity that was **not measured** left **unstated** rather than stated as
+  one.
+
+- **The desktop frontend's idle footprint lost its window.** The pulldown's
+  component is now **built when the operator first opens it**, and a hidden
+  pulldown is **not re-rendered** — the tray keeps the fleet's counts and its
+  summary line straight from the daemon's document, and the pulldown is
+  rebuilt the moment it is opened. Measured on macOS 15 (arm64) against the
+  real daemon and a seven-host fleet, the idle resident set fell from **82 MB**
+  to **45.5 MB**, and the idle CPU is about **1.6 %** of one core.
+
+  The rest of the cost is Slint's own: a trivial Slint app with the same
+  features costs **27–35 MB** with no component at all, **44 MB** with a tray
+  icon and no window, and **62–74 MB** with a window that is never shown.
+  There is **no leak** (`leaks` reports 287 leaks for 14 KB, all in Apple's
+  own machinery), and dropping the window does **not** give the memory back,
+  so the deferred window is a one-off saving — worth thirty megabytes to a GUI
+  that has never been opened.
+
 - **A daemon-executable selection boundary for separately named frontends
   (Plan 188):** `clientd::ensure_running_with_executable` lets a frontend that
   is *not* the `gregg` binary — an optional desktop GUI — name the client it

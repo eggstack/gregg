@@ -333,10 +333,17 @@ carries the readings that are not used shares (the I/O wait, the load, the core
 count and the frequency) in this TUI's own words, and under it a usage bar for
 each of the five used shares — `CPU`, `MEM`, `SWP`/`COMMIT`, `DISK` and `NET` —
 each bar taking the full width of the panel less its percentage. The selected
-host's own numbers are behind the pulldown's own `Detail` control. It is a
+host's own numbers are behind the pulldown's own `Detail` control, and the
+detail is that host's **own block, drawn by the same component the fleet view
+draws every host with** — one bar per used share in the whole panel — with the
+numbers behind the shares, each drive's own facts and each interface's in one
+condensed list underneath. It is a
 second way to *look* at the fleet, never a second way to *poll* it — it
 attaches to the same per-config client daemon over the same local channel, so a
 TUI and a GUI window cost the fleet exactly what one window costs.
+
+The GUI is meant to live in the background, so it stays small: its window is
+built when it is first opened, and a hidden panel is not re-rendered.
 
 ```bash
 cargo build --manifest-path apps/gregg-gui/Cargo.toml --release
