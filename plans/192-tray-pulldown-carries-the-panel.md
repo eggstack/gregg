@@ -100,6 +100,32 @@ the GUI is **not shippable** for Windows or Linux.
 > CI run **`39863031513`** on `9932b57` is **green on all ten jobs**, including the three `GUI`
 > legs — the only authority for this workspace's Windows and Linux behaviour.
 
+> **Amendment, 2026-10-23 (fourth) — the detail view is the fleet view's own block, and the
+> window waits for the operator.**
+> The direction this plan set — *the pulldown reads as a dropdown* — is unchanged and is still the
+> goal. What changed is the pulldown's **detail view** and the moment its **window** is built:
+>
+> - The detail view is now **the fleet view's own block, opened up**: the selected host's block,
+>   drawn by the **same `HostBlock` component** the fleet view draws every host with. There is
+>   therefore **exactly one bar per used share in the panel**, and the two views cannot drift
+>   apart — a host shown twice is shown twice the same way.
+> - The extra facts are **one condensed list** under quiet group headings — `RESOURCES`, `DRIVES`,
+>   `NETWORK` and `EGGPOOL` — a two-column row each: the name on the left, the value on the right.
+>   The old detail was a stack of app-like tables; it is now a single list, and the cron jobs and
+>   their records follow it.
+> - The pulldown's **window is built on the first tray click**, not at start-up, and a hidden
+>   pulldown is not re-rendered. A menu-bar app that nobody has opened yet should not be paying for
+>   a window it never shows: the idle resident set fell from **82 MB** to **45.5 MB** on macOS 15
+>   (arm64) against the real daemon and a seven-host fleet. The component is built **once** and
+>   toggled afterwards, because dropping it does not give the memory back.
+>
+> The amendment changes the pulldown's *shape*, not its *behaviour*: the tray's click still opens
+> the pulldown, the pulldown still carries the content, there is still no launcher entry, and the
+> protocol is still untouched.
+>
+> CI run **`39909338640`** on `62e74f9` is **green on all ten jobs**, including the three `GUI`
+> legs — the only authority for this workspace's Windows and Linux behaviour.
+
 ## Objective
 
 Make the **tray's click open the pulldown**, and make the pulldown **carry the panel's contents**
@@ -628,7 +654,7 @@ desktop — on macOS, on Windows and on a real GNOME session, recording which ge
 there. Until that is done, the GUI stays a **source build** and is not shippable for Windows or
 Linux.
 
-### Third amendment — the detail view became the fleet view's own block (2026-10-23)
+### Fourth amendment — the detail view became the fleet view's own block (2026-10-23)
 
 The plan's fleet view is a table of blocks, and the detail view was a
 **second rendering** of the selected host: its own metric table, with its own
@@ -664,3 +690,7 @@ which is environmental and not the change's doing, so the previous binary was
 started and clicked the same way and behaved the same. The detail view was
 rendered natively from a build whose panel opened directly in the detail view
 (a temporary start-up default, since reverted).
+
+CI run **`39909338640`** on `62e74f9` is **green on all ten jobs**, including the
+three `GUI` legs — the only authority for this workspace's Windows and Linux
+behaviour.

@@ -903,6 +903,25 @@ pulldown's own and is the same one the footer control reaches. The Windows and
 Linux legs are authority in the GUI CI job, not here, and the macOS Intel
 build was not produced locally.
 
+**The CI run that covers this work** is **`39909338640`**, against `62e74f9`, and
+it is **green on all ten jobs**: the core `Linux`, `macOS (macos-15)`,
+`macOS (macos-15-intel)`, `Windows`, `Scripts`, `MSRV` and `FreeBSD` jobs, and
+the three `GUI` legs (`macos-15`, `windows-2022`, `ubuntu-latest`). The `GUI`
+legs are the only authority for this workspace's Windows and Linux behaviour,
+because the workspace is not a member of the root workspace and no root job
+compiles it.
+
+**The root workspace's `cargo test -p gregg --lib` does not pass on this macOS
+host**, and did not before this work either: the run fails **13 to 17** tests
+depending on the run, in the `eggpool` worker races, the `clientd::ipc`
+temp-directory path and the timing-sensitive `scheduler::fleet_scaling_*` tests,
+and the **set varies from run to run**. The branch's state before this work
+(`99de6b8`) fails **13** on the same host in the same session. Nothing under
+`crates/gregg/src/` was changed by this work except the one shared wording
+helper, whose own tests (`cargo test -p gregg --lib ui::text`, **26 passed**)
+are green; the GUI workspace's own suite is **150 passed / 0 failed** and its
+clippy is clean under `-D warnings`.
+
 ### The native exercises, on CI run `39811582623`
 
 The GUI workspace is not a member of the root workspace, so no root job
