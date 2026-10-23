@@ -1182,6 +1182,34 @@ tests fail **13 tests on this host right now** — three runs in a row — so th
 condition is the daemon's and not this line's. The commit it is recorded
 against was green on all ten CI jobs.
 
+**The CI runs.** Run **`39968561479`** against `fd11201` is **green on all ten
+jobs** — the core `Linux`, `macOS (macos-15)`, `macOS (macos-15-intel)`,
+`Windows`, `Scripts (shellcheck + pytest)`, `MSRV (Rust 1.89)` and
+`FreeBSD (gregg-host native)` jobs, and the three `GUI` legs (`macos-15`,
+`windows-2022`, `ubuntu-latest`). The implementation itself, `7c19581`, was
+green on all ten jobs on run **`39963924905`**. The `GUI` legs are the only
+authority for this workspace's Windows and Linux behaviour, because the
+workspace is not a member of the root workspace and no root job compiles it.
+
+One run in between **failed**, and it is recorded here rather than forgotten:
+run **`39966757278`** against `4e7c073` failed the `GUI (windows-2022)` leg,
+because the two tests that commit added assumed the **top** anchor — the
+macOS and Linux one — while Windows hangs the pulldown from the **bottom**,
+where the taskbar is:
+
+```text
+a_drag_remembers_a_relative_placement
+  left: Some(Offset { x: 200.0, y: 560.0 })
+ right: Some(Offset { x: 200.0, y: 0.0 })
+```
+
+The trailing gap — the `x` — is right on both; the vertical gap is measured
+from the edge the pulldown hangs from, and that edge is the bottom on
+Windows. `fd11201` states what is true on every platform instead, and the
+anchor was checked the only way it can be without a Windows host: the
+`Anchor::for_platform()` branch was flipped to the Windows one locally and
+the suite was run, and both tests pass under it.
+
 ### The native exercises, on CI run `39811582623`
 
 The GUI workspace is not a member of the root workspace, so no root job

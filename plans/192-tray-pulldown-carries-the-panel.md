@@ -193,6 +193,13 @@ the GUI is **not shippable** for Windows or Linux.
 > the tray's click still opens the pulldown, the pulldown still carries the content, there is still
 > no launcher entry, and the protocol is still untouched. The change is in the platform-neutral
 > placement code, so all three targets carry it.
+>
+> CI run **`39968561479`** on `fd11201` is **green on all ten jobs**, including the three `GUI`
+> legs — the only authority for this workspace's Windows and Linux behaviour. The implementation
+> itself, `7c19581`, was green on all ten jobs on run **`39963924905`**. The run in between,
+> **`39966757278`** against `4e7c073`, failed the `GUI (windows-2022)` leg: the two tests that
+> commit added assumed the **top** anchor, and Windows hangs the pulldown from the bottom, where
+> the taskbar is. The fix is `fd11201`.
 
 ## Objective
 

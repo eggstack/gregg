@@ -215,11 +215,13 @@ its own close control; there is **no click-away dismissal**, because Slint 1.18
 exposes no focus-lost event, and that limit is stated in the user
 documentation rather than papered over. It is anchored to the trailing edge of
 the display, on the side where the desktop's own shell lives, clamped so it can
-never open off the screen, and it keeps the position and size the operator gave
+never open off the screen, and it keeps the placement and size the operator gave
 it — a borderless panel carries its own header strip to drag it and its own
-corner grip to resize it. Its colours come from Slint's `Palette`, so it
-follows the desktop's scheme, and its buttons and text fields come from
-`std-widgets`, so they have the hover and pressed states a popover needs.
+corner grip to resize it. The placement it keeps is **relative to the display's
+own corner**, not a place: see the third placement trap below. Its colours come
+from Slint's `Palette`, so it follows the desktop's scheme, and its buttons and
+text fields come from `std-widgets`, so they have the hover and pressed states a
+popover needs.
 
 **The tray's click opens the pulldown, and the pulldown carries the content**
 (Plan 192). The native tray menu is **not** the dropdown: it is the context
@@ -234,17 +236,36 @@ window, because a native menu cannot host Slint widgets, and it is still
 anchored to the trailing corner, because Slint 1.18 does not expose the tray
 item's position.
 
-Two placement traps to know, both closed by Plan 192 and both real defects
-before it. Slint's `with_winit_window` "will only succeed when the event loop
-is active", so the **first open must be deferred into the event loop** or the
-panel is never positioned, never clamped to the work area, and its size is
-never clamped either. And the geometry is **persisted**: it lives in a small
-state file beside the config — `<config>.gui-state` — read bounded (4 KiB)
+Three placement traps to know, all three real defects before they were closed.
+The first two were closed by Plan 192. Slint's `with_winit_window` "will only
+succeed when the event loop is active", so the **first open must be deferred
+into the event loop** or the panel is never positioned, never clamped to the
+work area, and its size is never clamped either. And the geometry is
+**persisted**: it lives in a small state file beside the config —
+`<config>.gui-state` — read bounded (4 KiB)
 and validated and written atomically, so it survives a restart and a corrupt
 file falls back to the default instead of failing the GUI. The size is
 computed by **Rust**, because Slint 1.18 cannot expose a layout's preferred
 size to a `.slint` file: `placement::metrics` holds the numbers and a test
 asserts them against the `.slint` literals so the two cannot drift.
+
+**A third placement trap, and the one that is easy to re-introduce: what the
+GUI remembers must be an OFFSET, not a position.** The anchor is computed from
+the work area of the display the window is on, so it already accounts for that
+display's size and scale — but a remembered **position** wins over the anchor,
+and a position names a place on *one* display. A pulldown placed on a
+1512-point laptop display and opened on a 3840×1080 one landed 2382 points from
+the tray: on screen, the right size, and nowhere near the icon whose click
+opened it. What is persisted is the **gap at the trailing edge** and the **gap
+at the edge the panel hangs from** (`offset=12.5,0.0`), measured against the
+display it was placed on, and the file's older `position=` key is **not read**:
+reading it would reproduce the defect the offset exists to fix. The offset is
+measured against the position the GUI **asked for**, never against the
+position the window reports back — in another application's full-screen space
+macOS draws the window 26 points lower than it was asked to be, and a
+placement measured from the window's own report would carry that shift into
+the memory, so the panel would open a little lower every time and never come
+back. `UiState::drag_panel` is where that rule lives, and a test says so.
 
 **The GUI may write the configuration file, and only through the CLI's own
 code** (Plan 191). The panel's add, remove and rename go through
