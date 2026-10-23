@@ -714,6 +714,11 @@ has a job of its own. The `gui` job in `.github/workflows/ci.yml` runs on
   window** for its process, and that the client daemon it launched is running
   and really polling the remote.
 
+Both exercises **wait** for the GUI's `pulldown=placed` line, within their own
+timeouts, rather than reading the output once: the line is printed when the
+pulldown's native window exists, and the native window is created on the event
+loop's own terms — so the line comes when it comes.
+
 `scripts/check-gui.sh` runs the same format, lint, test and build checks on a
 developer machine, and prints the release binary's size.
 

@@ -1022,13 +1022,14 @@ whole change is inside `#[cfg(target_os = "macos")]`. No macOS leg of the GUI
 CI job exercises the tray at all, so this behaviour is **not** covered by CI;
 it is covered by the native exercise above.
 
-**The CI run that covers this work** is **`39922180617`**, against `d0cd31c`,
+**The CI run that covers this work** is **`39927427831`**, against `22e1bce`,
 and it is **green on all ten jobs**: the core `Linux`, `macOS (macos-15)`,
 `macOS (macos-15-intel)`, `Windows`, `Scripts`, `MSRV` and `FreeBSD` jobs, and
-the three `GUI` legs (`macos-15`, `windows-2022`, `ubuntu-latest`). The `GUI`
-legs are the only authority for this workspace's Windows and Linux behaviour,
-because the workspace is not a member of the root workspace and no root job
-compiles it.
+the three `GUI` legs (`macos-15`, `windows-2022`, `ubuntu-latest`). The
+implementation itself, `d0cd31c`, was green on all ten jobs on run
+**`39922180617`**. The `GUI` legs are the only authority for this workspace's
+Windows and Linux behaviour, because the workspace is not a member of the root
+workspace and no root job compiles it.
 
 The GUI workspace's own suite is **153 passed / 0 failed** and its clippy is
 clean under `-D warnings`. The root workspace's `cargo test -p gregg --lib`

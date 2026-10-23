@@ -157,8 +157,9 @@ the GUI is **not shippable** for Windows or Linux.
 > entry, and the protocol is still untouched. The whole change is inside
 > `#[cfg(target_os = "macos")]`.
 >
-> CI run **`39922180617`** on `d0cd31c` is **green on all ten jobs**, including the three `GUI`
-> legs — the only authority for this workspace's Windows and Linux behaviour.
+> CI run **`39927427831`** on `22e1bce` is **green on all ten jobs**, including the three `GUI`
+> legs — the only authority for this workspace's Windows and Linux behaviour. The implementation
+> itself, `d0cd31c`, was green on all ten jobs on run **`39922180617`**.
 
 ## Objective
 
@@ -813,7 +814,8 @@ byte-identical code, so this was the harness's timing and not the GUI's. The
 Linux exercise now **waits** for the line, within the budget it already has,
 which is what the Windows exercise already did.
 
-CI run **`39922180617`** on `d0cd31c` is **green on all ten jobs**, including
+CI run **`39927427831`** on `22e1bce` is **green on all ten jobs**, including
 the three `GUI` legs — the only authority for this workspace's Windows and
-Linux behaviour.
+Linux behaviour. The implementation itself, `d0cd31c`, was green on all ten
+jobs on run **`39922180617`**.
 
