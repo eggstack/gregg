@@ -534,9 +534,11 @@ mod tests {
     ///
     /// It is short on purpose: the transient this tolerates is a
     /// close-to-exec boundary, which is microseconds wide.
+    #[cfg(unix)]
     const PROBE_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_millis(50);
 
     /// How many times a probe that could not *run* the executable is retried.
+    #[cfg(unix)]
     const PROBE_RETRIES: usize = 3;
 
     /// Resolve the daemon, retrying a probe that could not **run** the
@@ -552,6 +554,7 @@ mod tests {
     /// Only the test's own write-then-exec window is at fault, so the *test*
     /// retries: a retry that still fails fails the test, and a retry that
     /// succeeds proves the executable was never the problem.
+    #[cfg(unix)]
     fn resolve_daemon_retrying(explicit: &Path, frontend: &Path) -> DaemonResolution {
         let mut resolution = resolve_daemon(Some(explicit), frontend);
         for _ in 0..PROBE_RETRIES {

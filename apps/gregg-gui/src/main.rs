@@ -1609,9 +1609,10 @@ fn connection_text(connection: &ConnectionState) -> String {
 
 /// The tray's tooltip: the fleet's health, in one line.
 ///
-/// It carries the summary — the counts *and* the names of the hosts the
-/// summary can fit — so that the tray alone tells the operator what the
-/// fleet is doing, and the pulldown is opened for the detail.
+/// It carries the summary — the fleet's counts, and the hosts that are not
+/// answering only when there are any — so that the tray alone tells the
+/// operator what the fleet is doing, and the pulldown is opened for the
+/// detail.
 ///
 /// It is built from the document alone, so the tray can be brought up to date
 /// without building the whole view for a panel nobody is looking at.

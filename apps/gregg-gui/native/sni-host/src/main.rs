@@ -173,8 +173,14 @@ struct Args {
     config: PathBuf,
     /// Text that must appear in the tray's tooltip.
     expect_status: String,
-    /// Text that must appear in one of the tray menu's labels.
-    expect_host_name: String,
+    /// The fixture host's name, which the tray's tooltip must **not** name.
+    ///
+    /// The tray's one line is the fleet's counts and nothing else: a line
+    /// that also carried the host names was elided away on any fleet of any
+    /// size. The counts are what prove the tray carries the *fleet* and not
+    /// a placeholder, because they only appear once the first fleet document
+    /// has arrived.
+    host_name: String,
     /// How long any single wait may take.
     timeout: Duration,
 }
@@ -191,7 +197,7 @@ fn parse_args() -> Result<Args, String> {
     let mut gregg: Option<PathBuf> = None;
     let mut config: Option<PathBuf> = None;
     let mut expect_status: Option<String> = None;
-    let mut expect_host_name: Option<String> = None;
+    let mut host_name: Option<String> = None;
     let mut timeout: Option<Duration> = None;
 
     let mut iter = std::env::args().skip(1);
@@ -215,8 +221,8 @@ fn parse_args() -> Result<Args, String> {
             "--expect-status" => {
                 expect_status = Some(next_value(&mut iter, "--expect-status")?);
             }
-            "--expect-host-name" => {
-                expect_host_name = Some(next_value(&mut iter, "--expect-host-name")?);
+            "--host-name" => {
+                host_name = Some(next_value(&mut iter, "--host-name")?);
             }
             "--timeout-secs" => {
                 let value = next_value(&mut iter, "--timeout-secs")?;
@@ -235,7 +241,7 @@ fn parse_args() -> Result<Args, String> {
         gregg: gregg.ok_or("--gregg is required")?,
         config: config.ok_or("--config is required")?,
         expect_status: expect_status.ok_or("--expect-status is required")?,
-        expect_host_name: expect_host_name.ok_or("--expect-host-name is required")?,
+        host_name: host_name.ok_or("--host-name is required")?,
         timeout: timeout.unwrap_or(Duration::from_secs(90)),
     })
 }
@@ -770,8 +776,10 @@ async fn run_with_host(args: &Args) -> Result<(), String> {
     // has arrived. So the properties are polled, not read once.
     let state = loop {
         let candidate = read_item_state(&connection, item_bus_name.as_str()).await?;
-        let tooltip_carries = candidate.tooltip_title.contains(&args.expect_status)
-            && candidate.tooltip_title.contains(&args.expect_host_name);
+        // The tooltip carries the fleet's *counts*, and the counts only
+        // appear once the first fleet document has arrived: that is what
+        // proves the tray carries the fleet and not a placeholder.
+        let tooltip_carries = candidate.tooltip_title.contains(&args.expect_status);
         let menu_carries = candidate
             .labels
             .iter()
@@ -782,11 +790,10 @@ async fn run_with_host(args: &Args) -> Result<(), String> {
         if Instant::now() >= deadline {
             return Err(format!(
                 "the tray never carried the live fleet state: the tooltip was {:?} \
-                 (expected it to contain {:?} and {:?}) and the menu labels were {:?} \
+                 (expected it to contain {:?}) and the menu labels were {:?} \
                  (expected one to mention {:?})",
                 candidate.tooltip_title,
                 args.expect_status,
-                args.expect_host_name,
                 candidate.labels,
                 QUIT_ENTRY
             ));
@@ -815,9 +822,22 @@ async fn run_with_host(args: &Args) -> Result<(), String> {
         "tray-tooltip-carries-the-fleet-status",
         format!("the tooltip is {:?}", state.tooltip_title),
     );
+    // The one line is the fleet's counts and nothing else. A line that also
+    // carried the host names was elided away on any fleet of any size, so
+    // the tooltip must not name a host.
+    if state.tooltip_title.contains(&args.host_name) {
+        return Err(format!(
+            "the tray's tooltip names a host: {:?} (the one line is the fleet's \
+             counts, not a list of names)",
+            state.tooltip_title
+        ));
+    }
     pass(
-        "tray-tooltip-carries-the-fleet",
-        format!("the tooltip mentions {:?}", args.expect_host_name),
+        "tray-tooltip-carries-the-counts-not-the-names",
+        format!(
+            "the tooltip is {:?} and does not name {:?}",
+            state.tooltip_title, args.host_name
+        ),
     );
     pass(
         "tray-menu-is-the-context-menu",

@@ -202,6 +202,14 @@ the GUI is **not shippable** for Windows or Linux.
 > crate. **Here it belongs to this branch's own crate**, so the repair is applied here: a
 > **test-only** retry of a probe whose diagnostic says the executable could not be run. The
 > product changed nothing — it reported the failed spawn as a diagnostic, which is correct.
+>
+> The next run, **`39985312878`**, was **green on seven jobs** and failed **both** of the two
+> remaining `GUI` legs, and both failures were this work's: the retry helper was `#[cfg(unix)]`
+> only in the *tests* that use it, so on Windows it was dead code and the CI's `-D warnings` made
+> that a failure; and the **native Linux exercise** was asserting the *old* summary — it waited
+> for the tooltip to name the fixture's host, which is exactly what this amendment removed. The
+> exercise now asserts what the summary **is** (the counts) and what it **is not** (a host's
+> name), and its `--expect-host-name` became `--host-name`.
 
 > **Amendment, 2026-10-23 (sixth) — the remembered placement is an offset, not a position.**
 > The direction this plan set — *the pulldown reads as a dropdown* — is unchanged and is still the
@@ -732,9 +740,14 @@ to the GUI workspace.
   it keeps a right-click on the tray icon useful on the two platforms where a right-click still
   reaches it. On macOS it is detached entirely, because an attached menu swallows the click that
   has to open the pulldown.
-- **The tray's tooltip carries the fleet summary** — the counts and up to five host names — so
-  the tray still states the fleet's health without being opened, and the native exercise's
-  `--expect-host-name` has a target. The summary is also in the pulldown's header.
+- **The tray's tooltip carries the fleet summary** — the counts, and the hosts that are not answering
+  only when there are any — so the tray still states the fleet's health without being opened. The
+  summary is also in the pulldown's header.
+  > **Amended by the seventh amendment.** The summary no longer carries the host names: a line that
+  > always carried three counts and a list of names was elided away on any fleet of any size. The
+  > native exercise's `--expect-host-name` became `--host-name`, and it now asserts that the
+  > tooltip does **not** name a host: the counts are what prove the tray carries the *fleet* and
+  > not a placeholder.
 - **The shadow is drawn by hand.** Slint's software renderer has no box shadow, and a vendored
   patch of Slint's runtime code is excluded by this plan.
 

@@ -1323,10 +1323,12 @@ The GUI workspace's own suite is **166 passed / 0 failed** (160 before this
 work, plus six new tests), its clippy is clean under `-D warnings`, and its
 formatting is clean.
 
-**The CI run that covers this work failed once, and the failure is recorded
-here rather than forgotten.** Run **`39982133374`** against `054fffc` was
-**green on nine jobs** — every core job and both of the other two `GUI` legs —
-and **failed the `GUI (ubuntu-latest)` leg** on one test:
+**The CI runs that cover this work, and the two that failed.** Two runs failed
+and both are recorded here rather than forgotten.
+
+Run **`39982133374`** against `054fffc` was **green on nine jobs** — every core
+job and both of the other two `GUI` legs — and **failed the `GUI (ubuntu-latest)`
+leg** on one test:
 
 ```text
 bridge::tests::an_explicit_client_must_identify_itself
@@ -1349,10 +1351,44 @@ the flake lives: `bridge.rs`'s test helper `resolve_daemon_retrying` retries a
 probe whose diagnostic says the executable **could not be run** — three times,
 fifty milliseconds apart — and a retry that still fails still fails the test.
 Nothing in the product changed: the GUI reported the failed spawn as a
-diagnostic, which is the correct behaviour, and it still does.
+diagnostic, which is the correct behaviour, and it still does. The sibling test
+now also asserts that the tool was **run and refused** rather than merely
+failed to start, so a transient cannot satisfy it by accident.
 
-The sibling test now also asserts that the tool was **run and refused** rather
-than merely failed to start, so a transient cannot satisfy it by accident.
+Run **`39985312878`** against `7823cfe` was **green on seven jobs** and failed
+**both** of the two remaining `GUI` legs, and **both** failures were this
+work's:
+
+```text
+GUI (windows-2022)
+error: constant `PROBE_RETRY_PAUSE` is never used
+error: constant `PROBE_RETRIES` is never used
+error: function `resolve_daemon_retrying` is never used
+```
+
+The retry helper is only used by the two `#[cfg(unix)]` tests, so on Windows it
+is dead code — and the CI runs with `-D warnings`, so dead code is a failure.
+The helper and its two constants are `#[cfg(unix)]` now, like the tests that
+use them.
+
+```text
+GUI (ubuntu-latest)
+sni-host: FAIL the tray never carried the live fleet state: the tooltip was
+"Gregg — 1 online" (expected it to contain "1 online" and "gui-fixture") and
+the menu labels were ["Quit Gregg"] (expected one to mention "Quit Gregg")
+```
+
+The **native exercise** was asserting the *old* summary: it waited for the
+tooltip to name the fixture's host, which is exactly what this work removed.
+The tooltip carries `1 online` and nothing else now, so the exercise's premise
+was wrong, not the GUI.
+
+The exercise now asserts what the summary **is** — the counts — and what it
+**is not**: the tooltip must not name a host. The counts are still the proof
+that the tray carries the *fleet* and not a placeholder, because they only
+appear once the first fleet document has arrived. The exercise's
+`--expect-host-name` became `--host-name`, and the pass it prints is now
+`tray-tooltip-carries-the-counts-not-the-names`.
 
 ### The native exercises, on CI run `39811582623`
 

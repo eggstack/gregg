@@ -43,12 +43,15 @@ GREGG=""
 HELPER=""
 PYTHON="python3"
 FIXTURE="${REPO_ROOT}/scripts/tests/fleet-fixture.py"
-# The name the fixture host is configured under. The tray's tooltip names the
-# hosts it shows, so this is what proves the tray carries the *fleet* and
-# not a placeholder.
+# The name the fixture host is configured under. The tray's one line is the
+# fleet's *counts* and nothing else, so this is what the tooltip must NOT
+# name: a line that also carried the host names was elided away on any fleet
+# of any size.
 readonly HOST_NAME="gui-fixture"
 # What the tray's tooltip is expected to say about a healthy single-host
-# fleet. The wording comes from the GUI's own `tray_status()`.
+# fleet. The wording comes from the GUI's own `tray_status()`, and it is what
+# proves the tray carries the *fleet* and not a placeholder: the counts only
+# appear once the first fleet document has arrived.
 readonly EXPECT_STATUS="1 online"
 
 WORK_DIR=""
@@ -183,7 +186,7 @@ dbus-run-session -- "${HELPER}" \
     --gregg "${GREGG}" \
     --config "${WORK_DIR}/gregg.toml" \
     --expect-status "${EXPECT_STATUS}" \
-    --expect-host-name "${HOST_NAME}" \
+    --host-name "${HOST_NAME}" \
     --timeout-secs 90
 
 # ------------------------------------------------------------- pass two
@@ -195,7 +198,7 @@ dbus-run-session -- "${HELPER}" \
     --gregg "${GREGG}" \
     --config "${WORK_DIR}/gregg.toml" \
     --expect-status "${EXPECT_STATUS}" \
-    --expect-host-name "${HOST_NAME}" \
+    --host-name "${HOST_NAME}" \
     --timeout-secs 90
 
 log "PASS both Linux tray passes"

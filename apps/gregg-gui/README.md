@@ -1075,8 +1075,8 @@ makes the difference attributable.
 | The GUI before Plan 191 (the separate monitor window) | 10,803,360 bytes (10.3 MiB) |
 | The GUI after Plan 191 (the tray pulldown, with host management) | 11,896,608 bytes (11.3 MiB) |
 | The GUI with the fleet view as a table of blocks (the previous build) | 12,012,560 bytes (11.5 MiB) |
-| **The GUI now** (the same fleet view, and a detail view that is the *same block* plus one condensed list) | **11,996,064 bytes** (11.4 MiB) |
-| **Difference** (before Plan 191 → now) | **+1,192,704 bytes (+11.0%)** |
+| **The GUI now** (the same fleet view, and a detail view that is the *same block* plus one condensed list) | **11,962,992 bytes** (11.4 MiB) |
+| **Difference** (before Plan 191 → now) | **+1,159,632 bytes (+10.7%)** |
 | The same GUI calling `gregg::cli::dispatch` (the rejected alternative) | 14,761,600 bytes |
 
 So the pulldown and the host-management forms cost about **1.02 MiB** more
