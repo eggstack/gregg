@@ -325,6 +325,52 @@ the GUI is **not shippable** for Windows or Linux.
 > Linux behaviour, because the workspace is not a member of the root workspace and no root job
 > compiles it.
 
+> **Amendment, 2026-10-23 (ninth) — the scroll box reaches the bottom, the two views share one
+> box, and the pulldown is narrower.**
+> The direction this plan set is unchanged. This amendment fixes a **defect** the earlier amendments
+> left in the pulldown's *layout*, and it is a defect that made the plan's own goal — *the
+> pulldown reads as a dropdown* — untrue in two ways: the pulldown carried a band of dead space
+> that no dropdown has, and it was **too wide** for what it carries.
+>
+> **What was wrong.** The fleet's scroll box was **201 points** tall in a body that had **348**, so
+> **147 points of dead space** sat between the last host and the footer's strip. The detail view's
+> box was **51 points**, which showed a host's name and three rows and nothing else — so "the
+> detail button does not do its job" and "there is no way back" were the same defect seen from
+> two sides: the pane was too short to read, and the way back was a link that had moved
+> twenty-two points up, because the panel resized when the detail opened.
+>
+> **Why.** Two panes that were merely **invisible** were still **220 points tall each**: the *Add a
+> host* and *Edit a host* forms, which are always in the tree because their fields have to be
+> nameable — the eighth amendment made that necessary, because the focus aggregate names them.
+> A Slint layout lays out the **invisible** items as if they were visible: they are not painted,
+> but they still claim their height, and the layout squeezes the items around them to make room.
+> The two forms took **440 points** of a body that had **348**. `visible: false` hides a pane; it
+> does not unmake it.
+>
+> **What changed.**
+>
+> - A hidden pane declares **zero height** — its preferred height, its maximum height *and* its
+>   minimum height, because the fluent scroll container has a fifty-point floor of its own and a
+>   floor is a floor whether the pane is visible or not.
+> - The fleet view and the detail view scroll in **one** box, and so they share **one** height:
+>   opening the detail does not resize the panel, and the footer's control that brings the fleet
+>   back never moves under the pointer. The box is the fleet's blocks, bounded so that a large
+>   fleet scrolls, and floored so that the detail always has room to be read. The detail's own
+>   content — the drives, the interfaces, the scheduler and the records — is very often taller
+>   than the fleet's list, and it **scrolls**; the pulldown's size is the fleet's business.
+> - The pulldown is **194 points narrower**: **412 px** rather than 606. It is a dropdown, and
+>   most of what it carries is vertical, so a panel wider than the row is mostly empty. The bar
+>   still takes the whole row less the percentage.
+>
+> **Measured, on the same fleet, before and after.** The fleet's box: **201 → 348** points — the
+> whole body, down to the footer. The detail's box: **51 → 348**. The panel: **606 → 412** points
+> wide. The panel's height does not change between the two views any more, so the footer does not
+> move: the *same* control brings the fleet back.
+>
+> The Rust side follows: `placement::box_height()` is the one number the `.slint` is given, the
+> detail's own height estimate is gone with the detail's own row counts, and two tests hold the
+> shape — `a_hidden_form_takes_no_room` and `the_fleet_and_the_detail_share_one_box`.
+
 ## Objective
 
 Make the **tray's click open the pulldown**, and make the pulldown **carry the panel's contents**

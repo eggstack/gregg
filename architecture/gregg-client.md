@@ -613,6 +613,24 @@ hold an unbounded list: before, a 25-host fleet pushed the metrics, cron and
 scroll container with a bounded height, so the panel keeps its size and every
 pane stays reachable.
 
+The two views scroll in **one** box, and that box is the panel's body: the
+fleet's blocks, bounded so that a large fleet scrolls, and floored so that the
+detail always has room to be read. Sharing the box means the panel's height
+does not change when the operator opens the detail, so the footer's control
+that brings the fleet back never moves under the pointer. A **hidden pane
+takes no room at all**: the two forms are always in the tree, because their
+fields have to be nameable, and a Slint layout lays out the invisible items as
+if they were visible — so two 220-point forms that were merely hidden took
+440 points of the body's height and left the fleet's scroll box a third of
+what the panel had room for. `visible: false` hides a pane; it does not
+unmake it.
+
+The pulldown is a **dropdown**, and most of what it carries is vertical, so it
+is **412 points** wide: a host's block is a header line and five rows, and the
+detail's groups are a heading and a column of facts, so a panel wider than
+the row is mostly empty. The bar still takes the whole row less the
+percentage.
+
 The pulldown's **appearance** is a load-bearing part of the same story, and one
 of its facts was a defect. A macOS dropdown is a rounded card of translucent
 material with a hairline edge and a soft shadow, and the pulldown is built to

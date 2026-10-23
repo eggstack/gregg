@@ -1547,6 +1547,83 @@ The GUI workspace's own suite is **174 passed / 0 failed** (166 before this
 work, plus eight new tests), its clippy is clean under `-D warnings`, its
 formatting is clean, and its release binary is **11,979,536 bytes**.
 
+### The scroll box stopped short of the bottom, and the detail was too short to read (2026-10-23)
+
+The next report was about the pulldown's **layout**: the fleet's scroll box was
+much shorter than it had been and stopped short of the bottom, the pulldown was
+too wide for what it carries, the detail button did not do its job, and there
+was no way back to the fleet view once the detail was open.
+
+**What was measured, before anything was changed.** The panel was **606 × 446**
+and the fleet's content was clipped at **y = 249**, while the body's own space
+ran on to **y = 396** — **147 points of dead space** between the last host and
+the footer's strip. The detail view's content was clipped at **y = 98**: the
+host's block, three rows, and nothing else.
+
+**The cause was two invisible panes.** A temporary diagnostic build printed the
+layout's own numbers from inside the panel:
+
+```text
+DIAG list=348 svh=155.33333 vis=155.33333 cont=603 lay=201.33333
+```
+
+The box was asked for **348** points and got **201.33** — exactly
+`348 − 2 × 73.33`. The body's cells were the notices, the fleet, the two forms
+and the attribution, and the two forms claimed **220 points each** whether they
+were showing or not: **440 points** out of a body that had **348**, so the
+deficit was shared out and the fleet's box was left with 201.
+
+**Why a hidden pane still had a height.** A Slint layout lays out the
+**invisible** items as if they were visible. They are not painted, but they
+still claim their height, and the layout squeezes the items around them to
+make room. The two forms are in the tree only so that their fields can be
+named — the focus aggregate names them, so that a click away with a form open
+is caught — and they had to say so in their **size** as well.
+
+**What changed.**
+
+- A hidden pane declares **zero height**: its preferred height, its maximum
+  height *and* its minimum height, because the fluent scroll container has a
+  fifty-point floor of its own and a floor is a floor whether the pane is
+  visible or not.
+- The fleet view and the detail view scroll in **one** box, so the panel's
+  height does not change when the operator opens the detail, and the footer's
+  control that brings the fleet back does not move under the pointer.
+- The pulldown is **194 points narrower**: **412 px**.
+
+**What was measured, after.** The same fleet, the same window height:
+
+| | before | after |
+| --- | --- | --- |
+| the panel's width | 606 px | **412 px** |
+| the fleet's scroll box | 201 points | **348 points** — the whole body |
+| the detail's scroll box | 51 points | **348 points** |
+| the fleet's content ran to | y = 249 (clipped) | **y = 387**, the body's edge |
+| the panel's height, fleet → detail | 446 → 424 | **446 → 446** |
+
+The last row is the "no way back": the panel used to shrink by twenty-two
+points when the detail opened, which moved the footer's links up by the same
+twenty-two points, so the control that brings the fleet back was no longer
+where the operator had clicked. It is in the same place now, and it says
+`Fleet`.
+
+**The scroll was exercised too**: a wheel event over the list moved it down to
+the last four hosts — `Plex`, `Le Potato20`, `Le Potato21` and `Raspi 8` — and
+the box still reached the footer's strip.
+
+**The click away still works with the narrower panel.** A click on the desktop
+at (800, 900) was reported by the watch at (800, 180) in AppKit's
+bottom-left coordinates, and the pulldown was dismissed:
+
+```text
+gregg-gui: a click landed away from the pulldown at (800, 180)
+gregg-gui: the pulldown was dismissed: the operator clicked away
+```
+
+**The suite is 177 passed / 0 failed** (174 before this work, plus three new
+tests: `a_hidden_form_takes_no_room`, `the_fleet_and_the_detail_share_one_box`
+and `the_detail_does_not_resize_the_panel`).
+
 ### What the GUI costs, and what it polls (2026-10-23)
 
 The same session asked two questions that are worth answering with numbers

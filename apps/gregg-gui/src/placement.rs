@@ -116,10 +116,6 @@ pub mod metrics {
     /// something on both sides of it.
     pub const BODY_SPACING: f32 = 6.0;
 
-    /// The gap inside the fleet or the detail: between the table's headings
-    /// and its rows, or between the selected host's actions and its panes.
-    pub const BLOCK_GAP: f32 = BODY_SPACING;
-
     /// The attachment's state line.
     pub const STATUS_LINE: f32 = 18.0;
 
@@ -154,21 +150,6 @@ pub mod metrics {
     /// half in view — which is the scroll's own sign that there is more.
     pub const HOST_LIST_MAX_HEIGHT: f32 = 4.0 * (HOST_BLOCK + HOST_BLOCK_GAP);
 
-    /// The height of one group's heading in the detail view.
-    ///
-    /// A group is a heading and the rows under it, and the heading is what
-    /// makes a list of facts readable.
-    pub const DETAIL_HEADING: f32 = 15.0;
-
-    /// One row of a group: a name and its value.
-    pub const DETAIL_ROW: f32 = 15.0;
-
-    /// One scheduler job row.
-    pub const JOB_ROW: f32 = 22.0;
-
-    /// One line of retained scheduler records.
-    pub const RECORD_LINE: f32 = 14.0;
-
     /// The attribution text, which takes four lines.
     pub const ABOUT_LINES: f32 = 4.0;
     pub const ABOUT_LINE: f32 = 14.0;
@@ -182,7 +163,13 @@ pub mod metrics {
     /// column. The vertical scrollbar takes its own room out of this width
     /// when the fleet is long enough to scroll. The table is measured, not
     /// guessed, so the width follows it.
-    pub const PANE_CONTENT_WIDTH: f32 = 554.0;
+    ///
+    /// The pulldown is a **dropdown**, and most of what it carries is
+    /// vertical: a host's block is a header line and five rows, and the
+    /// detail's groups are a heading and a column of facts. A wide panel
+    /// would be mostly empty, so the pane is as wide as the widest line it
+    /// has to draw and no wider.
+    pub const PANE_CONTENT_WIDTH: f32 = 360.0;
 
     /// The pulldown's width.
     ///
@@ -190,11 +177,12 @@ pub mod metrics {
     /// padding on each side and the shadow's margin.
     pub const DEFAULT_WIDTH: f32 = PANE_CONTENT_WIDTH + 2.0 * PANE_PADDING + 2.0 * MARGIN;
 
-    /// The shortest the detail below the host list may be.
-    pub const MIN_DETAIL: f32 = 120.0;
-
-    /// The tallest the detail below the host list may be.
-    pub const MAX_DETAIL: f32 = 320.0;
+    /// The shortest the pane's scrolling box may be.
+    ///
+    /// The box is the fleet's blocks, and a fleet of one host is a short
+    /// list. The floor keeps the box from being a sliver, so that the detail
+    /// — which scrolls in the very same box — always has room to be read.
+    pub const MIN_BOX_HEIGHT: f32 = 120.0;
 }
 
 /// What the pulldown is showing, as the height calculation sees it.
@@ -207,21 +195,6 @@ pub struct Content {
     /// An online host's block is a header and five rows; a host that is not
     /// online has a header alone, because it has no readings to show.
     pub online_hosts: usize,
-    /// Whether a host is selected.
-    pub selected: bool,
-    /// Whether the selected host answered its last poll.
-    ///
-    /// A host that is not online has a header line alone in its block, so the
-    /// block is shorter — and the detail pane is shorter with it.
-    pub selected_online: bool,
-    /// How many groups of detail the selected host has.
-    pub detail_sections: usize,
-    /// How many rows those groups hold.
-    pub detail_rows: usize,
-    /// How many scheduler jobs it has.
-    pub jobs: usize,
-    /// How many lines the retained scheduler records take.
-    pub record_lines: usize,
     /// Whether the attribution text is shown.
     pub about: bool,
     /// Whether the attachment's state is shown.
@@ -232,16 +205,13 @@ pub struct Content {
     pub warning: bool,
     /// Whether the form is showing instead of the fleet.
     pub form: bool,
-    /// Whether the selected host's detail is showing instead of the fleet.
-    pub detail: bool,
 }
 
-/// The height of the bounded host list.
+/// The height of the fleet's own blocks.
 ///
-/// The list is the fleet's blocks: an online host's block is a header line and
-/// five rows, and a host that is not online has a header line alone. The
-/// height is bounded, so a large fleet scrolls instead of pushing the
-/// pulldown off the desktop.
+/// An online host's block is a header line and five rows, and a host that is
+/// not online has a header line alone. The height is bounded, so a large
+/// fleet scrolls instead of pushing the pulldown off the desktop.
 #[must_use]
 pub fn host_list_height(content: &Content) -> f32 {
     let online = content.online_hosts.min(content.hosts);
@@ -252,26 +222,18 @@ pub fn host_list_height(content: &Content) -> f32 {
     height.min(metrics::HOST_LIST_MAX_HEIGHT)
 }
 
-/// The height of the detail below the host list.
+/// The height of the pane's scrolling box.
 ///
-/// The detail is one scroll container, so this is an estimate of what it
-/// holds: the estimate only decides how much of it is on screen, and the
-/// scroll container keeps the rest reachable when the estimate is short.
+/// The box is the fleet's blocks, and it has a floor: the detail scrolls in
+/// this very box, and a box of eighty-one points is not a pane anybody can
+/// read.
 ///
-/// It is the selected host's **own block** — the same block the fleet view
-/// draws — and then the groups of detail under it.
+/// The fleet view and the detail view scroll in this **one** box, and so they
+/// share this height: switching between them never resizes the panel, and the
+/// control that brings the other one back never moves under the pointer.
 #[must_use]
-fn detail_height(content: &Content) -> f32 {
-    let mut height = if content.selected_online {
-        metrics::HOST_BLOCK
-    } else {
-        metrics::HOST_HEADER
-    };
-    height += content.detail_sections as f32 * metrics::DETAIL_HEADING;
-    height += content.detail_rows as f32 * metrics::DETAIL_ROW;
-    height += content.jobs as f32 * metrics::JOB_ROW;
-    height += content.record_lines as f32 * metrics::RECORD_LINE;
-    height.clamp(metrics::MIN_DETAIL, metrics::MAX_DETAIL)
+pub fn box_height(content: &Content) -> f32 {
+    host_list_height(content).max(metrics::MIN_BOX_HEIGHT)
 }
 
 /// The height of the notices above the content.
@@ -330,14 +292,15 @@ pub fn content_height(content: &Content) -> f32 {
     }
     if content.form {
         height += metrics::FORM_HEIGHT;
-    } else if content.detail {
-        // The detail view: the selected host's own block and the groups of
-        // detail under it.
-        height += metrics::BLOCK_GAP;
-        height += detail_height(content);
     } else {
-        // The fleet view: the blocks, one per host.
-        height += host_list_height(content);
+        // The fleet view and the detail view share ONE scrolling box, and so
+        // they share ONE height: switching between them must not resize the
+        // panel, or the control that switches back moves under the pointer.
+        //
+        // The detail's own content is taller than the box very often — it
+        // carries the drives, the interfaces, the scheduler and the records —
+        // and the box scrolls, so the panel's size does not depend on it.
+        height += box_height(content);
     }
     height
 }
@@ -786,13 +749,13 @@ mod tests {
         let large = WorkArea::new(0.0, 0.0, 3840.0, 1080.0);
         let offset = Offset::default();
 
-        let (small_x, _) = small.place(offset, (606.0, 478.0), Anchor::TopRight);
-        let (large_x, _) = large.place(offset, (606.0, 478.0), Anchor::TopRight);
+        let (small_x, _) = small.place(offset, (412.0, 446.0), Anchor::TopRight);
+        let (large_x, _) = large.place(offset, (412.0, 446.0), Anchor::TopRight);
         assert_eq!(
-            small_x, 906.0,
+            small_x, 1100.0,
             "the panel is against the small display's corner"
         );
-        assert_eq!(large_x, 3234.0, "and against the large one's");
+        assert_eq!(large_x, 3428.0, "and against the large one's");
         assert_ne!(
             small_x, large_x,
             "an absolute position would have put it in the middle of the large display"
@@ -901,10 +864,44 @@ mod tests {
             online_hosts: 20,
             ..Content::default()
         });
-        assert!(one > empty, "one host is taller than none");
+        assert!(
+            one >= empty,
+            "one host is no shorter than none: the box has a floor"
+        );
         assert!(
             many > one,
             "twenty hosts are taller than one, up to the bound"
+        );
+    }
+
+    /// The fleet's own blocks keep their own heights.
+    ///
+    /// The **box** has a floor, so that the detail — which scrolls in it —
+    /// is always a pane somebody can read. The blocks under it do not: an
+    /// offline host is its header line and nothing more.
+    #[test]
+    fn the_fleets_blocks_keep_their_own_heights() {
+        let online = host_list_height(&Content {
+            hosts: 1,
+            online_hosts: 1,
+            ..Content::default()
+        });
+        let offline = host_list_height(&Content {
+            hosts: 1,
+            online_hosts: 0,
+            ..Content::default()
+        });
+        assert!(
+            online > offline,
+            "an offline host's block is its header line and nothing more"
+        );
+        assert!(
+            box_height(&Content {
+                hosts: 1,
+                online_hosts: 0,
+                ..Content::default()
+            }) >= metrics::MIN_BOX_HEIGHT,
+            "the box is never a sliver, whatever the blocks are"
         );
     }
 
@@ -912,12 +909,12 @@ mod tests {
     fn an_offline_host_is_shorter_than_an_online_one() {
         // A host that is not online has a header line alone: it has no
         // readings to show, so it takes no room for rows it cannot fill.
-        let online = content_height(&Content {
+        let online = host_list_height(&Content {
             hosts: 1,
             online_hosts: 1,
             ..Content::default()
         });
-        let offline = content_height(&Content {
+        let offline = host_list_height(&Content {
             hosts: 1,
             online_hosts: 0,
             ..Content::default()
@@ -1003,44 +1000,49 @@ mod tests {
         );
     }
 
+    /// The panel's height is the chrome and the box, and nothing else.
+    ///
+    /// The box is what fills the body, and the body is what is left of the
+    /// panel once the chrome is taken off it: the two numbers have to agree,
+    /// or the box stops short of the footer and leaves a band of dead space
+    /// under it.
     #[test]
-    fn the_detail_is_bounded() {
-        let few = content_height(&Content {
-            detail: true,
-            detail_sections: 1,
-            detail_rows: 1,
+    fn the_height_is_the_chrome_and_the_box() {
+        let chrome = 2.0 * metrics::MARGIN
+            + metrics::HEADER
+            + metrics::FOOTER
+            + metrics::PANE_PADDING_TOP
+            + metrics::PANE_PADDING_BOTTOM;
+        let content = Content {
+            hosts: 7,
+            online_hosts: 7,
             ..Content::default()
-        });
-        let many = content_height(&Content {
-            detail: true,
-            detail_sections: 500,
-            detail_rows: 500,
-            ..Content::default()
-        });
-        assert!(many > few, "more rows make the pulldown taller");
-        assert!(
-            many - few <= metrics::MAX_DETAIL,
-            "the detail's own bound still holds"
-        );
+        };
+        assert_eq!(content_height(&content), chrome + box_height(&content));
     }
 
+    /// The detail and the fleet share ONE box, and so one height.
+    ///
+    /// The detail carries the drives, the interfaces, the scheduler and the
+    /// records, and it is very often taller than the fleet's list. It scrolls
+    /// in the fleet's box, so the panel's size does not depend on it — and,
+    /// more to the point, the panel does not resize when the operator opens
+    /// the detail, so the control that brings the fleet back stays under the
+    /// pointer.
     #[test]
-    fn the_fleet_view_does_not_carry_the_detail() {
-        // The detail is behind the pulldown's own control, so the fleet
-        // view's height is the host list and nothing else.
-        let fleet = content_height(&Content {
+    fn the_detail_does_not_resize_the_panel() {
+        let content = Content {
             hosts: 5,
-            detail_sections: 500,
-            detail_rows: 500,
+            online_hosts: 5,
             ..Content::default()
-        });
-        let without_detail = content_height(&Content {
-            hosts: 5,
-            ..Content::default()
-        });
+        };
         assert_eq!(
-            fleet, without_detail,
-            "the fleet view does not grow with the detail's rows"
+            content_height(&content),
+            content_height(&Content {
+                form: false,
+                ..content
+            }),
+            "the two views are one box, and one height"
         );
     }
 
@@ -1154,8 +1156,6 @@ mod tests {
             ("the label's width", "label-width: 64px"),
             ("the share's width", "pct-width: 32px"),
             ("the fleet's gap", "gap: 6px"),
-            ("the job row", "height: 22px"),
-            ("the group's heading", "height: 15px"),
             ("the status line", "0px : 18px"),
             ("the message", "0px : 30px"),
             ("the tray warning", "0px : 18px"),
@@ -1178,14 +1178,58 @@ mod tests {
         assert_eq!(metrics::HOST_BLOCK, 81.0);
         assert_eq!(metrics::HOST_BLOCK_GAP, 6.0);
         assert_eq!(metrics::HOST_LIST_MAX_HEIGHT, 348.0);
-        assert_eq!(metrics::JOB_ROW, 22.0);
-        assert_eq!(metrics::DETAIL_HEADING, 15.0);
-        assert_eq!(metrics::DETAIL_ROW, 15.0);
+        assert_eq!(metrics::MIN_BOX_HEIGHT, 120.0);
         assert_eq!(metrics::STATUS_LINE, 18.0);
         assert_eq!(metrics::MESSAGE_LINE, 30.0);
         assert_eq!(metrics::TRAY_WARNING_LINE, 18.0);
         assert_eq!(metrics::FORM_HEIGHT, 220.0);
-        assert_eq!(metrics::DEFAULT_WIDTH, 606.0);
+        assert_eq!(metrics::PANE_CONTENT_WIDTH, 360.0);
+        assert_eq!(metrics::DEFAULT_WIDTH, 412.0);
+    }
+
+    /// A form that is not showing takes no room at all.
+    ///
+    /// A Slint layout lays out the invisible items as if they were visible:
+    /// they are not painted, but they still claim their height, and the layout
+    /// squeezes the items around them to make room. The two forms are always
+    /// in the tree — their fields have to be nameable, or the pulldown cannot
+    /// tell that one of them holds the keyboard focus — and between them they
+    /// claimed 440 points of the body's height, which crushed the fleet's
+    /// scroll box to a third of what the panel had room for.
+    #[test]
+    fn a_hidden_form_takes_no_room() {
+        let slint = include_str!("ui/main.slint");
+        for mode in ["PanelMode.AddHost", "PanelMode.EditHost"] {
+            assert!(
+                slint.contains(&format!(
+                    "preferred-height: root.mode == {mode} ? root.form-height : 0px;"
+                )),
+                "the {mode} form takes no room while it is not showing"
+            );
+            assert!(
+                slint.contains(&format!(
+                    "max-height: root.mode == {mode} ? root.form-height : 0px;"
+                )),
+                "the {mode} form is not taller than the room it is given"
+            );
+        }
+    }
+
+    /// The fleet and the detail scroll in ONE box.
+    ///
+    /// The panel must not resize when the operator opens the detail: a
+    /// control that moves under the pointer is a control that cannot be used
+    /// to come back.
+    #[test]
+    fn the_fleet_and_the_detail_share_one_box() {
+        let slint = include_str!("ui/main.slint");
+        assert_eq!(
+            slint
+                .matches("preferred-height: root.pane-box-height;")
+                .count(),
+            2,
+            "the fleet's box and the detail's box are one box"
+        );
     }
 
     /// The body's layout spacing is zero, and it has to stay zero.

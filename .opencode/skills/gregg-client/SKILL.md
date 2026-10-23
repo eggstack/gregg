@@ -293,6 +293,25 @@ all** when it is empty, the body's own spacing is **zero**, and every group
 carries the gap that follows it. The title line says **`7 online`** and names
 the hosts that are not answering **only when there are any**.
 
+**A fifth trap: an invisible pane is still a pane to a layout.** The two
+forms — *Add a host* and *Edit a host* — are always in the tree, because their
+fields have to be nameable, or the pulldown cannot tell that one of them
+holds the keyboard focus. They were also 220 points tall each, whether they
+were showing or not, and a Slint layout lays out the **invisible** items as
+if they were visible: they are not painted, but they still claim their height,
+and the layout squeezes the items around them to make room. The two forms took
+**440 points** of a body that had **348**, the fleet's scroll box was left with
+**201**, and **147 points of dead space** sat under the last host. The detail's
+box was worse — **51** points, a pane nobody could read. A hidden pane must
+declare **zero height**: its preferred height, its maximum height *and* its
+minimum height, because the fluent scroll container has a fifty-point floor of
+its own and a floor is a floor whether the pane is visible or not.
+
+The two views scroll in **one** box, so the panel's height does not change
+when the operator opens the detail, and the footer's control that brings the
+fleet back never moves under the pointer. The pulldown is **412 points**
+wide: it is a dropdown, and most of what it carries is vertical.
+
 **The GUI may write the configuration file, and only through the CLI's own
 code** (Plan 191). The panel's add, remove and rename go through
 `gregg::cli::add_host` and `gregg::cli::remove_host` — the paths `gregg add`

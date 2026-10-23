@@ -646,10 +646,13 @@ mod tests {
     /// The pulldown's own frame, and the menu bar's line, for the geometry.
     fn desk() -> (Frame, f64, f64) {
         (
+            // The pulldown's own frame, as it is on a 3840-point display:
+            // it hangs from the trailing corner, so the right edge is the
+            // work area's, whatever the panel's width is.
             Frame {
-                x: 3226.0,
+                x: 3420.0,
                 y: 62.0,
-                width: 606.0,
+                width: 412.0,
                 height: 446.0,
             },
             // The menu bar's lower edge, and the band below it that still
@@ -663,9 +666,9 @@ mod tests {
     #[test]
     fn a_click_inside_the_pulldown_is_not_a_click_away() {
         let (panel, menu_bar, band) = desk();
-        assert!(!landed_away(panel, menu_bar, band, 3300.0, 200.0));
+        assert!(!landed_away(panel, menu_bar, band, 3600.0, 200.0));
         assert!(
-            !landed_away(panel, menu_bar, band, 3226.0, 62.0),
+            !landed_away(panel, menu_bar, band, 3420.0, 62.0),
             "the edge"
         );
         assert!(
@@ -700,7 +703,7 @@ mod tests {
             "the desktop"
         );
         assert!(
-            landed_away(panel, menu_bar, band, 3100.0, 900.0),
+            landed_away(panel, menu_bar, band, 3600.0, 900.0),
             "below the pulldown"
         );
     }

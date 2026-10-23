@@ -249,6 +249,11 @@ carries `Reload`, `About` and `Quit`, and can **add, remove, rename and
 re-point** the hosts in the config file. Dismissing the panel hides it and
 leaves the tray running; quitting the GUI never stops the client daemon.
 
+The pulldown is a **dropdown**, and most of what it carries is vertical, so it
+is **412 points wide** and its list and its detail scroll in **one** box: the
+panel's height does not change when the detail is opened, and the control that
+brings the fleet back never moves under the pointer.
+
 The GUI is meant to live in the background, so it stays small: the pulldown's
 window is **built when it is first opened** and a hidden pulldown is not
 re-rendered, which takes the idle resident set from 82 MB to **45.5 MB** on

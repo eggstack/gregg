@@ -1244,27 +1244,14 @@ fn content_from_state(state: &UiState, panel: &Pulldown) -> placement::Content {
         return placement::Content::default();
     };
     let model = model::project(snapshot, &state.selection, &state.connection, now_unix_ms());
-    let groups = detail_groups(state, &model);
-    content_for(state, panel, &model, &groups)
+    content_for(state, panel, &model)
 }
 
 /// What the pulldown is showing, as the height calculation sees it.
 ///
 /// The lines the pulldown shows are read from the pulldown itself: they are
 /// what is on screen, and the height has to answer for what is on screen.
-fn content_for(
-    state: &UiState,
-    panel: &Pulldown,
-    model: &GuiViewModel,
-    sections: &[model::DetailSection],
-) -> placement::Content {
-    let jobs = model.cron.as_ref().map_or(0, |cron| cron.jobs.len());
-    let record_lines = model.cron.as_ref().map_or(0, |cron| {
-        cron.records
-            .iter()
-            .map(|record| record.lines().count().max(1))
-            .sum::<usize>()
-    });
+fn content_for(state: &UiState, panel: &Pulldown, model: &GuiViewModel) -> placement::Content {
     placement::Content {
         hosts: model.systems.len(),
         online_hosts: model
@@ -1272,21 +1259,11 @@ fn content_for(
             .iter()
             .filter(|card| card.block.online)
             .count(),
-        selected: model.selected_id.is_some(),
-        selected_online: model
-            .selected
-            .as_ref()
-            .is_some_and(|card| card.block.online),
-        detail_sections: sections.len(),
-        detail_rows: sections.iter().map(|section| section.rows.len()).sum(),
-        jobs,
-        record_lines,
         about: !panel.get_about_text().is_empty(),
         status: !panel.get_status_text().is_empty(),
         message: !panel.get_panel_message().is_empty(),
         warning: !panel.get_tray_warning().is_empty(),
         form: !state.view_mode.is_panel(),
-        detail: state.view_mode == ViewMode::Detail,
     }
 }
 
@@ -1653,8 +1630,8 @@ fn render_panel(state: &mut UiState, panel: Option<&slint::Weak<Pulldown>>) {
     // The pulldown's size follows what it carries. The host list's height
     // and the form's height are the two parts of it that are the content's,
     // and the rest is computed from them.
-    let content = content_for(state, &panel, &model, &groups);
-    panel.set_host_list_height(placement::host_list_height(&content));
+    let content = content_for(state, &panel, &model);
+    panel.set_pane_box_height(placement::box_height(&content));
     panel.set_form_height(placement::metrics::FORM_HEIGHT);
     resize_panel(state, &panel, &content);
 }

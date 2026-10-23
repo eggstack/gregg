@@ -407,6 +407,41 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The desktop frontend's scroll box stopped short of the bottom, the detail
+  view was too short to read, and the pulldown was too wide.** The fleet's
+  scroll box was **201 points** tall in a body that had **348**, so **147
+  points of dead space** sat between the last host and the footer's strip; and
+  the detail view's box was **51 points**, which showed a host's name and
+  three rows and nothing else.
+
+  The cause was **two invisible panes**. The *Add a host* and *Edit a host*
+  forms are always in the tree — their fields have to be nameable, or the
+  pulldown cannot tell that one of them holds the keyboard focus — and they
+  were 220 points tall each, whether they were showing or not. A Slint layout
+  lays out the **invisible** items as if they were visible: they are not
+  painted, but they still claim their height, and the layout squeezes the
+  items around them to make room. The two forms took **440 points** of a body
+  that had **348**. `visible: false` hides a pane; it does not unmake it.
+
+  A hidden pane now declares **zero height** — its preferred height, its
+  maximum height *and* its minimum height, because the fluent scroll container
+  has a fifty-point floor of its own and a floor is a floor whether the pane is
+  visible or not. The fleet's box went from **201 points to 348** — the whole
+  body, down to the footer — and the detail's from **51 to 348**.
+
+  The **detail and the fleet now share one box**, and so one height: opening
+  the detail does not resize the panel, and the footer's control that brings
+  the fleet back does not move under the pointer. That was what "the detail
+  button does not do its job" and "there is no way back" turned out to be: the
+  detail pane was too short to read, and the way back was a link that had
+  moved twenty-two points up.
+
+  The pulldown is also **194 points narrower** — **412 px** rather than 606.
+  It is a dropdown, and most of what it carries is vertical: a host's block is
+  a header line and five rows, and the detail's groups are a heading and a
+  column of facts, so a panel wider than the row is mostly empty. The bar
+  still takes the whole row less the percentage, and the rows do not elide.
+
 - **The desktop frontend's pulldown had a band of dead space above the fleet,
   and its title line said far too much.** The gap between the fleet's title and
   the first host's block was **forty-five points of nothing**, and it was not

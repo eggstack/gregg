@@ -257,7 +257,7 @@ And when the pulldown has been placed, one line says where it went and where it
 was allowed to go:
 
 ```text
-gregg-gui: pulldown=placed x=3226 y=36 width=606 height=446 area=8,36,3824x1036
+gregg-gui: pulldown=placed x=3420 y=36 width=412 height=446 area=8,36,3824x1036
 ```
 
 That is what the native tray exercises assert on: they check the **position**,
@@ -346,16 +346,27 @@ A dropdown has a shape, and this one draws its own.
   have no transparent window, so the background is the card's own colour and
   the shadow reads as a soft edge instead. That is a platform limit, not a
   choice.
-- The **size follows the content**: a fleet of one host is a short pulldown
+- The **size follows the fleet**: a fleet of one host is a short pulldown
   and a fleet of twenty is a taller one, up to the bounds the panes have. The
   height is *computed* rather than measured, because Slint 1.18 cannot report
   a layout's preferred size back to a `.slint` file. The **width** is the
-  card's own chrome plus the width a fleet row needs — 606 px — because a
+  card's own chrome plus the width a fleet row needs — 412 px — because a
   bar takes the whole row and a pulldown narrower than the row would clip the
   bar rather than lay it out. There is **no grip in the corner**: the size is
   the content's size, and a size the operator could set but not change again
   would go stale the moment the fleet changed. See [The panel had a band of
   dead space above the fleet](#the-panel-had-a-band-of-dead-space-above-the-fleet).
+- The pulldown is **narrow on purpose**. It is a dropdown, and most of what
+  it carries is vertical: a host's block is a header line and five rows, and
+  the detail's groups are a heading and a column of facts. At 606 px wide the
+  bar was two thirds of an empty row; at 412 px the panel is 194 points
+  narrower and the rows still fit without eliding.
+- The **height does not change when the view changes.** The fleet view and
+  the detail view scroll in **one** box, so opening the detail does not
+  resize the panel and the control that brings the fleet back does not move
+  under the operator's pointer. A control that moves is a control that cannot
+  be used to come back. See [The scroll box stopped short of the
+  bottom](#the-scroll-box-stopped-short-of-the-bottom).
 - The pulldown opens in the **trailing corner of the work area** — the
   platform's convention — and the operator's own placement is **remembered
   across restarts** in `<config>.gui-state` beside the configuration. The read
@@ -429,6 +440,11 @@ NET   [░░░░░░░░░░░░░░░░░░░░░░░░�
   is black on macOS, which turns a bar into what reads as a hole.
 - The list is **bounded**: a fleet can be large, and the pulldown is a
   popover. The host list scrolls when the fleet is larger than the bound.
+- The list's **scroll box reaches the bottom of the panel**, down to the
+  footer's strip, with no band of dead space under the last host. The box is
+  the panel's body, and the panel's height is the body plus the chrome, so
+  the two agree by construction. See [The scroll box stopped short of the
+  bottom](#the-scroll-box-stopped-short-of-the-bottom).
 
 ### The detail pane
 
@@ -479,6 +495,12 @@ DRIVES
   `TX` and no `LINK`.
 - The detail is **one scroll container**, so it scrolls as a whole and there
   is one scroll model.
+- The detail scrolls in **the fleet view's own box**, and so it is the same
+  height: opening the detail does not resize the panel, and the footer's
+  control that brings the fleet back is exactly where it was. The detail
+  carries the drives, the interfaces, the scheduler and the records, and it
+  is very often taller than the fleet's list — so it scrolls, and the
+  pulldown's size is the fleet's business and not the detail's.
 
 ### How the pulldown is dismissed
 
@@ -776,6 +798,52 @@ And one thing that was right and stayed right: the footer's links are **six
 points off the card's bottom edge** now, because a row of links flush against
 the edge reads as cropped. The visible gap below them went from six points to
 twelve.
+
+### The scroll box stopped short of the bottom
+
+The fleet's **scroll box** was a third of the height it should have been, and
+**147 points of dead space** sat under the last host — between the list and
+the footer's strip, doing nothing. The detail view was worse: its box was
+**50 points** tall, so the pane the operator opens to read a host's drives and
+its scheduler showed a host's name and three rows and nothing else.
+
+The cause was not the layout's arithmetic. It was **two invisible panes**.
+
+The two forms — *Add a host* and *Edit a host* — are always in the tree, and
+they have to be: their fields have to be nameable, or the pulldown cannot
+tell that one of them holds the keyboard focus. They were also **220 points
+tall each**, whether they were showing or not.
+
+A Slint layout lays out the invisible items **as if they were visible**. They
+are not painted, but they still claim their height, and the layout squeezes
+the items around them to make room. The body's cells were the notices, the
+fleet, the two forms and the attribution — and the two forms claimed **440
+points** of a body that had **348**. The deficit was shared out evenly, so
+the fleet's box was left with 348 − 147 = **201** points, and the detail's
+with what was left over its own floor: **51**.
+
+Two things went with the diagnosis:
+
+- **A hidden pane takes no room at all.** Each form's height is now `0` while
+  its mode is not showing — its preferred height, its maximum height *and*
+  its minimum height, because the fluent scroll container has a fifty-point
+  floor of its own and a floor is a floor whether the pane is visible or not.
+- **The fleet and the detail share one box, and so one height.** The
+  pulldown's height is the fleet's business: the detail scrolls in the
+  fleet's box, so opening the detail does not resize the panel, and the
+  footer's control that brings the fleet back does not move under the
+  pointer. That is what "the detail button does not do its job" and "there
+  is no way back" turned out to be: the detail pane was too short to read,
+  and the way back was a link that had moved twenty-two points up.
+
+Measured on the same fleet, before and after: the fleet's box went from **201
+points to 348** — the full body, down to the footer — and the detail's from
+**51 to 348**. The panel is **194 points narrower** as well, at 412 px.
+
+The lesson is worth writing down, because it is not a Slint quirk so much as
+a habit: **an invisible pane is still a pane to a layout.** `visible: false`
+hides it; it does not unmake it. Anything that is in the tree only so that
+its fields can be named has to say so in its **size** as well.
 
 ### Redraws
 

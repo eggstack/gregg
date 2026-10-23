@@ -555,11 +555,15 @@ export component Pulldown inherits Window {
     /// bottom on Windows.
     in property <bool> pointer-at-top: true;
 
-    /// The height of the bounded host list.
+    /// The height of the pane's scrolling box.
+    ///
+    /// The fleet and the detail share **one** box, and so they share one
+    /// height: switching between them must not resize the panel, or the
+    /// control that switches back moves under the pointer.
     ///
     /// The Rust side owns it: it knows how many hosts the fleet has and how
     /// many of them answered, and a block's height depends on both.
-    in property <length> host-list-height: 81px;
+    in property <length> pane-box-height: 81px;
 
     /// The height of the form.
     in property <length> form-height: 220px;
@@ -1097,13 +1101,18 @@ export component Pulldown inherits Window {
                         // The list is in a scroll container with a bounded
                         // height: a fleet can be large, and an unbounded list
                         // would push the pulldown off the desktop.
+                        //
+                        // The box is the height the Rust side computed for the
+                        // whole pane, so the box reaches the bottom of the
+                        // pane — down to the footer's strip — and never stops
+                        // short of it with a band of dead space below.
                         ScrollView {
                             content-width: root.list-content-width;
                             vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
                             horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
-                            preferred-height: root.host-list-height;
-                            max-height: root.host-list-height;
-                            min-height: min(root.host-list-height, root.host-header-height);
+                            preferred-height: root.pane-box-height;
+                            max-height: root.pane-box-height;
+                            min-height: min(root.pane-box-height, root.host-header-height);
 
                             VerticalLayout {
                                 width: root.list-content-width;
@@ -1142,10 +1151,18 @@ export component Pulldown inherits Window {
 
                         // The detail is one scroll container, so it scrolls as
                         // a whole and there is one scroll model.
+                        //
+                        // It is the **same box** the fleet view scrolls in, and
+                        // so it is the same height: the panel does not resize
+                        // when the operator opens the detail, and the control
+                        // that brings the fleet back does not move.
                         ScrollView {
                             content-width: root.list-content-width;
                             vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
                             horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                            preferred-height: root.pane-box-height;
+                            max-height: root.pane-box-height;
+                            min-height: 0px;
                             vertical-stretch: 1;
 
                             VerticalLayout {
@@ -1235,13 +1252,29 @@ export component Pulldown inherits Window {
                     }
 
                     // --------------------------------------------------- the forms
+                    //
+                    // A form's pane is always in the tree — its fields have to
+                    // be nameable, or the pulldown cannot tell that one of
+                    // them holds the keyboard focus — but a pane that is not
+                    // showing takes **no room at all**.
+                    //
+                    // That is not a detail. A Slint layout lays out the
+                    // invisible items as if they were visible: they are not
+                    // painted, but they still claim their height, and the
+                    // layout squeezes the items around them to make room. Two
+                    // forms that were always in the tree claimed 440 points
+                    // of the body's height between them, and the fleet's
+                    // scroll box was squeezed to a third of what the panel
+                    // had room for — a band of dead space below the last
+                    // host and a fleet that could not be scrolled.
                     ScrollView {
                         visible: root.mode == PanelMode.AddHost;
                         content-width: root.list-content-width;
                         vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
                         horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
-                        preferred-height: root.form-height;
-                        max-height: root.form-height;
+                        preferred-height: root.mode == PanelMode.AddHost ? root.form-height : 0px;
+                        max-height: root.mode == PanelMode.AddHost ? root.form-height : 0px;
+                        min-height: 0px;
 
                         VerticalLayout {
                             width: root.list-content-width;
@@ -1325,8 +1358,9 @@ export component Pulldown inherits Window {
                         content-width: root.list-content-width;
                         vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
                         horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
-                        preferred-height: root.form-height;
-                        max-height: root.form-height;
+                        preferred-height: root.mode == PanelMode.EditHost ? root.form-height : 0px;
+                        max-height: root.mode == PanelMode.EditHost ? root.form-height : 0px;
+                        min-height: 0px;
 
                         VerticalLayout {
                             width: root.list-content-width;

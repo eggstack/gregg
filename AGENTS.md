@@ -125,6 +125,22 @@ falling back to what is left of the total when the platform reported none
 (the TUI's own rule); `NETWORK` carries the aggregate first and then each
 interface, and a link capacity that was **not measured** is **not stated**.
 
+**The two views share ONE scrolling box, and a hidden pane takes no room.**
+The fleet view and the detail view scroll in the **same** box, so the panel's
+height does not change when the operator opens the detail, and the footer's
+control that brings the fleet back never moves under the pointer — a control
+that moves is a control that cannot be used to come back. The box is the
+fleet's blocks and it has a floor, so the detail always has room to be read.
+The two forms are **always** in the tree, because their fields have to be
+nameable, and so they must declare **zero height** while their mode is not
+showing: a Slint layout lays out the **invisible** items as if they were
+visible, so two 220-point forms that were merely hidden took 440 points of
+the body's height and crushed the fleet's scroll box to a third of what the
+panel had room for. `visible: false` hides a pane; it does not unmake it.
+The pulldown is a **dropdown** and most of what it carries is vertical, so it
+is **412 points** wide: a bar takes the whole row less the percentage, and a
+panel wider than the row is mostly empty.
+
 **A hidden pulldown does not rebuild the view, and the window is not built
 until it is opened.** The daemon publishes a document every few seconds and
 the whole model is a few thousand formatted strings; building that for a panel
