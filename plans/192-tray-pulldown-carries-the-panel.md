@@ -427,6 +427,13 @@ the GUI is **not shippable** for Windows or Linux.
 > chrome and the plane's presence, the one that holds the plane's own rule, and the two that hold
 > the height), its clippy is clean under `-D warnings`, its formatting is clean, and its release
 > binary is **11,979,552 bytes** — **+0 bytes** on the build before this work.
+>
+> The run that covers this work, **`40041653415`** against `05ed618`, is **green on all ten jobs**,
+> including the three `GUI` legs — the only authority for this workspace's Windows and Linux
+> behaviour, because the workspace is not a member of the root workspace and no root job compiles
+> it. Their native tray exercises assert the pulldown's **position**, and the fixture's
+> configuration has no `EggPool` entry, so the plane takes no room there and the panel's height
+> is unchanged.
 
 ## Objective
 

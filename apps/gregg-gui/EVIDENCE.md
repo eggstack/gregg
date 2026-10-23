@@ -1723,6 +1723,17 @@ tests: `the_pulldown_has_no_close_control`, `the_eggpool_is_shown_in_every_view`
 `the_eggpool_plane_is_a_plane_of_its_own`, `the_panel_is_taller_by_the_eggpool_plane`
 and `a_plane_with_nothing_to_say_takes_no_room`).
 
+**The CI run that covers this work is green.** Run **`40041653415`** against
+`05ed618` is **green on all ten jobs** — the core `Linux`, `macOS (macos-15)`,
+`macOS (macos-15-intel)`, `Windows`, `Scripts (shellcheck + pytest)`,
+`MSRV (Rust 1.89)` and `FreeBSD (gregg-host native)` jobs, and the three `GUI`
+legs (`macos-15`, `windows-2022`, `ubuntu-latest`). The `GUI` legs are the only
+authority for this workspace's Windows and Linux behaviour, because the
+workspace is not a member of the root workspace and no root job compiles it.
+Their native tray exercises assert the pulldown's **position**, and the
+fixture's configuration has no `EggPool` entry — so the plane takes no room
+and the panel's height there is unchanged.
+
 The release binary is **11,979,552 bytes** — **+0 bytes** on the build before
 this work.
 
