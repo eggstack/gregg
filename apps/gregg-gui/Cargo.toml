@@ -1,0 +1,215 @@
+[workspace]
+# Plan 188 Part B: the Slint desktop frontend is its OWN workspace root.
+#
+# Slint 1.18 requires Rust >= 1.92, while the root Gregg workspace's MSRV is
+# 1.89. Keeping this crate out of the root workspace (the root also lists it
+# under `exclude`) means the root's `cargo test --workspace` and its MSRV CI
+# job never see Slint's toolchain floor, and this crate keeps a lockfile of
+# its own instead of perturbing the root's.
+resolver = "2"
+
+[package]
+name = "gregg-gui"
+version = "0.1.0"
+edition = "2021"
+# Slint 1.18.1 declares `rust-version = 1.92`. This is the floor for this
+# crate alone and is deliberately higher than the root workspace's 1.89.
+rust-version = "1.92"
+license = "MIT"
+authors = ["David Bowman <dbowman91@proton.me>"]
+repository = "https://github.com/eggstack/gregg"
+homepage = "https://github.com/eggstack/gregg"
+description = "Optional Slint desktop frontend for the Gregg system monitor."
+publish = false
+
+[dependencies]
+# The core client is consumed as a library, exactly as the plan prescribes:
+# prototype against the real reducer and the real client-daemon protocol, and
+# measure the resulting binary cost instead of speculatively splitting the
+# crate. That is why Ratatui/Crossterm come along transitively.
+gregg = { path = "../../crates/gregg" }
+
+# `gregg::normalized::NormalizedSnapshot` embeds the remote wire types
+# (`SystemIdentity`, `LoadAverage`), so a frontend that builds fixtures for it
+# has to name them. `gregg-protocol` is a leaf crate — `serde`, `serde_json`
+# and `thiserror` only — and it is already in the graph through `gregg`, so
+# this edge adds no new code to the binary.
+gregg-protocol = { path = "../../crates/gregg-protocol" }
+
+# Slint is pinned exactly (`=1.18.1`). Slint's minor releases carry language
+# and feature changes, and this crate is an independent workspace whose
+# lockfile nobody else maintains; an exact pin is the only way the lockfile
+# stays the thing that decides.
+#
+# The feature list is minimal on purpose:
+#   std                          - the standard-library backend (not no_std).
+#   backend-winit                - the windowing backend used on desktop.
+#   renderer-software            - the CPU renderer; no GPU/GL stack is pulled
+#                                  in, which keeps the binary small and the
+#                                  build free of OpenGL/Metal shader tooling.
+#   software-renderer-systemfonts - system font discovery for the software
+#                                  renderer; without it text has no font.
+#   system-tray                  - the native tray icon required by Plan 189.
+#   compat-1-18                  - enables the Slint 1.18 language and version
+#                                  features, so the `.slint` file compiles
+#                                  with 1.18 semantics rather than the older
+#                                  `compat-1-0`/`compat-1-2` chains.
+#   unstable-winit-030           - the `slint::winit_030` module, which is the
+#                                  ONLY way to ask the display for its own
+#                                  bounds. Plan 191's pulldown has to know
+#                                  where the screen ends so it can never open
+#                                  off it, and Slint's stable API exposes no
+#                                  screen information at all: the winit
+#                                  backend is already in this build through
+#                                  `backend-winit`, so this feature adds NO
+#                                  new crate and NO new code to the binary —
+#                                  it only exposes the module that
+#                                  re-exports what is already there.
+#                                  "Unstable" here means Slint may move the
+#                                  module in a future minor release. This
+#                                  crate pins Slint exactly (`=1.18.1`), so
+#                                  that cannot happen underneath us: a move
+#                                  would be a deliberate version bump, and a
+#                                  compile error, not a silent change.
+#
+# `default-features = false` is load-bearing: Slint's defaults pull the
+# femtovg (OpenGL) renderer and its GPU stack. `renderer-femtovg`,
+# `renderer-skia`, `renderer-wgpu`, `backend-qt` and `accessibility` are
+# deliberately NOT enabled.
+slint = { version = "=1.18.1", default-features = false, features = [
+    "std",
+    "backend-winit",
+    "renderer-software",
+    "software-renderer-systemfonts",
+    "system-tray",
+    "compat-1-18",
+    "unstable-winit-030",
+] }
+
+# The client-daemon attachment is async (`ensure_running` is an `async fn`
+# and `FrameStream::next` is async), and it runs on a background thread
+# beside Slint's main-thread event loop.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
+
+# macOS only: AppKit bindings, so the GUI can **activate itself** when it
+# raises the monitor window, and so it can **watch the mouse** for a click
+# that lands outside the pulldown.
+#
+# WHY THIS EXISTS: on macOS, `NSWindow.orderFront:` from a *background*
+# application does not bring the window to the front, and an `NSStatusItem`
+# menu does not activate the app that owns it. A tray application launched the
+# way a real one is launched — a login item, a launcher, a login-item agent —
+# is a background application from its first moment, so opening the pulldown
+# from the tray would do nothing at all. The fix is `NSApplication
+# activateIgnoringOtherApps:`, which Slint 1.18 does not expose.
+#
+# The second feature is `NSEvent`: the pulldown is dismissed when the
+# operator clicks away, and the click belongs to the application that was
+# clicked, so it cannot be seen from inside the pulldown's own window. AppKit's
+# global event monitor reports the mouse events that are dispatched to *other*
+# applications, which is exactly that click.
+#
+# The feature set is minimal (`default-features = false`): only
+# `NSApplication`, `NSWindow` and `NSEvent` are needed, so the whole of AppKit
+# is not linked. These crates are macOS-only and never enter the Linux or
+# Windows builds.
+#
+# `block2` is the crate that carries an Objective-C block, and it is **already
+# in this workspace's graph** through `objc2`: naming it here adds no new crate
+# to the build and no new code to the binary. It is a direct dependency only
+# because the monitor's handler is a block and the type has to be named.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "AppKitDefines",
+    "AppKitErrors",
+    "NSApplication",
+    "NSWindow",
+    "NSEvent",
+    "NSScreen",
+    "block2",
+] }
+block2 = { version = "0.6", default-features = false, features = ["alloc"] }
+
+# Linux only: the desktop's system tray is a `StatusNotifierItem`, and the
+# GUI has to know whether this desktop runs a host for it — a desktop without
+# one has no tray at all, and closing the monitor window has to end the GUI
+# instead of hiding it into a process the operator cannot reach.
+#
+# `zbus` is already in this workspace's graph: Slint's `system-tray` feature
+# reaches it through `ksni`, so this edge adds no new crate to the build and
+# no new download. The one feature that is added is `blocking-api`, zbus's
+# own synchronous wrapper, which is what makes a *bounded* probe possible
+# without a second async runtime: the probe runs on its own thread and the
+# caller waits for a deadline.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+
+# Test-only. The counted-remote fixture serves a real status document, and
+# the evidence test starts a real client daemon, so it needs the protocol
+# crate's document builder, a JSON serializer, and the cancellation token the
+# daemon's shutdown path takes. None of this reaches the shipped binary.
+[dev-dependencies]
+gregg-protocol = { path = "../../crates/gregg-protocol", features = ["test_support"] }
+serde_json = "1"
+tokio-util = "0.7"
+
+[build-dependencies]
+slint-build = { version = "=1.18.1" }
+
+# Two vendored copies. Both are MIT OR Apache-2.0, which the root workspace's
+# `deny.toml` already allows, and both are documented in full in
+# `vendor/VENDORED-PATCH.md`.
+#
+# 1. `annotate-snippets` 0.12.9 with one relaxed dependency bound.
+#
+# WHY THIS EXISTS: `ratatui` 0.29 (pulled in transitively by the `gregg` core
+# library above) pins `unicode-width =0.2.0` exactly, while Slint's
+# build-time compiler reaches `annotate-snippets` 0.12.9, which requires
+# `unicode-width ^0.2.2`. Cargo keeps at most one version of a crate per
+# semver-compatibility range, and 0.2.0 and 0.2.2 share one, so the two
+# requirements cannot be unified and the whole graph fails to resolve:
+#
+#     failed to select a version for `unicode-width`
+#     ... required by package `annotate-snippets v0.12.9`
+#     ... previously selected package `unicode-width v0.2.0`
+#
+# The vendored copy relaxes that bound to `unicode-width = "0.2"`, which makes
+# every requirement in the graph agree on 0.2.0. The only `unicode-width`
+# API the crate uses is `UnicodeWidthChar::width(ch) -> Option<usize>`, which
+# exists unchanged in 0.2.0.
+#
+# No source file of the vendored crate is modified, and no source file of the
+# Slint compiler is modified: this is a build-time-only workaround that adds
+# no code to the shipped binary.
+#
+# 2. `softbuffer` 0.4.8 with one word changed in its macOS backend.
+#
+# WHY THIS EXISTS: `softbuffer` is how Slint's software renderer presents its
+# frames, and it was already in this graph through Slint — this copy adds no
+# crate to the build. Its macOS backend declares the framebuffer's pixel
+# format as `CGImageAlphaInfo::NoneSkipFirst`, which tells CoreGraphics the
+# framebuffer has NO alpha channel, so every transparent pixel of a window is
+# presented opaque. The pulldown's shadow margin is transparent by design, so
+# it was presented as a thick BLACK FRAME instead of a soft shadow, and the
+# card's rounded corners were black squares.
+#
+# The vendored copy declares the alpha channel instead
+# (`CGImageAlphaInfo::PremultipliedFirst`), which is the same 32-bit layout
+# with the alpha the buffer already carries. The change is inside Apple's
+# platform only: the X11, Wayland, KMS, Win32, Android, Orbital and web
+# backends are byte-identical to upstream.
+#
+# See `vendor/VENDORED-PATCH.md` for the full rationale.
+[patch.crates-io]
+annotate-snippets = { path = "vendor/annotate-snippets" }
+softbuffer = { path = "vendor/softbuffer" }
+
+# Mirrors the root workspace's release profile so the measured binary size is
+# comparable with the TUI's. `strip = "symbols"` is what makes the reported
+# size meaningful.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"

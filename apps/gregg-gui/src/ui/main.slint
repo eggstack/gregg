@@ -1,0 +1,1728 @@
+// Plan 192: the Slint definition of the optional Gregg desktop frontend.
+//
+// ONE surface: a tray pulldown.
+//
+// The tray's CLICK opens the pulldown, and the pulldown carries the content:
+// the fleet summary, the host list, the selected host's metrics, drives,
+// interfaces, cron and records, the `EggPool` plane, the forms that add,
+// remove and edit hosts, and the application's own `Reload`, `About` and
+// `Quit`.
+//
+// The `EggPool` plane is **always on screen**: it is pinned below the
+// scrolling box, so it is shown in every view and never scrolls out of
+// reach.
+//
+// The native tray menu is NOT the dropdown. On macOS it is detached
+// altogether — AppKit routes a click to the tray's `clicked` callback only
+// when no menu is attached to the status item — so the pulldown has to carry
+// `Quit` itself. On Windows and Linux the native menu is the *context* menu,
+// reached with a right-click, and it carries `Quit Gregg` and nothing else:
+// the fleet, the metrics and the forms all live in the pulldown, which is the
+// surface.
+//
+// Two independent top-level components live here, on purpose:
+//
+//   * `Pulldown`  — the panel the tray's click opens.
+//   * `TrayIcon`  — the native tray entry.
+//
+// A Slint `SystemTrayIcon` is a *top-level* component: it is never a child of
+// a window, and a tray-rooted component does not share `Globals` with a
+// window-rooted one — each instance gets its own copy of every global. So
+// anything both of them need has to be pushed into each of them explicitly
+// from Rust, which is where the truth lives anyway.
+//
+// The pulldown is borderless and always on top, so it draws its own shape: a
+// rounded card, a soft shadow and a pointer toward the tray item. Slint 1.18
+// does not expose the tray item's own position, so the pointer aims at the
+// platform's trailing corner — where the tray usually is — and that is an
+// approximation, stated as one.
+//
+// The pulldown's SIZE is the Rust side's business: Slint 1.18 cannot report
+// a layout's preferred size to a `.slint` file, so the height that follows
+// the content is computed where the content is known — in the model — and
+// pushed in here as `pulldown-height`. Two properties carry the parts that
+// vary inside the pulldown: the height of the bounded host list, and the
+// height of the form.
+//
+// The two lists that grow with the fleet are the host list and the scheduler
+// job list, and both live in a `ScrollView`. The fleet view and the detail
+// view share **one** of them, so the scroll model is one scroll model and the
+// panel does not change size when the operator switches views. The
+// `EggPool` plane is pinned outside it, so that it is always on screen.
+//
+// The colours come from Slint's `Palette` global, which follows the
+// desktop's own colour scheme, and the buttons and the text fields come
+// from `std-widgets`, which are styled to match the desktop. The palette
+// used to be hard-coded monochrome, which made the panel look like a
+// foreign object on a dark desktop, and the buttons used to be hand-rolled
+// with no hover and no pressed state — which is exactly what a popover
+// operated with the pointer already over it cannot do without.
+
+import { Button, LineEdit, Palette, ScrollView } from "std-widgets.slint";
+
+/// One measured row of a host's block.
+///
+/// It is a label, a bar and the bar's share: the row carries the used share
+/// and nothing else, because the share is what the bar says, and the extra
+/// detail would only crowd it out.
+export struct FleetRow {
+    /// The short label, e.g. `CPU`.
+    label: string,
+    /// The share as text, e.g. `39%`.
+    ///
+    /// An em dash when the platform reported no share at all: a missing
+    /// reading is not a reading of zero.
+    pct_text: string,
+    /// The share of the row that is used, in `0..=1`.
+    ///
+    /// Negative when there is no reading at all, so that an empty bar says
+    /// "not measured" rather than "measured as zero".
+    fraction: float,
+}
+
+/// One host's block in the fleet view: a header line and five rows.
+///
+/// The **header** names the host and carries the readings that are not used
+/// shares — the I/O wait, the load, the core count and the frequency — in
+/// the TUI's own words, e.g. `IO 1.2%  6.76/4.32/3.19  16C  4.70GHz`. A
+/// reading that is not a used share has no bar, so it can never be drawn as
+/// one.
+///
+/// A host that is **not online** has no rows at all: it has no readings, and
+/// five rows of dashes would only say so a second way. Its header says why
+/// it is offline instead.
+export struct FleetHost {
+    /// The host's stable id.
+    ///
+    /// The panel's actions name the host by this and not by its place in
+    /// the list: the fleet can reorder between the moment the list was
+    /// drawn and the moment a block is clicked, and an action aimed at the
+    /// wrong host is not something a stale index may do.
+    id: string,
+    /// The display name, or the host when the system has no configured name.
+    ///
+    /// The endpoint is not here: the block names the host and not where it
+    /// is, the way the TUI's condensed row does.
+    name: string,
+    /// The header line's detail, beside the name: the readings that are not
+    /// used shares, or the reason the host is offline.
+    detail: string,
+    /// Whether the most recent poll succeeded.
+    online: bool,
+    /// Whether this is the host the detail pane is showing.
+    selected: bool,
+    /// The measured rows: the CPU, the memory, the swap or the commit, the
+    /// disk and the network.
+    rows: [FleetRow],
+}
+
+/// One labelled value, used for the detail and EggPool panes.
+export struct ValueRow {
+    /// The short label.
+    label: string,
+    /// The formatted value.
+    value: string,
+}
+
+/// One group of the selected host's detail.
+///
+/// A section is a quiet heading and the rows under it: the numbers behind the
+/// shares, the drives, the interfaces, the `EggPool` plane. The heading is
+/// what makes a list of facts readable: an undifferentiated wall of
+/// `name  value` lines is a dump, not a pane.
+export struct DetailSection {
+    /// The section's heading, e.g. `DRIVES`.
+    heading: string,
+    /// The section's rows.
+    rows: [ValueRow],
+}
+
+/// One scheduler job, as the cron pane shows it.
+export struct JobRow {
+    /// The job's name.
+    name: string,
+    /// The job's current scheduling state.
+    state: string,
+    /// Its last terminal outcome.
+    outcome: string,
+    /// Whether this is the job whose records are shown.
+    selected: bool,
+}
+
+/// What the panel is showing.
+export enum PanelMode {
+    /// The fleet: one row per host, with its bars.
+    Fleet,
+    /// The selected host's detail: its metrics, drives, interfaces, cron and
+    /// records.
+    Detail,
+    /// The form that adds a host.
+    AddHost,
+    /// The form that edits one host.
+    EditHost,
+}
+
+/// A quiet text link: it reads as a menu entry, not as a button.
+component Link inherits Rectangle {
+    /// The link's text.
+    in property <string> label: "";
+
+    /// Whether the link does anything.
+    in property <bool> enabled: true;
+
+    /// The operator followed the link.
+    callback activated();
+
+    background: link-touch.has-hover && root.enabled ? Palette.alternate-background : #00000000;
+    border-radius: 4px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    preferred-width: label-text.preferred-width + 10px;
+    preferred-height: 18px;
+
+    label-text := Text {
+        text: root.label;
+        font-size: 11px;
+        color: root.enabled ? Palette.accent-background : Palette.foreground;
+        wrap: no-wrap;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    link-touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.activated();
+        }
+    }
+}
+
+/// A usage bar: a track with a filled share of it.
+///
+/// The track is the card's own border colour and the fill is the system's
+/// accent, so the bar follows the desktop's scheme instead of a colour
+/// chosen here. A row with no reading leaves the bar empty: an empty bar
+/// says "not measured", and the row's own text says the same thing.
+component UsageBar inherits Rectangle {
+    /// The share that is filled, in `0..=1`.
+    in property <float> fraction: 0;
+
+    /// Whether the row carries a reading at all.
+    in property <bool> measured: false;
+
+    border-radius: root.height / 2;
+    // The track is the foreground at a tenth of its strength: a bar's track
+    // is a filled area, not an edge, so it is not the card's hairline.
+    //
+    // A bar is a *measurement*, and a measurement looks the same wherever it
+    // is: the fill is the accent and the track is the foreground's own
+    // faintness, on a selected block as on any other.
+    background: Palette.foreground.with-alpha(0.15);
+
+    // The fill's origin is **written down**, and that is not decoration.
+    //
+    // Slint centres a child that has an explicit size and no explicit `x`/`y`
+    // inside a parent that is not a layout (`maybe_center_in_parent` in the
+    // compiler's `default_geometry` pass), so a fill without an `x` grows out
+    // of the *middle* of its track instead of from its left edge. The `x` and
+    // the `y` say which corner the bar starts at.
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.measured ? max(0px, root.width * root.fraction) : 0px;
+        height: root.height;
+        border-radius: root.height / 2;
+        background: Palette.accent-background;
+    }
+}
+
+/// One measured row of a host's block: the label, the bar and the share.
+///
+/// The bar is the share and the number is the share, the way the TUI's own
+/// metric rows read: the bar says how much of the capacity is used, and the
+/// number says how exactly.
+component FleetMetricRow inherits Rectangle {
+    /// The row's reading.
+    in property <FleetRow> metric: { label: "", pct_text: "", fraction: -1 };
+
+    /// The colour the label is drawn in.
+    ///
+    /// The label is quiet, so that the share is what the eye reads, and the
+    /// caller owns the colour: the window knows the desktop's scheme.
+    in property <color> quiet-color: #0000007F;
+
+    /// The width of the row's label column.
+    in property <length> label-width: 64px;
+    /// The width of the bar.
+    in property <length> bar-width: 100px;
+    /// The height of the bar.
+    in property <length> bar-height: 6px;
+    /// The width of the share's column.
+    in property <length> pct-width: 32px;
+    /// The gap between the label, the bar and the share.
+    in property <length> gap: 6px;
+
+    background: #00000000;
+
+    // The label. It is quiet, so that the share is what the eye reads.
+    Text {
+        x: 0px;
+        y: 0px;
+        width: root.label-width;
+        height: root.height;
+        text: root.metric.label;
+        font-size: 11px;
+        font-weight: 700;
+        color: root.quiet-color;
+        vertical-alignment: center;
+        overflow: elide;
+        wrap: no-wrap;
+    }
+
+    UsageBar {
+        x: root.label-width + root.gap;
+        y: (root.height - root.bar-height) / 2;
+        width: root.bar-width;
+        height: root.bar-height;
+        fraction: root.metric.fraction;
+        measured: root.metric.fraction >= 0;
+    }
+
+    Text {
+        x: root.label-width + root.gap + root.bar-width + root.gap;
+        y: 0px;
+        width: root.pct-width;
+        height: root.height;
+        text: root.metric.pct_text;
+        font-size: 11px;
+        color: Palette.foreground;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+        overflow: elide;
+        wrap: no-wrap;
+    }
+}
+
+/// One host's block: a header line and the five used shares under it.
+///
+/// The fleet view and the detail view draw their host with **this** component,
+/// so the two cannot drift apart: the detail view is the fleet view's own
+/// block and not a second rendering of the same numbers. There is exactly one
+/// bar per used share in the panel, and it is this one's — a host that is
+/// shown twice is shown twice the same way, and never with a second set of
+/// bars.
+component HostBlock inherits Rectangle {
+    /// The host this block is about.
+    in property <FleetHost> host;
+
+    /// The width of the block.
+    in property <length> content-width: 100px;
+
+    /// The colour the quiet text is drawn in.
+    ///
+    /// The caller owns the colour: the window knows the desktop's scheme.
+    in property <color> quiet-color: #0000007F;
+
+    /// The operator clicked this host's block.
+    ///
+    /// The click carries the host's stable id, so an action aimed at a block
+    /// cannot land on whichever host took its place in the list.
+    callback host-clicked(string);
+
+    /// The width of a row's label column, wide enough for `SWP/COMMIT`.
+    private property <length> label-width: 64px;
+    /// The width of a share's column, wide enough for `100%`.
+    private property <length> pct-width: 32px;
+    /// The gap between the label, the bar and the share.
+    private property <length> gap: 6px;
+    /// The height of every bar.
+    private property <length> bar-height: 6px;
+    /// The height of one measured row.
+    private property <length> row-height: 13px;
+    /// The height of the header line.
+    private property <length> header-height: 16px;
+    /// The width of the bar: the whole row less the label, the share and the
+    /// gaps between them.
+    private property <length> bar-width: root.content-width - root.label-width - root.pct-width - 3 * root.gap;
+
+    /// The height of the block: its header and its five rows — or its header
+    /// alone, when the host is not online and has no readings to show.
+    height: root.host.online ? root.header-height + 5 * root.row-height : root.header-height;
+
+    // The selection is a **quiet** tint, not the platform's selection
+    // colour: that colour is a saturated accent, and the palette's own
+    // foreground for it is black on macOS — a bar drawn in it reads as a hole
+    // rather than as a measurement. The host's name carries the accent
+    // instead.
+    background: root.host.selected ? Palette.foreground.with-alpha(0.07) : #00000000;
+
+    // Under the block's contents, so the block's own contents still get their
+    // clicks.
+    TouchArea {
+        clicked => {
+            root.host-clicked(root.host.id);
+        }
+    }
+
+    // The header line: the host's name, and the readings that are not used
+    // shares beside it. The endpoint is not here: the block names the host
+    // and not where it is, the way the TUI's condensed row does.
+    HorizontalLayout {
+        x: 0px;
+        y: 0px;
+        width: root.content-width;
+        height: root.header-height;
+        spacing: 8px;
+
+        Text {
+            text: root.host.name;
+            font-size: 13px;
+            font-weight: 700;
+            color: root.host.selected ? Palette.accent-background : Palette.foreground;
+            horizontal-stretch: 0;
+            vertical-alignment: center;
+            overflow: elide;
+            wrap: no-wrap;
+        }
+
+        Text {
+            text: root.host.detail;
+            font-size: 11px;
+            color: root.quiet-color;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            overflow: elide;
+            wrap: no-wrap;
+        }
+    }
+
+    // The five used shares, one bar each.
+    for metric[index] in root.host.rows : FleetMetricRow {
+        x: 0px;
+        y: root.header-height + index * root.row-height;
+        width: root.content-width;
+        height: root.row-height;
+        metric: metric;
+        label-width: root.label-width;
+        bar-width: root.bar-width;
+        bar-height: root.bar-height;
+        pct-width: root.pct-width;
+        gap: root.gap;
+        quiet-color: root.quiet-color;
+    }
+}
+
+/// A quiet section heading.
+///
+/// It is the heading a menu groups its items under: small, bold, and in the
+/// colour of the text that is not the subject.
+component SectionHeading inherits Rectangle {
+    /// The heading's text.
+    in property <string> text: "";
+
+    /// The width of the heading.
+    in property <length> content-width: 100px;
+
+    /// The colour the heading is drawn in.
+    in property <color> quiet-color: #0000007F;
+
+    height: 15px;
+
+    Text {
+        x: 0px;
+        y: 0px;
+        width: root.content-width;
+        height: root.height;
+        text: root.text;
+        font-size: 10px;
+        font-weight: 700;
+        color: root.quiet-color;
+        vertical-alignment: center;
+        overflow: elide;
+        wrap: no-wrap;
+    }
+}
+
+/// One group of the detail: a heading and the rows under it.
+///
+/// The rows are two columns: the name on the left and the value on the right,
+/// so the values line up and the eye can run down them. The value is in the
+/// quiet colour, because the name is what the row is about and the value is
+/// what the name says.
+component DetailSectionView inherits Rectangle {
+    /// The section this view draws.
+    in property <DetailSection> section;
+
+    /// The width of the section.
+    in property <length> content-width: 100px;
+
+    /// The colour the quiet text is drawn in.
+    in property <color> quiet-color: #0000007F;
+
+    /// The height of one row.
+    private property <length> row-height: 15px;
+    /// The height of the heading.
+    private property <length> heading-height: 15px;
+    /// The width of the name column.
+    private property <length> name-width: 104px;
+    /// How far the rows are indented under the heading.
+    private property <length> indent: 10px;
+
+    height: root.heading-height + root.section.rows.length * root.row-height;
+
+    SectionHeading {
+        x: 0px;
+        y: 0px;
+        width: root.content-width;
+        height: root.heading-height;
+        text: root.section.heading;
+        quiet-color: root.quiet-color;
+    }
+
+    for row[index] in root.section.rows : Rectangle {
+        x: 0px;
+        y: root.heading-height + index * root.row-height;
+        width: root.content-width;
+        height: root.row-height;
+
+        Text {
+            x: root.indent;
+            y: 0px;
+            width: max(0px, root.name-width - root.indent);
+            height: root.row-height;
+            text: row.label;
+            font-size: 11px;
+            color: Palette.foreground;
+            vertical-alignment: center;
+            overflow: elide;
+            wrap: no-wrap;
+        }
+
+        Text {
+            x: root.name-width;
+            y: 0px;
+            width: max(0px, root.content-width - root.name-width);
+            height: root.row-height;
+            text: row.value;
+            font-size: 11px;
+            color: root.quiet-color;
+            vertical-alignment: center;
+            overflow: elide;
+            wrap: no-wrap;
+        }
+    }
+}
+
+export component Pulldown inherits Window {
+    /// The pulldown's own window title.
+    ///
+    /// The window's title is **bound** to this property, so the title is
+    /// defined **once** — here, in the file that owns the window — and the
+    /// Rust side reads it from here. On macOS the native window is found by
+    /// its title, and a title that lived in two places would be a title that
+    /// could drift: the overlay over another application's full screen would
+    /// silently stop working.
+    in property <string> window-title: "Gregg";
+    title: root.window-title;
+
+    // The pulldown is a popover, not a window: no chrome, and it stays above
+    // whatever the operator is looking at.
+    no-frame: true;
+    always-on-top: true;
+
+    /// The pulldown's size.
+    ///
+    /// The Rust side owns it: it knows the fleet and the rows, and Slint
+    /// 1.18 cannot report a layout's preferred size back to a `.slint` file.
+    /// The window's own `width` and `height` are left alone so that the
+    /// size the Rust side sets is the size the pulldown has.
+
+    /// The window's own background.
+    ///
+    /// On macOS a frameless window is transparent, so the card's rounded
+    /// corners and the shadow are the desktop's own colours showing through.
+    /// Windows and Linux have no transparent window, so the background is the
+    /// card's own colour and the shadow reads as a soft edge instead.
+    background: root.transparent-window ? #00000000 : Palette.background;
+
+    /// Whether this platform can give the pulldown a transparent window.
+    ///
+    /// macOS can: a frameless window there is transparent, so the card's
+    /// rounded corners and the shadow are the desktop's own colours showing
+    /// through. Windows and Linux have no transparent window, so the
+    /// background is the card's own colour and the shadow reads as a soft
+    /// edge instead.
+    in property <bool> transparent-window: false;
+
+    /// Whether the pointer toward the tray item points at the top edge.
+    ///
+    /// The tray is at the top of the screen on macOS and Linux and at the
+    /// bottom on Windows.
+    in property <bool> pointer-at-top: true;
+
+    /// The height of the pane's scrolling box.
+    ///
+    /// The fleet and the detail share **one** box, and so they share one
+    /// height: switching between them must not resize the panel, or the
+    /// control that switches back moves under the pointer.
+    ///
+    /// The Rust side owns it: it knows how many hosts the fleet has and how
+    /// many of them answered, and a block's height depends on both.
+    in property <length> pane-box-height: 81px;
+
+    /// The height of the form.
+    in property <length> form-height: 220px;
+
+    /// One line describing the client-daemon attachment.
+    ///
+    /// Empty when the attachment is healthy: there is nothing to say, and a
+    /// line that says nothing is chrome.
+    in property <string> status-text: "";
+
+    /// The one-line fleet summary. It is also the header strip's title.
+    in property <string> fleet-summary: "";
+
+    /// The fleet, in display order.
+    in property <[FleetHost]> hosts;
+
+    /// The selected host's own block.
+    ///
+    /// It is the same block the fleet view draws, and it is drawn by the same
+    /// component: the detail view is the fleet view's host, opened up, and
+    /// not a second rendering of it.
+    in property <FleetHost> detail-host: {
+        id: "", name: "", detail: "", online: false, selected: true, rows: []
+    };
+
+    /// The selected host's groups of detail: the numbers behind the shares,
+    /// the drives and the interfaces.
+    in property <[DetailSection]> detail-sections: [];
+
+    /// The `EggPool` plane, as a group of the panel.
+    ///
+    /// It is a plane of its own and **not** one of the selected host's
+    /// groups: it describes the service, and not a host, so it does not
+    /// belong to the detail view. It is shown in **every** view.
+    in property <DetailSection> eggpool-section: { heading: "", rows: [] };
+
+    /// The height the `EggPool` plane takes.
+    ///
+    /// It is zero when there is no plane to show — a configuration with no
+    /// `EggPool` entry has none — and a plane that is not there must not
+    /// leave a gap behind it.
+    in property <length> eggpool-height: 0px;
+
+    /// The selected host's scheduler jobs.
+    in property <[JobRow]> jobs;
+
+    /// The retained records of the open scheduler job.
+    in property <string> cron-records: "";
+
+    /// The attribution and about text. Empty until the operator asks for it.
+    in property <string> about-text: "";
+
+    /// What the operator is told about the desktop's system tray.
+    ///
+    /// Empty when the desktop has a tray, so the line is only ever on screen
+    /// when it is true: with no tray, closing the pulldown quits Gregg.
+    in property <string> tray-warning: "";
+
+    /// What the panel is showing.
+    in property <PanelMode> mode: PanelMode.Fleet;
+
+    /// The endpoint the form is editing. Bound to the form's text field.
+    in-out property <string> form-endpoint: "";
+
+    /// The name the form is editing. Bound to the form's text field.
+    in-out property <string> form-name: "";
+
+    /// The form's heading.
+    in property <string> form-title: "";
+
+    /// What the form says about what it is about to do.
+    in property <string> form-note: "";
+
+    /// What the last attempt said.
+    in property <string> panel-message: "";
+
+    /// Whether the last attempt failed.
+    in property <bool> panel-message-is-error: false;
+
+    /// The label on the form's confirming button.
+    in property <string> form-apply-text: "Add";
+
+    /// Whether the form's confirming button does anything.
+    in property <bool> form-can-apply: false;
+
+    /// Whether the pulldown holds the keyboard focus.
+    ///
+    /// The window losing its activation takes the focus away from whatever
+    /// held it — the scope that handles the keys, or a field of the form —
+    /// and this says whether the pulldown still holds it. It is the
+    /// pulldown's own answer to "did the operator click away?".
+    ///
+    /// The form's fields are named here, which is why the form's pane is
+    /// always in the tree and only its visibility changes: a field inside a
+    /// conditional block cannot be named from the top.
+    out property <bool> holds-focus: key-handler.has-focus
+        || add-endpoint-field.has-focus
+        || add-name-field.has-focus
+        || edit-endpoint-field.has-focus
+        || edit-name-field.has-focus;
+
+    /// The operator asked for a configuration reload.
+    callback refresh-requested();
+
+    /// The operator asked to quit.
+    callback quit-requested();
+
+    /// The operator asked to close the pulldown.
+    callback close-requested();
+
+    /// The operator selected a host, by its stable id.
+    callback host-selected(string);
+
+    /// The operator asked for the other view: the detail of the selected
+    /// host, or the fleet again.
+    callback view-toggled();
+
+    /// The operator selected a scheduler job, by name.
+    callback job-selected(string);
+
+    /// The operator asked for the about and attribution text.
+    callback about-requested();
+
+    /// The operator opened or closed the `EggPool` plane.
+    callback eggpool-toggled();
+
+    /// The operator asked for the form that adds a host.
+    callback add-host-requested();
+
+    /// The operator asked to edit a host, by its stable id.
+    callback edit-host-requested(string);
+
+    /// The operator asked to remove a host, by its stable id.
+    callback remove-host-requested(string);
+
+    /// The operator confirmed the form.
+    callback form-submitted();
+
+    /// The operator abandoned the form.
+    callback form-cancelled();
+
+    /// The form's endpoint field changed.
+    callback endpoint-edited(string);
+
+    /// The form's name field changed.
+    callback name-edited(string);
+
+    /// The pulldown no longer holds the keyboard focus.
+    ///
+    /// The operator clicked away from it, which is how a menu is dismissed.
+    callback focus-left();
+
+    // The pulldown no longer holds the keyboard focus.
+    //
+    // The focus leaves the pulldown for two reasons, and only one of them
+    // is a click away: the other is the form taking the focus for a text
+    // field. The Rust side decides what a lost focus means.
+    changed holds-focus => {
+        if (!root.holds-focus) {
+            root.focus-left();
+        }
+    }
+
+    /// Give the keyboard focus back to the pulldown.
+    ///
+    /// A text field takes the focus for itself, and when the form goes away
+    /// the focus goes with it — so the pulldown takes the focus back, or it
+    /// would believe it had lost it and dismiss itself.
+    public function take-focus() {
+        key-handler.focus();
+    }
+
+    /// The header strip was dragged, by this much.
+    callback dragged(length, length);
+
+    /// The operator finished moving the pulldown.
+    ///
+    /// It is the signal to remember the placement: the drag itself only moves
+    /// the window, and a drag that is still in flight is not a placement the
+    /// operator has settled on.
+    callback geometry-changed();
+
+    /// The selected host's stable id, or an empty string when nothing is
+    /// selected.
+    ///
+    /// The host's own actions are aimed by id and not by a row's place in the
+    /// list: the fleet can reorder between the moment the list was drawn and
+    /// the moment the operator acts.
+    in property <string> selected-host-id: "";
+
+    /// The room the vertical scrollbar takes out of the viewport.
+    ///
+    /// The scrollbar is drawn over the right-hand edge of the viewport, so
+    /// the content is given the viewport width minus this. It is the widest
+    /// the native scrollbars get (they grow on hover), so the row text is
+    /// never under the scrollbar.
+    private property <length> scrollbar-reserve: 16px;
+
+    /// The padding inside the card.
+    private property <length> pane-padding: 12px;
+
+    /// The padding above the body's content.
+    ///
+    /// It is smaller than the padding on the sides: the header strip already
+    /// sits above the content, and the space between the fleet's title and
+    /// its first host is a *gap*, not a margin. A margin the size of the
+    /// side padding reads as an empty band.
+    private property <length> pane-padding-top: 6px;
+
+    /// The padding below the body's content.
+    private property <length> pane-padding-bottom: 12px;
+
+    /// The gap between the body's groups.
+    ///
+    /// The body's own layout spacing is zero, because a layout adds its
+    /// spacing between **every** cell and a cell that is empty still takes
+    /// part in the layout: three empty notice rows would push the fleet down
+    /// by eighteen pixels and say nothing at all. Each group carries the gap
+    /// that follows it instead, so the gap is there only when there is
+    /// something on both sides of it.
+    private property <length> body-gap: 6px;
+
+    /// The room the shadow takes around the card.
+    private property <length> margin: 14px;
+
+    /// The card's hairline.
+    ///
+    /// A native macOS popover has **no stroked outline**: its edge is the
+    /// edge of the vibrant material, a step of about a tenth of the
+    /// luminance. `NSColor.separatorColor` is that step — measured at
+    /// `rgba(0, 0, 0, 0.098)` in the light scheme and
+    /// `rgba(255, 255, 255, 0.098)` in the dark one.
+    ///
+    /// `Palette.border` is **not** it: in the light scheme it is `#00000073`,
+    /// forty-five percent of black in a single pixel, which is a hard dark
+    /// line drawn *around* the panel rather than an edge of it.
+    private property <color> hairline:
+        Palette.color-scheme == ColorScheme.dark ? #FFFFFF19 : #00000019;
+
+    /// The colour of the text that is not the subject: a heading, a label.
+    ///
+    /// It is `NSColor.secondaryLabelColor`, the colour macOS uses for
+    /// everything that is not the label of a control: `rgba(0, 0, 0, 0.498)`
+    /// in the light scheme and `rgba(255, 255, 255, 0.549)` in the dark one.
+    private property <color> secondary-text:
+        Palette.color-scheme == ColorScheme.dark ? #FFFFFF8C : #0000007F;
+
+    /// How dark the card's shadow is at its darkest.
+    ///
+    /// It is the shadow's *peak*, not the alpha of one step: the steps add
+    /// up, and this is roughly what they add up to at the card's own edge.
+    private property <float> shadow-strength: 0.20;
+
+    /// The card's corner radius.
+    private property <length> radius: 12px;
+
+    /// The columns of a host's block live in the `HostBlock` component
+    /// itself, because the fleet view and the detail view draw their host
+    /// with that one component: a column width that lived here would be a
+    /// width the two views could disagree about.
+
+    /// The height of a host's header line.
+    private property <length> host-header-height: 16px;
+
+    /// The gap between two hosts' blocks.
+    private property <length> host-block-gap: 6px;
+
+    /// The height the attribution text takes when it is shown.
+    private property <length> about-height: 56px;
+
+    /// Whether the attachment's state is shown.
+    private property <bool> has-status: root.status-text != "";
+
+    /// Whether the last action's message is shown.
+    private property <bool> has-message: root.panel-message != "";
+
+    /// Whether the tray's warning is shown.
+    private property <bool> has-warning: root.tray-warning != "";
+
+    /// Whether any notice is shown at all.
+    private property <bool> has-notice: root.has-status || root.has-message || root.has-warning;
+
+    /// The height of each notice.
+    private property <length> status-height: root.status-text == "" ? 0px : 18px;
+    private property <length> message-height: root.panel-message == "" ? 0px : 30px;
+    private property <length> warning-height: root.tray-warning == "" ? 0px : 18px;
+
+    /// Each notice's slot: the line itself, and the gap above it when
+    /// another notice is there.
+    ///
+    /// A notice carries its own gap so that two notices are six pixels apart
+    /// and one notice is not six pixels below the header.
+    private property <length> message-slot: root.message-height + (root.has-status ? root.body-gap : 0px);
+    private property <length> warning-slot: root.warning-height + (root.has-message ? root.body-gap : 0px);
+
+    /// Where each notice's text sits.
+    private property <length> message-y: root.status-height + (root.has-status ? root.body-gap : 0px);
+    private property <length> warning-y: root.status-height + root.message-slot + (root.has-message ? root.body-gap : 0px);
+
+    /// The notices' whole height: their slots, and the gap that follows
+    /// them.
+    ///
+    /// The gap is *inside* this height on purpose: it is what separates the
+    /// notices from the fleet below them, and it is only there when there
+    /// are notices to separate.
+    private property <length> notices-height: root.status-height + root.message-slot + root.warning-slot + (root.has-notice ? root.body-gap : 0px);
+
+    /// Where the pointer toward the tray item sits.
+    ///
+    /// The pulldown is anchored to the platform's **trailing** corner, and
+    /// that is where the tray item is, so the pointer sits there too — a beak
+    /// under the item it belongs to, the way a native popover's is. Slint
+    /// 1.18 does not expose the tray item's own position, so the pointer
+    /// follows the card's anchor rather than the item's exact place.
+    ///
+    /// The inset keeps the pointer's base on the card's flat edge, clear of
+    /// the rounded corner.
+    private property <length> pointer-width: 14px;
+    private property <length> pointer-height: 7px;
+    private property <length> pointer-inset: 16px;
+    private property <length> pointer-x: root.width - root.margin - root.pointer-inset - root.pointer-width;
+
+    /// The width the panes get: the card without its padding.
+    private property <length> pane-width: root.width - 2 * root.margin - 2 * root.pane-padding;
+
+    /// The width the content of a scroll container gets: the pane without
+    /// the room the vertical scrollbar takes.
+    private property <length> list-content-width: max(0px, root.pane-width - root.scrollbar-reserve);
+
+    /// The keyboard handler. It is the window's focus target, so `Esc`
+    /// reaches it even when a text field has the focus.
+    forward-focus: key-handler;
+
+    // The keyboard handler **wraps** the whole pulldown.
+    //
+    // Slint routes a key to the focused item and then, if the item rejects
+    // it, up through that item's ancestors. A text field rejects `Esc` — it
+    // has no meaning there — so a handler that merely sat beside the content
+    // would never see the key while a field had the focus. Wrapping the
+    // content makes the handler an ancestor of the fields, so `Esc` reaches
+    // it from anywhere in the pulldown.
+    //
+    // `forward-focus` gives this scope the focus when the pulldown opens,
+    // which is what makes `Esc` work before anything has been clicked.
+    key-handler := FocusScope {
+        // The card's shadow.
+        //
+        // Slint's software renderer does not draw drop shadows — its
+        // `draw_box_shadow` is an empty stub — so the shadow is drawn: a
+        // stack of thin rounded rectangles behind the card, each one pixel
+        // further out and a little fainter than the last.
+        //
+        // The alphas follow a Gaussian falloff, so the *sum* of the steps is
+        // one soft shadow that fades to nothing at the window's edge. A few
+        // wide steps would read as a ring around the card instead, which is
+        // what a hard shadow looks like on a bright desktop: a band, not a
+        // shadow.
+        for step in 14 : Rectangle {
+            x: root.margin - (step + 1) * 1px;
+            y: root.margin - (step + 1) * 1px;
+            width: root.width - 2 * (root.margin - (step + 1) * 1px);
+            height: root.height - 2 * (root.margin - (step + 1) * 1px);
+            border-radius: root.radius + (step + 1) * 1px;
+            background: rgba(0, 0, 0, root.shadow-strength * (exp(0.0 - step * step / 50.0) - exp(0.0 - (step + 1) * (step + 1) / 50.0)));
+        }
+
+        // The card. It is the pulldown's own shape: rounded, and outlined
+        // so that it reads as a card even where the window cannot be
+        // transparent and the corners are filled in.
+        Rectangle {
+            x: root.margin;
+            y: root.margin;
+            width: root.width - 2 * root.margin;
+            height: root.height - 2 * root.margin;
+            border-radius: root.radius;
+            border-width: 1px;
+            border-color: root.hairline;
+            // The card's fill.
+            //
+            // A native macOS popover is a *vibrant material*: it transmits
+            // most of what is behind it, desaturated and darkened on the way
+            // through. Slint cannot blur the backdrop, so the closest thing
+            // is a fill that lets a little of the desktop through — enough
+            // that the panel belongs to the desktop rather than sitting on
+            // it, and little enough that the text stays legible over any
+            // wallpaper.
+            background: Palette.background.with-alpha(0.94);
+
+            VerticalLayout {
+                padding: 0px;
+                spacing: 0px;
+
+                // ------------------------------------------------ the header
+                // The pulldown has no window chrome, so the header strip is
+                // the pulldown's own title bar: it carries the summary and it
+                // drags the pulldown.
+                //
+                // It carries **no close control**. A pulldown is dismissed by
+                // the tray's click, by `Esc` and by a click away, and a
+                // fourth control that does the same thing is a target the
+                // operator can miss and a button that says nothing the
+                // footer does not already say.
+                //
+                // It is as short as it can be while still being a drag
+                // target: the strip's height is a line of dead space above
+                // and below the title on every panel that is open.
+                Rectangle {
+                    height: 28px;
+                    // The card's own background shows through: a square
+                    // rectangle over a rounded card would cover the card's
+                    // rounded corners.
+                    background: #00000000;
+
+                    // The drag area sits underneath the summary, so the
+                    // summary still gets its click.
+                    TouchArea {
+                        moved => {
+                            root.dragged(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
+                        }
+                        pointer-event(event) => {
+                            if (event.kind == PointerEventKind.up) {
+                                root.geometry-changed();
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        spacing: 8px;
+
+                        Text {
+                            text: root.fleet-summary;
+                            font-size: 12px;
+                            font-weight: 700;
+                            color: Palette.foreground;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                            wrap: no-wrap;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // --------------------------------------------------- the body
+                VerticalLayout {
+                    padding: 0px;
+                    padding-top: root.pane-padding-top;
+                    padding-bottom: root.pane-padding-bottom;
+                    padding-left: root.pane-padding;
+                    padding-right: root.pane-padding;
+                    // The spacing is zero on purpose: a layout adds its
+                    // spacing between every cell, and a cell that is empty
+                    // still takes part in the layout. Three empty notice
+                    // rows would push the fleet down by eighteen pixels and
+                    // say nothing. Each group carries the gap that follows
+                    // it instead — see `body-gap`.
+                    spacing: 0px;
+                    vertical-stretch: 1;
+
+                    // The notices: the attachment's state, the last action's
+                    // message and the tray's warning.
+                    //
+                    // They are ONE cell and they carry their own gaps, so
+                    // that three empty notices take no room at all.
+                    Rectangle {
+                        height: root.notices-height;
+                        visible: root.notices-height > 0px;
+
+                        Text {
+                            x: 0px;
+                            y: 0px;
+                            width: root.pane-width;
+                            height: root.status-height;
+                            visible: root.has-status;
+                            text: root.status-text;
+                            font-size: 11px;
+                            color: Palette.foreground;
+                            wrap: word-wrap;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+
+                        Text {
+                            x: 0px;
+                            y: root.message-y;
+                            width: root.pane-width;
+                            height: root.message-height;
+                            visible: root.has-message;
+                            text: root.panel-message;
+                            font-size: 11px;
+                            font-weight: root.panel-message-is-error ? 700 : 400;
+                            color: root.panel-message-is-error ? Palette.accent-background : Palette.foreground;
+                            wrap: word-wrap;
+                            overflow: elide;
+                        }
+
+                        Text {
+                            x: 0px;
+                            y: root.warning-y;
+                            width: root.pane-width;
+                            height: root.warning-height;
+                            visible: root.has-warning;
+                            text: root.tray-warning;
+                            font-size: 11px;
+                            color: Palette.foreground;
+                            wrap: word-wrap;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    // ------------------------------------------------ the fleet
+                    //
+                    // The fleet view: the TUI's condensed fleet row,
+                    // turned on its side. Each host is a block of its own — a
+                    // header line with the host's name and the readings that
+                    // are not used shares, and then one measured row per used
+                    // share, each with a bar that takes the full width.
+                    if root.mode == PanelMode.Fleet : VerticalLayout {
+                        spacing: 6px;
+                        vertical-stretch: 1;
+
+                        // The fleet. Clicking a block selects that host; the
+                        // selection is keyed by the stable system id on the Rust
+                        // side, so a host that reorders does not move the
+                        // selection.
+                        //
+                        // The list is in a scroll container with a bounded
+                        // height: a fleet can be large, and an unbounded list
+                        // would push the pulldown off the desktop.
+                        //
+                        // The box is the height the Rust side computed for the
+                        // whole pane, so the box reaches the bottom of the
+                        // pane — down to the footer's strip — and never stops
+                        // short of it with a band of dead space below.
+                        ScrollView {
+                            content-width: root.list-content-width;
+                            vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
+                            horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                            preferred-height: root.pane-box-height;
+                            max-height: root.pane-box-height;
+                            min-height: min(root.pane-box-height, root.host-header-height);
+
+                            VerticalLayout {
+                                width: root.list-content-width;
+                                spacing: root.host-block-gap;
+
+                                // Each host is a block: a header line and the
+                                // five used shares under it, one bar each.
+                                //
+                                // The block is drawn by the same component the
+                                // detail view draws the selected host with, so
+                                // the two views cannot drift apart and there
+                                // is one bar per used share in the whole
+                                // panel.
+                                for host in root.hosts : HostBlock {
+                                    host: host;
+                                    content-width: root.list-content-width;
+                                    quiet-color: root.secondary-text;
+                                    host-clicked(id) => {
+                                        root.host-selected(id);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ------------------------------------------------ the detail
+                    //
+                    // The selected host's own numbers: its measured rows, its
+                    // drives and its interfaces, its scheduler jobs and their
+                    // records. It is behind the footer's own control, so the
+                    // fleet view stays a fleet view.
+                    if root.mode == PanelMode.Detail : VerticalLayout {
+                        spacing: 6px;
+                        vertical-stretch: 1;
+
+                        // The detail is one scroll container, so it scrolls as
+                        // a whole and there is one scroll model.
+                        //
+                        // It is the **same box** the fleet view scrolls in, and
+                        // so it is the same height: the panel does not resize
+                        // when the operator opens the detail, and the control
+                        // that brings the fleet back does not move.
+                        ScrollView {
+                            content-width: root.list-content-width;
+                            vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
+                            horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                            preferred-height: root.pane-box-height;
+                            max-height: root.pane-box-height;
+                            min-height: 0px;
+                            vertical-stretch: 1;
+
+                            VerticalLayout {
+                                width: root.list-content-width;
+                                spacing: 8px;
+
+                                // The selected host's own block, drawn by the
+                                // very component the fleet view draws its
+                                // hosts with. The detail view is the fleet
+                                // view's host opened up, and not a second
+                                // rendering of it: there is no second set of
+                                // bars, and the one set there is looks the
+                                // same in both views.
+                                HostBlock {
+                                    host: root.detail-host;
+                                    content-width: root.list-content-width;
+                                    quiet-color: root.secondary-text;
+                                }
+
+                                // The groups of detail: the numbers behind
+                                // the shares, the drives, the interfaces and
+                                // the `EggPool` plane. A heading and two
+                                // columns make a list of facts readable; a
+                                // wall of `name  value` lines is a dump.
+                                for section in root.detail-sections : DetailSectionView {
+                                    section: section;
+                                    content-width: root.list-content-width;
+                                    quiet-color: root.secondary-text;
+                                }
+
+                                // The scheduler's jobs. They are their own
+                                // group, because a job is a thing the
+                                // operator acts on and not a reading.
+                                if root.jobs.length > 0 : SectionHeading {
+                                    text: "CRON";
+                                    content-width: root.list-content-width;
+                                    quiet-color: root.secondary-text;
+                                }
+
+                                for job in root.jobs : Rectangle {
+                                    height: 22px;
+                                    background: job.selected ? Palette.foreground.with-alpha(0.07) : #00000000;
+
+                                    TouchArea {
+                                        clicked => {
+                                            root.job-selected(job.name);
+                                        }
+                                    }
+
+                                    // The job's name, its state and its last
+                                    // outcome. The text carries its own
+                                    // place: a `Text` inside a rectangle that
+                                    // is not a layout is centred by Slint
+                                    // unless it says where it is.
+                                    Text {
+                                        x: 10px;
+                                        y: 0px;
+                                        width: max(0px, root.list-content-width - 20px);
+                                        height: 22px;
+                                        text: job.name + "  " + job.state + "  " + job.outcome;
+                                        font-size: 12px;
+                                        color: job.selected ? Palette.accent-background : Palette.foreground;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        wrap: no-wrap;
+                                    }
+                                }
+
+                                // The records of the open job.
+                                Rectangle {
+                                    min-height: 0px;
+                                    max-height: 0px;
+
+                                    Text {
+                                        x: 10px;
+                                        y: 0px;
+                                        width: max(0px, root.list-content-width - 20px);
+                                        text: root.cron-records;
+                                        font-size: 11px;
+                                        color: Palette.foreground;
+                                        wrap: word-wrap;
+                                        overflow: elide;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // --------------------------------------------------- the forms
+                    //
+                    // A form's pane is always in the tree — its fields have to
+                    // be nameable, or the pulldown cannot tell that one of
+                    // them holds the keyboard focus — but a pane that is not
+                    // showing takes **no room at all**.
+                    //
+                    // That is not a detail. A Slint layout lays out the
+                    // invisible items as if they were visible: they are not
+                    // painted, but they still claim their height, and the
+                    // layout squeezes the items around them to make room. Two
+                    // forms that were always in the tree claimed 440 points
+                    // of the body's height between them, and the fleet's
+                    // scroll box was squeezed to a third of what the panel
+                    // had room for — a band of dead space below the last
+                    // host and a fleet that could not be scrolled.
+                    ScrollView {
+                        visible: root.mode == PanelMode.AddHost;
+                        content-width: root.list-content-width;
+                        vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
+                        horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                        preferred-height: root.mode == PanelMode.AddHost ? root.form-height : 0px;
+                        max-height: root.mode == PanelMode.AddHost ? root.form-height : 0px;
+                        min-height: 0px;
+
+                        VerticalLayout {
+                            width: root.list-content-width;
+                            spacing: 8px;
+
+                            Text {
+                                text: root.form-title;
+                                font-size: 13px;
+                                font-weight: 700;
+                                color: Palette.foreground;
+                            }
+
+                            Text {
+                                text: root.form-note;
+                                font-size: 11px;
+                                color: Palette.foreground;
+                                wrap: word-wrap;
+                                overflow: elide;
+                            }
+
+                            Text {
+                                text: "Endpoint";
+                                font-size: 11px;
+                                font-weight: 700;
+                                color: Palette.foreground;
+                            }
+
+                            add-endpoint-field := LineEdit {
+                                text <=> root.form-endpoint;
+                                placeholder-text: "host:port";
+                                edited => {
+                                    root.endpoint-edited(self.text);
+                                }
+                            }
+
+                            Text {
+                                text: "Name (optional)";
+                                font-size: 11px;
+                                font-weight: 700;
+                                color: Palette.foreground;
+                            }
+
+                            add-name-field := LineEdit {
+                                text <=> root.form-name;
+                                placeholder-text: "a name for this host";
+                                edited => {
+                                    root.name-edited(self.text);
+                                }
+                            }
+
+                            Rectangle {
+                                min-height: 1px;
+                                max-height: 1px;
+                                background: root.hairline;
+                            }
+
+                            HorizontalLayout {
+                                alignment: end;
+                                spacing: 8px;
+
+                                Button {
+                                    text: "Cancel";
+                                    clicked => {
+                                        root.form-cancelled();
+                                    }
+                                }
+                                Button {
+                                    text: root.form-apply-text;
+                                    enabled: root.form-can-apply;
+                                    primary: true;
+                                    clicked => {
+                                        root.form-submitted();
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    ScrollView {
+                        visible: root.mode == PanelMode.EditHost;
+                        content-width: root.list-content-width;
+                        vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
+                        horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                        preferred-height: root.mode == PanelMode.EditHost ? root.form-height : 0px;
+                        max-height: root.mode == PanelMode.EditHost ? root.form-height : 0px;
+                        min-height: 0px;
+
+                        VerticalLayout {
+                            width: root.list-content-width;
+                            spacing: 8px;
+
+                            Text {
+                                text: root.form-title;
+                                font-size: 13px;
+                                font-weight: 700;
+                                color: Palette.foreground;
+                            }
+
+                            Text {
+                                text: root.form-note;
+                                font-size: 11px;
+                                color: Palette.foreground;
+                                wrap: word-wrap;
+                                overflow: elide;
+                            }
+
+                            Text {
+                                text: "Endpoint";
+                                font-size: 11px;
+                                font-weight: 700;
+                                color: Palette.foreground;
+                            }
+
+                            edit-endpoint-field := LineEdit {
+                                text <=> root.form-endpoint;
+                                placeholder-text: "host:port";
+                                edited => {
+                                    root.endpoint-edited(self.text);
+                                }
+                            }
+
+                            Text {
+                                text: "Name (optional)";
+                                font-size: 11px;
+                                font-weight: 700;
+                                color: Palette.foreground;
+                            }
+
+                            edit-name-field := LineEdit {
+                                text <=> root.form-name;
+                                placeholder-text: "a name for this host";
+                                edited => {
+                                    root.name-edited(self.text);
+                                }
+                            }
+
+                            Rectangle {
+                                min-height: 1px;
+                                max-height: 1px;
+                                background: root.hairline;
+                            }
+
+                            HorizontalLayout {
+                                alignment: end;
+                                spacing: 8px;
+
+                                Button {
+                                    text: "Cancel";
+                                    clicked => {
+                                        root.form-cancelled();
+                                    }
+                                }
+                                Button {
+                                    text: root.form-apply-text;
+                                    enabled: root.form-can-apply;
+                                    primary: true;
+                                    clicked => {
+                                        root.form-submitted();
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // The `EggPool` plane.
+                    //
+                    // It is **always on screen**: it is not behind the detail
+                    // view, and it is not in the scroll box, so the operator
+                    // reads the service's own numbers without scrolling and
+                    // without switching views.
+                    //
+                    // It is a plane of its own and not one of the selected
+                    // host's groups — it describes the service, and not a
+                    // host — so it is pinned below the scrolling box rather
+                    // than scrolling with the fleet.
+                    //
+                    // It takes **no room at all** when there is nothing to
+                    // say: a configuration with no `EggPool` entry has no
+                    // plane, and a plane that is not there must not leave a
+                    // gap behind it. That is the same rule the forms follow,
+                    // and for the same reason — a Slint layout lays out the
+                    // invisible items as if they were visible.
+                    Rectangle {
+                        height: root.eggpool-height;
+                        visible: root.eggpool-height > 0px;
+
+                        DetailSectionView {
+                            x: 0px;
+                            y: 0px;
+                            width: root.list-content-width;
+                            section: root.eggpool-section;
+                            content-width: root.list-content-width;
+                            quiet-color: root.secondary-text;
+                        }
+                    }
+
+                    // The attribution and about block. It is empty — and
+                    // therefore invisible — until the operator asks for it,
+                    // and it is outside the detail so that it is readable
+                    // from the fleet view too.
+                    //
+                    // It is the body's LAST group, so that the gap above it
+                    // is the only gap it needs: it is the last thing in the
+                    // panel in every view, and a gap that follows nothing is
+                    // a gap that is in the way of nothing.
+                    //
+                    // It is wrapped in a rectangle with an explicit height for
+                    // the same reason the notices are: a `Text` takes a line
+                    // of its own even when it is empty, and a line nobody
+                    // asked for is a line the height calculation does not
+                    // know about.
+                    Rectangle {
+                        height: root.about-text == "" ? 0px : root.about-height + root.body-gap;
+                        visible: root.about-text != "";
+
+                        Text {
+                            x: 0px;
+                            y: root.body-gap;
+                            width: root.pane-width;
+                            height: root.about-height;
+                            text: root.about-text;
+                            font-size: 11px;
+                            color: Palette.foreground;
+                            wrap: word-wrap;
+                            overflow: elide;
+                        }
+                    }
+                }
+
+                // --------------------------------------------------- the footer
+                // The pulldown's own actions. They are links, not buttons:
+                // they are menu entries, and a dropdown's entries are quiet.
+                // On macOS the native tray menu is detached, so `Quit` is
+                // here or nowhere.
+                //
+                // The strip is a little taller than the links it holds, so
+                // that they are not flush against the card's bottom edge:
+                // a row of links that touches the edge reads as cropped.
+                Rectangle {
+                    height: 24px;
+                    background: #00000000;
+
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 6px;
+                        padding-bottom: 6px;
+                        spacing: 4px;
+                        alignment: start;
+
+                        Link {
+                            label: "Reload";
+                            activated => {
+                                root.refresh-requested();
+                            }
+                        }
+
+                        Link {
+                            label: "Add host";
+                            visible: root.mode == PanelMode.Fleet || root.mode == PanelMode.Detail;
+                            activated => {
+                                root.add-host-requested();
+                            }
+                        }
+
+                        // The `EggPool` plane. It is shown in **every**
+                        // view, so the link that opens and closes it is
+                        // there in every view too — a control that appears
+                        // and disappears with the view is a control the
+                        // operator has to find.
+                        Link {
+                            label: "EggPool";
+                            activated => {
+                                root.eggpool-toggled();
+                            }
+                        }
+
+                        // The two views. The fleet is a list of hosts and
+                        // their bars; the detail is the selected host's own
+                        // numbers, its drives, its interfaces and its
+                        // scheduler. The control says which one the other
+                        // one is.
+                        Link {
+                            label: root.mode == PanelMode.Detail ? "Fleet" : "Detail";
+                            visible: root.mode == PanelMode.Fleet || root.mode == PanelMode.Detail;
+                            activated => {
+                                root.view-toggled();
+                            }
+                        }
+
+                        // The selected host's own actions. They live in the
+                        // pulldown's own affordances, and not on every row: a
+                        // button on every row crowds the row and blurs into
+                        // the selection tint.
+                        Link {
+                            label: "Edit";
+                            enabled: root.selected-host-id != "";
+                            activated => {
+                                root.edit-host-requested(root.selected-host-id);
+                            }
+                        }
+
+                        Link {
+                            label: "Remove";
+                            enabled: root.selected-host-id != "";
+                            activated => {
+                                root.remove-host-requested(root.selected-host-id);
+                            }
+                        }
+
+                        Link {
+                            label: "About";
+                            activated => {
+                                root.about-requested();
+                            }
+                        }
+
+                        Link {
+                            label: "Quit";
+                            activated => {
+                                root.quit-requested();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // The pointer toward the tray item.
+        //
+        // It is drawn twice: once in the card's border colour and a little
+        // larger, and once in the card's own colour on top of it, so the
+        // pointer has an edge where the window cannot be transparent and the
+        // card's own colour would otherwise hide it.
+        //
+        // The base of both triangles sits on the card's edge, so the card's
+        // outline runs into the pointer's outline instead of crossing it.
+        Path {
+            visible: root.pointer-at-top;
+            x: root.pointer-x;
+            y: root.margin - root.pointer-height;
+            width: root.pointer-width;
+            height: root.pointer-height;
+            fit: ImageFit.fill;
+            commands: "M 0 7 L 7 0 L 14 7 Z";
+            fill: root.hairline;
+        }
+
+        Path {
+            visible: root.pointer-at-top;
+            x: root.pointer-x + 1px;
+            y: root.margin - root.pointer-height + 2px;
+            width: root.pointer-width - 2px;
+            height: root.pointer-height - 2px;
+            fit: ImageFit.fill;
+            commands: "M 1 5 L 6 0 L 11 5 Z";
+            fill: Palette.background.with-alpha(0.94);
+        }
+
+        Path {
+            visible: !root.pointer-at-top;
+            x: root.pointer-x;
+            y: root.height - root.margin;
+            width: root.pointer-width;
+            height: root.pointer-height;
+            fit: ImageFit.fill;
+            commands: "M 0 0 L 14 0 L 7 7 Z";
+            fill: root.hairline;
+        }
+
+        Path {
+            visible: !root.pointer-at-top;
+            x: root.pointer-x + 1px;
+            y: root.height - root.margin;
+            width: root.pointer-width - 2px;
+            height: root.pointer-height - 2px;
+            fit: ImageFit.fill;
+            commands: "M 1 0 L 11 0 L 6 5 Z";
+            fill: Palette.background.with-alpha(0.94);
+        }
+
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.close-requested();
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+export component TrayIcon inherits SystemTrayIcon {
+    /// The tray icon image.
+    ///
+    /// The inherited `icon` is bound to this one rather than assigned
+    /// directly: a property that is bound in the `.slint` file is compiled as
+    /// a constant, and a constant has no setter on the Rust side. The tray
+    /// icon is only created once a non-empty image has been assigned, so this
+    /// property is what the GUI fills in.
+    in property <image> tray-icon;
+
+    /// The hover text.
+    ///
+    /// Bound to the inherited `tooltip` for the same reason as `tray-icon`.
+    in property <string> status-text: "Gregg";
+
+    /// Whether this platform's tray carries a native menu.
+    ///
+    /// macOS does not: AppKit attaches the menu to the status item and pops
+    /// it on a click, so a menu there would swallow the click that opens the
+    /// pulldown. Windows and Linux keep theirs, where a right-click reaches
+    /// it and a left-click does not.
+    in property <bool> native-menu: false;
+
+    /// The macOS menu-bar label. Windows and Linux ignore it.
+    title: "Gregg";
+
+    icon: root.tray-icon;
+    tooltip: root.status-text;
+
+    /// The operator asked to quit.
+    callback quit-requested();
+
+    /// The operator clicked the tray's icon.
+    ///
+    /// The tray's own `clicked` callback belongs to the `SystemTrayIcon`
+    /// item, and a derived component does not re-export an inherited item's
+    /// callback to the language binding — so it is forwarded to one of this
+    /// component's own.
+    callback tray-clicked();
+
+    // The tray's click opens the pulldown.
+    clicked => {
+        root.tray-clicked();
+    }
+
+    // Exactly one `Menu` child, and nothing else.
+    //
+    // The menu is the tray's *context* menu: it carries `Quit Gregg` and
+    // nothing else. The fleet, the metrics and the forms are the pulldown's,
+    // and the pulldown is what the tray's click opens.
+    //
+    // The `if` is what detaches the menu on macOS. A menu with no entries
+    // makes AppKit detach the menu from the status item, and a status item
+    // with no menu routes its click to the tray's `clicked` callback.
+    if root.native-menu : Menu {
+        MenuItem {
+            title: "Quit Gregg";
+            activated => {
+                root.quit-requested();
+            }
+        }
+    }
+}

@@ -1,0 +1,17 @@
+# Plan 188 Part B: the Slint desktop frontend pins its own toolchain.
+#
+# The root workspace pins Rust 1.89 as its MSRV, because every crate in it
+# must build on that floor. Slint 1.18.1 declares `rust-version = 1.92`, so a
+# `1.89` toolchain cannot compile this crate at all. Rather than raise the
+# root workspace's MSRV (which would constrain the whole project for the
+# benefit of an optional frontend), this independent workspace pins the
+# `stable` channel, which is >= 1.92 today.
+#
+# `rustup` resolves the toolchain file from the *current working directory*,
+# so building from inside `apps/gregg-gui/` uses this file, and building from
+# the repository root uses the root's `rust-toolchain.toml`. Both pin
+# `stable`, so both resolve to the same toolchain.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

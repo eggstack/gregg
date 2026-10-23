@@ -95,17 +95,22 @@ pub fn format_capacity(bits_per_sec: Option<u64>) -> String {
 /// collapsed, so the rendered line never asserts a capacity the daemon did not
 /// measure. Equal two-sided values stay unqualified because then the number is
 /// unambiguous.
-fn format_directional_capacity(rx: Option<u64>, tx: Option<u64>) -> String {
+///
+/// It returns `None` when **neither** direction reported a capacity: there is
+/// no capacity to state at all, and that is a different fact from a capacity
+/// of zero. The caller decides how a missing capacity reads.
+#[must_use]
+pub fn format_directional_capacity(rx: Option<u64>, tx: Option<u64>) -> Option<String> {
     match (rx, tx) {
-        (Some(rx), Some(tx)) if rx == tx => format_capacity(Some(rx)),
-        (Some(rx), Some(tx)) => format!(
+        (Some(rx), Some(tx)) if rx == tx => Some(format_capacity(Some(rx))),
+        (Some(rx), Some(tx)) => Some(format!(
             "{}/{}",
             format_capacity(Some(rx)),
             format_capacity(Some(tx))
-        ),
-        (Some(value), None) => format!("{} rx", format_capacity(Some(value))),
-        (None, Some(value)) => format!("{} tx", format_capacity(Some(value))),
-        (None, None) => format_capacity(None),
+        )),
+        (Some(value), None) => Some(format!("{} rx", format_capacity(Some(value)))),
+        (None, Some(value)) => Some(format!("{} tx", format_capacity(Some(value)))),
+        (None, None) => None,
     }
 }
 
@@ -653,7 +658,8 @@ pub(crate) fn render_network_detail_lines(network: &NormalizedNetwork, width: u1
     let capacity = format_directional_capacity(
         network.aggregate_rx_capacity_bps,
         network.aggregate_tx_capacity_bps,
-    );
+    )
+    .unwrap_or_else(|| format_capacity(None));
     let mut lines = vec![truncate_width(
         &format!(
             "  NETWORK TOTAL  RX {}  TX {}  CAP {}  {}",
@@ -671,7 +677,8 @@ pub(crate) fn render_network_detail_lines(network: &NormalizedNetwork, width: u1
                 interface.name,
                 format_rate(interface.rx_bytes_per_sec),
                 format_rate(interface.tx_bytes_per_sec),
-                format_directional_capacity(interface.rx_capacity_bps, interface.tx_capacity_bps),
+                format_directional_capacity(interface.rx_capacity_bps, interface.tx_capacity_bps)
+                    .unwrap_or_else(|| format_capacity(None)),
             ),
             usize::from(width),
         )

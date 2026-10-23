@@ -215,6 +215,114 @@ entry that is provably Gregg's, leaving foreign ones alone; a daemon it cannot
 confidently stop blocks the deletion rather than leaving a stale endpoint
 behind. See [Client](docs/client.md).
 
+## Optional desktop GUI
+
+`apps/gregg-gui` is an **optional, experimental** Slint frontend — a system
+tray entry and a compact monitor window for the same fleet the TUI shows. It
+is a second way to *look* at the fleet, never a second way to *poll* it: it
+attaches to the same per-config client daemon over the same local protocol, so
+a TUI and a GUI window cost the fleet exactly what one window costs.
+
+```bash
+cargo build --manifest-path apps/gregg-gui/Cargo.toml --release
+
+apps/gregg-gui/target/release/gregg-gui --config ~/.config/gregg/gregg.toml \
+    --gregg ./target/release/gregg
+```
+
+The tray is the always-visible entry: a health-coloured icon whose tooltip
+carries the fleet's counts — `7 online` for a healthy fleet, and
+`7 online, 1 offline` when a host is not answering — and whose **click opens
+the pulldown**. The pulldown
+is a single borderless, always-on-top panel — there is no separate monitor
+window — with **two views**: the **fleet**, which gives every host a **block of
+its own** — a header line that names the host and carries the readings that are
+not used shares (`IO`, the load, the core count, the frequency), and under it a
+**usage bar** for each of the five used shares (`CPU`, `MEM`, `SWP`/`COMMIT`,
+`DISK`, `NET`), each bar taking the full width of the panel less its
+percentage; and the **detail**, which the pulldown's own footer opens. The
+detail is the selected host's **own block, drawn by the same component the
+fleet view draws every host with** — so there is exactly one bar per used share
+in the panel — and, under it, one condensed list of groups: the numbers behind
+the shares, each drive's own facts, and each interface's. The **`EggPool`
+plane** is a plane of its own and is **pinned below the scrolling box**, so it
+is shown in **every** view and never scrolls out of reach. The panel also
+carries `Reload`, `About` and `Quit`, and can **add, remove, rename and
+re-point** the hosts in the config file. Dismissing the panel hides it and
+leaves the tray running; quitting the GUI never stops the client daemon.
+
+The pulldown is a **dropdown**, and most of what it carries is vertical, so it
+is **412 points wide** and its list and its detail scroll in **one** box: the
+panel's height does not change when the detail is opened, and the control that
+brings the fleet back never moves under the pointer.
+
+The GUI is meant to live in the background, so it stays small: the pulldown's
+window is **built when it is first opened** and a hidden pulldown is not
+re-rendered, which takes the idle resident set from 82 MB to **45.5 MB** on
+macOS.
+
+The native tray menu is the **context** menu, not the dropdown — on macOS it is
+detached entirely, and elsewhere it carries only `Quit Gregg`. A native menu
+cannot host arbitrary Slint content, but that does not mean the content has to
+live in a *separately opened* window either: Slint's `SystemTrayIcon` has a
+**`clicked`** callback, and a native menu with no entries detaches itself so
+the platform routes the tray's click to that callback instead of popping the
+menu. So the tray's **click opens the pulldown and the pulldown carries the
+content**, with no launcher entry. The pulldown is anchored to the trailing
+corner of the display, on the side where the desktop's own shell lives, and its
+placement is remembered across restarts — the placement **relative
+to that display's own corner**, so it still means the same thing on a display
+of another size. Its **size** follows its content, always. It **looks** like a
+macOS dropdown too: a rounded card of
+translucent material with a hairline edge, a soft shadow and a pointer toward
+the tray item — and it **wastes no vertical space**: there is no band of dead
+space between the title and the first host, because a Slint layout counts an
+empty row as a row. And it **behaves** like a dropdown too: `Esc`, the tray's
+click **and a click away** dismiss it — and there is no `×`, because a fourth
+control that dismisses the panel the way three others already do is a target
+the operator can miss. The click away is
+watched differently on each desktop, because another application's mouse is not
+watchable everywhere: on **macOS** the pulldown watches the **mouse**, through
+AppKit's global event monitor, so it closes only when a click really lands
+elsewhere; on **Windows and Linux** it watches the **keyboard focus**, which is
+the desktop saying the window is no longer active.
+
+On a desktop with **no system tray** — a plain GNOME session has no
+`StatusNotifierItem` host — the tray cannot appear at all. The GUI notices,
+says so in the panel, and then **quits when you close the panel** instead of
+hiding it, because a hidden panel with no tray is an application you can no
+longer reach.
+
+On macOS the pulldown also **reaches another application's full screen**:
+it is a menu-bar-only application, and its window is told to join every space
+and to sit at the level a native status item's own menu is drawn at. So the
+tray's click opens the pulldown *over* the application you are looking at,
+with that application still in full screen behind it, and the GUI has no Dock
+icon of its own. The menu bar is still macOS's own business: it is hidden in
+full screen, and the pointer at the top of the screen brings it back.
+
+It is its own Cargo workspace with its own lockfile, because Slint 1.18 needs
+Rust 1.92 and the five core crates keep their Rust 1.89 MSRV. Nothing in the
+core workspace depends on it, it is not published to crates.io, and the
+terminal client is unaffected by its existence. The GUI is the only thing that
+may start the client daemon, and it does so by naming the `gregg` executable
+explicitly rather than launching itself. Being a separate workspace means it
+also has **its own CI** — it is formatted, linted, tested and release-built on
+macOS, Windows and Linux, and its tray is exercised natively on the Windows and
+Linux legs. The Windows leg also proves the **core** client-daemon launch with
+the CLI and no GUI involved (`gregg daemon restart` → `status` → `stop`),
+because the terminal client takes the same lock the GUI does.
+
+**The GUI is a source build.** There is no installer, no bundle and no release
+asset for it yet: it requires an existing Gregg installation, it has been
+qualified natively on macOS only, and shipping an unsigned binary would meet
+the operator with a Gatekeeper warning before the product. It has been measured
+against the fleet: attaching it to a 25-host fleet leaves the daemon's remote
+request budget **exactly** what it was with no frontend attached. See
+[`apps/gregg-gui/README.md`](apps/gregg-gui/README.md) for the tray, the
+helper resolution, the error states, the licence attribution and the packaging
+decision.
+
 ## Live metrics and compatibility
 
 Beyond the core CPU/memory/load/swap/drive gauges, v2 daemons may report

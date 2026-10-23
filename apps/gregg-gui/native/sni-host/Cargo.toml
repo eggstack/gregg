@@ -1,0 +1,23 @@
+# A standalone helper crate. It is deliberately its OWN Cargo workspace:
+#
+#   * `apps/gregg-gui` is a separate workspace with its own lockfile, and a
+#     nested package directory that is not excluded from it becomes an
+#     implicit member. That would pull `zbus` into the GUI workspace's
+#     dependency graph and rewrite the GUI's `Cargo.lock`, which the GUI's own
+#     CI job and the root workspace's MSRV job both depend on.
+#   * An empty `[workspace]` table makes this directory its own workspace
+#     root, so `cargo build --manifest-path apps/gregg-gui/native/sni-host/Cargo.toml`
+#     resolves here and nowhere else.
+[workspace]
+
+[package]
+name = "sni-host"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "CI-only StatusNotifierItem host used to exercise the Gregg GUI's Linux system tray"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+zbus = { version = "5", default-features = false, features = ["tokio"] }

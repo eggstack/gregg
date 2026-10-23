@@ -25,14 +25,10 @@
 //! idempotent and is what lets this module be the place that guarantees the
 //! rule, rather than relying on a distant chokepoint staying correct.
 
-use std::fmt::Write as _;
-
 use ratatui::layout::Rect;
 use ratatui::Frame;
 
-use gregg_protocol::{
-    SchedulerJobStateV2, SchedulerJobV2, SchedulerLoadGateV2, SchedulerOutcomeV2,
-};
+use gregg_protocol::{SchedulerJobStateV2, SchedulerJobV2, SchedulerOutcomeV2};
 
 use crate::clientd::snapshot::SystemCronDto;
 use crate::cron::{CronCapability, CronRecord};
@@ -492,16 +488,12 @@ fn schedule_label(schedule: &str) -> String {
 }
 
 /// The current scheduling state, in the fewest words that stay unambiguous.
+///
+/// Shared with the optional desktop GUI, so both frontends say the same thing
+/// about the same scheduler state. The words themselves live in
+/// [`crate::cron::state_label`].
 fn state_label(state: SchedulerJobStateV2) -> String {
-    match state {
-        SchedulerJobStateV2::Idle => "idle".to_owned(),
-        SchedulerJobStateV2::WaitingForSlot => "waiting for slot".to_owned(),
-        // Distinct words, not a colour: a delayed job and a running job must
-        // never read the same at a glance.
-        SchedulerJobStateV2::LoadHigh => "load delayed".to_owned(),
-        SchedulerJobStateV2::LoadUnavailable => "load unavailable".to_owned(),
-        SchedulerJobStateV2::Running => "running".to_owned(),
-    }
+    crate::cron::state_label(state)
 }
 
 /// Next run or elapsed duration, whichever the state implies.
@@ -537,54 +529,11 @@ fn state_detail(job: &SchedulerJobV2) -> Option<String> {
 /// it *is* above it. A retained observation is labelled as the admission or last
 /// gate it was, and a missing one is always spelled unavailable — never zero, and
 /// never a numeric comparison.
+/// Shared with the optional desktop GUI, so both frontends render the same
+/// relation for the same gate. The wording lives in
+/// [`crate::cron::load_gate_label`].
 fn load_gate_label(job: &SchedulerJobV2) -> Option<String> {
-    let gate: &SchedulerLoadGateV2 = job.load.as_ref()?;
-    let window = inert(&gate.window);
-    let max = format!("max {:.2}", gate.threshold);
-    let unavailable = || format!("load{window} unavailable ({max})");
-    let mut text = match (job.state, gate.observed) {
-        // The only state where the reading really is above the threshold.
-        (SchedulerJobStateV2::LoadHigh, Some(observed)) => {
-            format!("load{window} {observed:.2} > {:.2}", gate.threshold)
-        }
-        // Admitted under the gate it was started with.
-        (SchedulerJobStateV2::Running, Some(observed)) => {
-            format!("start load{window} {observed:.2} <= {:.2}", gate.threshold)
-        }
-        // Idle and slot-waiting rows carry the *previous* gate's observation.
-        // "last gate" says so, rather than presenting an old reading as the
-        // machine's current load.
-        (SchedulerJobStateV2::Idle | SchedulerJobStateV2::WaitingForSlot, Some(observed)) => {
-            format!(
-                "last gate load{window} {observed:.2} <= {:.2}",
-                gate.threshold
-            )
-        }
-        (SchedulerJobStateV2::Running, None) => {
-            format!("start load{window} unavailable ({max})")
-        }
-        (SchedulerJobStateV2::Idle | SchedulerJobStateV2::WaitingForSlot, None) => {
-            format!("last gate load{window} unavailable ({max})")
-        }
-        // No reading in any state, including the one that gates on load: there
-        // is no comparison to make, and `— > 8.00` is not one.
-        (SchedulerJobStateV2::LoadHigh | SchedulerJobStateV2::LoadUnavailable, _) => unavailable(),
-    };
-    // The retry context belongs to the *job*, not the gate, and is only
-    // meaningful while a load delay is actually in force. It is appended last
-    // so it is the first thing dropped on a narrow terminal.
-    if matches!(
-        job.state,
-        SchedulerJobStateV2::LoadHigh | SchedulerJobStateV2::LoadUnavailable
-    ) {
-        match job.next_retry_unix_ms {
-            Some(retry) => {
-                let _ = write!(text, " retry {}", countdown_to(retry));
-            }
-            None => text.push_str(" retry pending"),
-        }
-    }
-    Some(text)
+    crate::cron::load_gate_label(job, crate::state::now_unix_ms())
 }
 
 /// The header above the selected job's history.
@@ -685,17 +634,10 @@ fn stream_lines(record: &CronRecord, stream: Stream, depth: usize) -> Vec<String
 }
 
 /// A terminal outcome, named in words rather than by enum spelling.
+///
+/// Shared with the optional desktop GUI.
 fn outcome_label(outcome: SchedulerOutcomeV2) -> String {
-    match outcome {
-        SchedulerOutcomeV2::Success => "ok".to_owned(),
-        SchedulerOutcomeV2::Failed => "failed".to_owned(),
-        SchedulerOutcomeV2::SpawnFailed => "spawn failed".to_owned(),
-        SchedulerOutcomeV2::WaitFailed => "wait failed".to_owned(),
-        // A load-expired occurrence is a real terminal record even though no
-        // child ever ran, so it is named rather than omitted.
-        SchedulerOutcomeV2::LoadExpired => "load expired".to_owned(),
-        SchedulerOutcomeV2::Cancelled => "cancelled".to_owned(),
-    }
+    crate::cron::outcome_label(outcome)
 }
 
 /// Rows one record costs: its headline plus exactly the output lines
@@ -833,7 +775,7 @@ mod tests {
     use super::*;
     use gregg_protocol::{
         SchedulerEpochV2, SchedulerHistoryV2, SchedulerJobHistoryV2, SchedulerJobStateV2,
-        SchedulerJobV2, SchedulerOutcomeV2, SchedulerOutputV2,
+        SchedulerJobV2, SchedulerLoadGateV2, SchedulerOutcomeV2, SchedulerOutputV2,
     };
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;

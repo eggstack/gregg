@@ -17,6 +17,147 @@ Local tests remain the primary development path. The `ci.yml` workflow provides 
 
 ## Roadmap status
 
+## Optional Slint desktop GUI: Plans 187-192 (implemented; 190 pending release qualification; 191 implemented, pending native interactive acceptance, its interaction model superseded by 192; 192 implemented, pending native interactive acceptance, 2026-10-22)
+
+The existing per-config Gregg client daemon already owns all remote Systems,
+cron and EggPool polling. Plans 187-190 add an optional Slint system-tray/menu-bar
+and compact monitor frontend **against that daemon**, not a second poller.
+Plan 188 is **complete**: it introduced the daemon-executable selection
+boundary a separately named frontend needs, and created `apps/gregg-gui` as an
+independent Cargo workspace with its own lockfile and its own Rust 1.92
+toolchain floor, so the five core crates keep their Rust 1.89 MSRV and the
+root MSRV CI job never sees Slint. Plan 189 is **complete**: the GUI exists as
+a native tray entry and a compact monitor window, built on a pure document
+projection and a bridge that owns no HTTP client, with the scheduler and
+`EggPool` words shared with the TUI rather than reimplemented; the native
+macOS tray was exercised for real, and the native run found a real defect —
+a tray application is a background application, so "Open Monitor" did nothing
+when the GUI was launched the way a real one is launched — which is now fixed.
+Plan 190 owns counted multi-frontend, native Linux/macOS/Windows,
+packaging/license and performance qualification.
+Plan 190 is **implemented, pending release qualification** — its own
+native-platform acceptance gate is still **unchecked**, and the outstanding work
+is listed as such in the plan's *Release qualification* section rather than
+carried in a parenthetical — and it carries a **corrective pass** that found
+and fixed three real defects the closure language had described as merely
+"unverified": the Windows build of the `gregg` crate did not compile at all;
+the required no-`StatusNotifierItem`-host fallback was never implemented; and
+**the client daemon could not be launched on Windows at all** — the launch
+lock's path was inside the named-pipe device namespace, where no file can
+exist, so the launcher failed before it ever spawned a daemon and neither the
+TUI nor the GUI could start one there. All three are fixed, and the GUI workspace now has
+its own CI (fmt, clippy, tests and a release build on macOS, Windows and
+Linux, plus native tray exercises). The counted multi-frontend proof, the
+native macOS run, the footprint and the resource decision are all real, but a
+**visible** Windows notification-area icon needs a real Windows shell and a
+Linux tray run needs a desktop session with a `StatusNotifierItem` host. Those
+two targets are therefore **not shippable** on the strength of this line, and
+the packaging decision keeps the GUI a **source build** with no installer, no
+bundle and no release asset. Nothing in this line reopens the headless
+`greggd` API, completed client-daemon Plans 161-172, or the independent Plan
+091 soak record.
+
+Plan 191 is **implemented, pending native interactive acceptance**: it turns the
+GUI into a **single tray pulldown** — one borderless, always-on-top panel
+opened from the native tray menu, carrying all the metrics, drive and interface
+detail, cron and `EggPool` surfaces the compact monitor window carried — and
+drops the separate monitor window. It also gives the pulldown the ability to
+**add, remove, rename and re-point** hosts, which the GUI could not do: the
+protocol has no config-mutation message, and the GUI's entire control surface
+was a reload plus two intents. The write path is the **CLI's own library code**
+(`gregg::cli::add_host` / `remove_host` against the same `ConfigStore`), so the
+CLI's endpoint grammar, validation, locking and atomic write are inherited
+unchanged, the daemon is reloaded at its own boundary, and **no protocol change
+and no second poller** is involved. The plan's framework review **retains
+Slint 1.18.1**: it is the latest published release, it is the only Rust option
+with a first-class native tray, and the measured footprint is the software
+renderer's rather than the window's — so a pulldown is a change of shape, not
+of framework. The `std-widgets` import was **kept**, with its measurement
+recorded: the release binary is **11,896,608 bytes** against **10,803,360**
+before the plan, and the font and SVG stacks the import brings did not grow at
+all, because the scroll container had already paid for them. The write path was
+narrowed from `gregg::cli::dispatch` to the two narrow entry points because
+the broad one measured **2,864,992 bytes** worse — it also reaches the daemon
+commands, and the daemon reaches the HTTP client and its TLS stack. The
+**interactive** native acceptance Plan 190 leaves unchecked is carried forward
+rather than assumed, and Plan 191 leaves it unchecked too: the host-management
+path is proven in CI on all three targets, because it is a config-and-reload
+path rather than a pointer path, but opening the pulldown from a visible
+notification-area icon still needs a real desktop session. The CI run that
+carries it is **`39727675355`**, green on **all ten jobs** — including the core
+`Windows` job and all three `GUI` legs, which are the only authority for the
+GUI workspace's Windows and Linux behaviour because it is not a member of the
+root workspace and no root job compiles it. Two earlier runs on this branch
+failed (`39726097278` on the Windows Clippy gate, `39727156228` on the Windows
+test gate); both causes are fixed in the implementation commit `0022d0b`.
+
+**Plan 192 changed the direction of that line, and it is implemented.** Running the
+committed GUI on 2026-10-22 showed that the "pulldown" was a **launcher with a
+dashboard behind it**: the tray's native menu offered a summary, a flat list of
+host jump entries and `Open Gregg`, and the `Open Gregg` entry launched a
+separate 560×520 frameless window that carried the content. That window read as
+a small application — a `Close` button overhanging the header strip, the
+daemon's identity hash as a line of UI, `Edit` and `Remove` buttons on every
+host row, `METRICS` and `CRON` headings over large empty regions, and a bottom
+button bar — not as a dropdown, and **not contained in the dropdown**. The cause
+was Plan 191's own recorded premise, which came from the Plan 187 roadmap: a
+native menu cannot host arbitrary Slint content, so the content had to live in a
+**separately opened** window. That conclusion does not follow. Slint's
+`SystemTrayIcon` also has a **`clicked`** callback, and a native menu with no
+entries **detaches itself**, so the platform routes the tray's click to that
+callback instead of popping the menu — on macOS
+(`i-slint-core-1.18.1/items/system_tray/appkit.rs:248`), on Windows
+(`windows.rs:290-298`, where a right-click still opens the native menu) and on
+Linux (`ksni.rs:284`). So the **tray's click can open a Slint popup that
+carries the content**, placed under the tray item: the popup *is* the pulldown
+and the native menu need not be the dropdown at all. **Plan 192 implements
+that** — the tray's click opens the pulldown, the pulldown carries the panel's
+content, the `Open Gregg` launcher entry goes, and on macOS the native menu is
+detached entirely so the pulldown carries `Reload`, `About` and `Quit`.
+
+**The pulldown now has two views, and the fleet view is a compact table**
+(amended 2026-10-22). The **fleet** is the TUI's condensed fleet row with
+bars in it — one line per host, a usage bar for each of the five used shares
+(`CPU`, `MEM`, `SWP`/`COMMIT`, `DISK`, `NET`) under a row of column headings,
+and the readings that are not used shares carried beside the row in the TUI's
+own places (the I/O wait after the host's name, the frequency after the CPU
+percentage). The selected host's own numbers are behind the pulldown's own
+footer control, so the main window is a list of hosts and nothing else. Two
+defects were fixed in the same pass: a usage bar filled from the **middle** of
+its track, because Slint centres a child that has a size and no explicit
+`x`/`y` inside a parent that is not a layout; and the pulldown clipped its
+last host row, because an empty `Text` still takes a line of its own and the
+height calculation did not know about it.
+
+The same run found **two defects that Plan 191's closure record did not hold**,
+and both are in Plan 192's scope and **both are fixed**: the panel was **never
+positioned** on the startup path, because Slint's `with_winit_window` "will only
+succeed when the event loop is active" and the startup path called it before the
+event loop ran — measured on the committed build, `work_area=None`, no
+`set_position` at all, and the window at x=1640 on a 3840-wide display instead
+of under the menu bar; and the panel's **position and size were not kept across
+a restart**, because they lived in `UiState` and the GUI wrote no state file,
+although Plan 191's record and the GUI README both said they were remembered.
+The first open is now **deferred into the event loop** and the placement retried
+until the native window exists, and the geometry is written to a small state file
+beside the config — `<config>.gui-state`, read bounded and validated and written
+atomically. The macOS run records the result: `pulldown=placed x=3412 y=36
+width=420 height=658 area=8,36,3824x1036`, a drag of (−200, +100) moved the
+pulldown by exactly that and wrote the file, and the next start opened at the
+remembered geometry. The **native** exercises then proved it on the other two
+platforms, in CI run **`39811582623`** (green on all ten jobs): the Linux leg
+placed the pulldown at (852, 36) inside a 1264×980 work area against a real
+`StatusNotifierItem` host, and the Windows leg at (596, 460) inside 1008×708 —
+the bottom of that work area, where the taskbar is. Plan 191's record has been
+amended to say so, and its
+**footprint** figure corrected: the recorded "72–83 MB resident" is `ps` RSS,
+which on macOS is dominated by shared, clean, reclaimable pages, and the
+**physical footprint** is **26–28 MB** (11 MB with the panel hidden, 18 MB with
+it open) — a quarter of the RSS figure, with the Rust heap at 14 MB and the
+system-font machinery at about 3.2 MB. The memory also does **not scale with the
+fleet** (1 host and 25 hosts are within a megabyte of each other) and does
+**not leak** over 150 s of polling.
+
 Plans 066-079 are complete. Plan 076 implemented the Unix runtime/service-manager separation, HTTP `croncheck`, config-only Unix mutation, and explicit version commands. Plan 077 completed the strict bounded status-line correction, negative-path coverage, stale test cleanup, and planning reconciliation.
 
 Plan 078 implemented the stale client endpoint correction at the existing `Ctrl-R` boundary, HTTP URL input convenience for `gregg add`, and read-only `greggd configprint`. Plan 079 then made replacement delivery reliable under bounded command pressure and corrected Plan 078's live-host record without rewriting the original `.183`/`.182` observation.
@@ -967,6 +1108,12 @@ excluded.
 | [`184-tui-page-scroll-key-bindings.md`](184-tui-page-scroll-key-bindings.md) | Add `Ctrl-D`/`Ctrl-U` page-scrolling aliases so a long host list can be paged without the dedicated paging keys | **complete** at `540b562`; **CI run `39342335567` on `6ef2f62` green across all seven jobs**; `Ctrl-U`/`Ctrl-D` translate to the existing `Action::PageUp`/`Action::PageDown`, so there is still one scroll model; five new tests (955 → 960 in the `gregg` crate against base `1760ef1`), the three mapping proofs mutation-tested — removing the two arms fails them in 0.00 s; one existing test updated because it asserted the mapping this plan deliberately replaces; `Ctrl-Alt` still refused; depends on current post-183 main; independent of 091/179-183; no state, renderer, daemon, or protocol change |
 | [`185-gregg-tui-offline-anchor-viewport-corrective.md`](185-gregg-tui-offline-anchor-viewport-corrective.md) | Keep the `gregg` TUI from scrolling the live fleet off screen when the host at the top of the list goes down | **complete**, but **superseded in part by Plan 186** — the acceptance criterion was met as written and was false in a crowded pane, because the plan's tests used a fleet that fit on one screen; the viewport anchor names a *host* while the display order is reachability-sorted, so a host that goes offline is pushed to the bottom of the list and the identity anchor followed it there; `AppState::repair_viewport_anchor` re-anchors the window to the host that took the anchor's previous display position, preferring a live one, and fires **only** when the anchored host itself left the live group, so an anchor that merely shifted up because hosts above it went down is left alone and the window never slides on unrelated state changes; the repair lives in the single fleet writer (`AppState::adopt_snapshot`), so there is still one scroll model; the dead host still moves to the bottom of the list and is still rendered; five regression tests added, including one asserted end to end through the renderer and one proving the fix does not over-correct on a reload that repoints the anchored host; independent of 091/182/183; no protocol, daemon, or wire change |
 | [`186-gregg-tui-crowded-pane-selection-reanchoring.md`](186-gregg-tui-crowded-pane-selection-reanchoring.md) | Make the offline-anchor fix hold in a pane too small to hold the fleet, by re-anchoring the logical selection as well as the viewport | **complete**; Plan 185 repaired the viewport *anchor*, but the window is kept on the *selection*, and the selection was still left on the host that had just failed — so `ensure_selected_visible` dragged the window back down to the bottom of the list and undid the anchor repair; measured on an eight-host fleet in a three-row pane, the top host failing moved the view from the live hosts to the bottom group, so the reported symptom survived and only its shape changed, and a fleet that fits on one screen cannot show the defect at all; `AppState::repair_selection` now moves the selection to the live host that took the failed host's place, by the same rule the anchor repair uses (`AppState::live_replacement`), so both repairs agree when they name the same host — the usual case, since the top of the list is both; the trigger was tightened from "left the live group" to *failed* (`Online` → `Offline`), because `Pending` means "never polled" — a reload repointing a host, or a client daemon restarting and rebuilding the fleet, must not move the operator's selection; the selection repair runs before `repair_cron_selection`, because the retained cron job is derived from the selected system; the operator decided a dead host scrolled out of a small pane is not surfaced by an indicator, so that stays a separate change; five regression tests added, including one asserted end to end through the renderer; depends on 185; independent of 091/182/183; no protocol, daemon, or wire change |
+| [`187-slint-gui-roadmap.md`](187-slint-gui-roadmap.md) | Roadmap for an optional Slint menu-bar/system-tray and compact desktop GUI using the already separated Gregg client daemon | **complete for everything a macOS host can verify**, with child Plan 190 **implemented, pending release qualification**; no second polling plane, no headless scope expansion; children 188 and 189 are closed, and 190 is implemented but **not** closed; the product line continues as the **planned** Plan 191 (one tray pulldown instead of a separate monitor window, plus host add/remove/edit); every roadmap invariant is checked against evidence rather than intent (the request budget is flat in every phase, deterministically and natively on 25 hosts; the cron intent grows only the *local* document; the `EggPool` pane runs on the converged window; a GUI exit never stops polling; the Rust 1.89 core, the TUI and `greggd`'s footprint are unchanged); the packaging decision is **source-build-only**; **the interactive three-desktop-platform demonstration is outstanding and not claimed, so Windows and Linux are not shippable on the strength of this line**; **corrective pass 2026-10-21** — three real defects, not merely unverified targets: the Windows build was broken (a `#[cfg(windows)]` branch asked `Metadata` for a method that does not exist, and the Windows CI job was red for this whole line), the required no-SNI-host fallback was never implemented, and **the client daemon could not be launched on Windows at all** (the launch lock's path was inside the named-pipe device namespace, so the lock could never be taken and the launcher failed before it spawned anything — which also stopped the TUI there); all three are fixed, the launcher's Windows rules now live in a `#[cfg(all(test, windows))]` module so they actually run, and the GUI workspace now has its own CI (fmt, clippy, tests and a release build on macOS, Windows and Linux, plus native tray exercises); independent of Plan 091 |
+| [`188-gui-daemon-launch-and-toolchain-boundary.md`](188-gui-daemon-launch-and-toolchain-boundary.md) | Refactor safe explicit daemon-binary selection for a separately named GUI; isolate Slint's newer toolchain from root MSRV 1.89 | **complete**; `DaemonExecutable` + `ensure_running_with_executable` with `ensure_running` as its `Current` wrapper; the resolved path is proved usable before anything destructive and a frontend may never launch itself; the rotation branch's stop-then-attach defect corrected; `apps/gregg-gui` is an independent workspace (own lockfile, Rust 1.92) excluded from the root workspace; measured `gregg` drag in the GUI is **747,936 bytes (+7.8%)** over a Slint-only baseline; **unblocks 189**; the Windows-native matrix item stays unchecked |
+| [`189-slint-tray-and-compact-monitor-mvp.md`](189-slint-tray-and-compact-monitor-mvp.md) | Implement Slint tray/menu and compact monitor from clientd snapshots with host, drive, network, cron and optional EggPool views | **complete**; the GUI is a three-layer split — a pure `FrontendSnapshot -> GuiViewModel` projection, a protocol owner with **no HTTP client**, and a presentation owner that mutates Slint components only on the UI thread; a native `SystemTrayIcon` (exactly one `Menu`: bounded summary, Open Monitor, Reload, About Gregg, Quit Gregg) beside an independent 560×520 monitor window; a **procedural, light, health-coloured** tray icon with no binary asset; **no polling timer** — the bridge's callback schedules the update with `invoke_from_event_loop`, so an idle GUI never redraws; the `EggPool` and cron intents are desired state on a `watch` channel, so a rejected write is retried and a reconnect republishes the **new full** state; closing the window **hides** it and leaves the tray running, and Quit never stops the client daemon; the scheduler/`EggPool` words are now **shared** functions in `gregg::cron` and `gregg::eggpool` with the TUI's output unchanged; the one-polling-plane property is proved for the GUI specifically by a counted in-process remote; the native macOS tray was exercised for real (tray present, Open Monitor raises the window to the front, Reload polls immediately, About renders the Slint royalty-free attribution, Quit leaves the daemon polling, the GUI opens no network connections); **unblocks 190**; the Windows/Linux native matrix stays with Plan 190 |
+| [`190-gui-native-qualification-packaging-and-footprint.md`](190-gui-native-qualification-packaging-and-footprint.md) | Native-platform qualification, counted TUI+GUI one-polling-plane proof, packaging, licensing, MSRV and resource measurements | **implemented, pending release qualification** — its own native-platform acceptance gate is still **unchecked**, and the outstanding work is listed in the plan's *Release qualification* section rather than carried in a parenthetical; the blocking gate is a counted harness (`apps/gregg-gui/src/evidence.rs`, recorded in `apps/gregg-gui/EVIDENCE.md`) running the real daemon against two counted remotes — one scheduler-capable, one 404ing the scheduler routes — with `/v2/status` **flat at 4 polls per window in every phase** (daemon alone, +TUI, +TUI+GUI, frontends closed), a cron intent that grows the **local document** (1903→2276 bytes) and not the remote history fetch, and one converged `EggPool` worker (`7d` asked for, `30d` never); the native 25-host measurement, window-aligned to the daemon's own start, is **identical** in all three configurations (375 status + 39 scheduler requests) — the GUI adds nothing to the remote budget; `gregg-gui` is 10,803,360 bytes stripped against a matched 9,956,032-byte Slint-only baseline (**847,328 bytes, +8.5%**, re-measured after the corrective pass: the scroll container grew both binaries and the difference stayed put), and `gregg`/`greggd` are unchanged and carry none of it; the resource decision is **accept** (≈0.5–1.5% of one core; the daemon's wakeup delta of ≈2,150 matches its own documented 20 ms per-frontend poll), and the runtime-shape A/B was **inconclusive**, so nothing was changed; the packaging decision is **source-build-only** — no installer, no bundle, no release asset, one operator path (an existing Gregg installation), no asset-name collision and no downgrade; the Slint royalty-free attribution is verified present in the **release binary**; **corrective pass 2026-10-21** — three real defects, not merely unverified targets: the Windows branch was broken (the Windows CI job was red for every commit of this line), the required no-SNI-host fallback was never implemented, and **the client daemon could not be launched on Windows at all** — the launch lock's path was derived from the endpoint, and on Windows the endpoint is a named pipe, so the lock path was in the pipe device namespace where no file can exist; the lock could never be taken and the launcher failed before it ever spawned a daemon, which stopped the TUI there as well; all three are fixed, the launcher's Windows rules now live in a `#[cfg(all(test, windows))]` module so they actually run where the rule applies, the Windows native exercise now proves the **core** launch path (`gregg daemon restart` → `status` → `stop`) before the GUI starts, and the GUI workspace is now built, linted, tested and started **natively** on Windows and Linux in CI; **the interactive Windows and Linux native runs are still not performed and still block shipment for those targets** |
+| [`191-tray-pulldown-gui-and-host-management.md`](191-tray-pulldown-gui-and-host-management.md) | Replace the GUI's separate monitor window with one tray pulldown carrying all the metrics, and add host add/remove/edit against the same config | **implemented, pending native interactive acceptance** — the interactive native acceptance gate is **unchecked**, exactly as Plan 190 leaves it, so the plan is **not closed** and the GUI is **not shippable** for Windows or Linux; the framework review retains **Slint 1.18.1** — it is the latest published release, it is the only Rust option with a first-class native tray, and the footprint is the software renderer's rather than the window's; the separate monitor window is **gone**, replaced by one borderless always-on-top panel opened from the native tray menu, carrying every pane and the host-management forms; host management goes through the **CLI's own library code** (`gregg::cli::add_host`/`remove_host` against the same `ConfigStore`), so **no protocol change** and no second poller, and an endpoint change is presented as a **replacement** that states the host's identity changes; the `std-widgets` import was **kept** with its measurement recorded (11,896,608 B against 10,803,360 B, +10.1%; the font and SVG stacks it brings did not grow at all, and the write path was narrowed from `gregg::cli::dispatch` because the broad one measured **2,864,992 B** worse by linking the daemon's HTTP and TLS stack); **CI run `39727675355` on `0022d0b` green across all ten jobs**, including the core `Windows` job and all three `GUI` legs — the GUI workspace is not a root workspace member, so no root job compiles it and those legs are the only authority for its Windows and Linux behaviour; two earlier runs on this branch failed (`39726097278` on the Windows Clippy gate, `39727156228` on the Windows test gate) and both causes are fixed; **its interaction model is superseded by Plan 192** — the tray's native menu was a *launcher* for a separate window, and Plan 192 makes the tray's **click** open the pulldown and the pulldown **carry the content**; two claims in its record did not hold and are corrected in the plan — the panel is **never positioned** on the startup path (`work_area()` returns `None` before the event loop runs), and the position and size are **not** kept across a restart — and its footprint figure is corrected: the "72–83 MB resident" is `ps` RSS, and the **physical footprint is 26–28 MB** |
+| [`192-tray-pulldown-carries-the-panel.md`](192-tray-pulldown-carries-the-panel.md) | Make the tray's click open the pulldown and the pulldown carry the panel's content, instead of the native menu launching a separate window | **implemented, pending native interactive acceptance** — the interactive native acceptance gate is **unchecked**, exactly as Plan 190 and Plan 191 leave it, so the plan is **not closed** and the GUI is **not shippable** for Windows or Linux; the direction correction is that a native menu cannot host arbitrary Slint content, but it does **not** follow that the content must live in a separately opened window: Slint's `SystemTrayIcon` has a **`clicked`** callback and a native menu with no entries **detaches itself**, so the platform routes the tray's click to that callback instead of popping the menu — on macOS (`appkit.rs:248`), on Windows (`windows.rs:290-298`, where a right-click still opens the native menu) and on Linux (`ksni.rs:284`); the mechanism was **verified by compiling** `if cond : Menu { … }` as the `SystemTrayIcon`'s single `Menu` child, so the pulldown can be a Slint popup carrying the content, placed under the tray item, with the native menu reduced to what a native menu is good at and **detached entirely on macOS**; **the two defects the 2026-10-22 run found are fixed** — the pulldown is **placed on every path** (the first open is deferred into the event loop, because `with_winit_window` "will only succeed when the event loop is active", and the placement is retried until the native window exists), and its geometry is **persisted** in `<config>.gui-state`, read bounded and validated and written atomically; the macOS run records it: `pulldown=placed x=3412 y=36 width=420 height=658 area=8,36,3824x1036`, a drag of (−200, +100) moved the pulldown by exactly that and wrote the file, and the next start opened at the remembered geometry; the pulldown **reads as a dropdown** — a rounded card with a 1 px border, a hand-drawn three-layer shadow (the software renderer's `draw_box_shadow` is a stub) and a `Path`-drawn pointer toward the tray — and it is **sized to its content** (420×658 for a seven-host configuration), with **Rust owning the size** because Slint 1.18 cannot expose a layout's preferred size to a `.slint` file; the application chrome is gone — no `METRICS`/`CRON` headings, no overhanging `Close` button, no daemon-identity line, no per-row `Edit`/`Remove` buttons — and there is **no launcher entry**: the pulldown carries `Reload`, `About` and `Quit` itself, and the tray's tooltip carries the fleet summary so the tray still states the fleet's health without being opened; the **protocol is untouched** (`DaemonRequest` gains no message, the GUI opens no HTTP client, the client daemon remains the only poller) and the release binary is **11,929,712 bytes**, **+33,104 (+0.3%)** on Plan 191's 11,896,608, with no new dependency in the GUI workspace at that point; **CI run `39811582623` on `e26a273` is green across all ten jobs**, including all three `GUI` legs — and the native tray exercises now **assert the position**: Linux placed the pulldown at (852, 36) inside a 1264×980 work area, Windows at (596, 460) inside 1008×708, which is the bottom of that work area where the taskbar is; the limits that remain are recorded rather than hidden: Slint does not expose the tray item's position, so the corner anchor is an approximation; a native menu cannot host Slint widgets; there is no click-away dismissal (**superseded by the eighth amendment**); Linux's `Activate` gesture is the desktop's decision; and on macOS AppKit places a window requested flush with the work area's top **26 px lower**, so the default placement opens clear of the menu bar while a remembered position is honoured exactly; **amended 2026-10-22 — the pulldown's chrome was revised and two of this plan's claims were superseded**: the shadow is now **fourteen one-pixel rings** with a Gaussian alpha profile rather than three hard-edged layers (the three-layer version banded visibly), the card's outline is a **measured macOS hairline** (`NSColor.separatorColor`) rather than Slint's `Palette.border` (45 % black in one pixel in the light scheme), the pointer moved to the card's **trailing edge** — the edge the tray is on — and the pulldown is **actually transparent on macOS now**: it was not before, because `softbuffer`'s macOS backend declares the framebuffer's pixel format with **no alpha channel** (`CGImageAlphaInfo::NoneSkipFirst`), so the shadow margin was presented as a **thick black frame** and the rounded corners as black squares; the fix is one word in a **vendored copy** of `softbuffer` 0.4.8 (`apps/gregg-gui/vendor/softbuffer`, no crate added to the graph, Apple's platform only); **amended 2026-10-23 (eighth) — the pulldown closes when the operator clicks away**: the plan had excluded click-away dismissal on the ground that Slint 1.18 exposes no focus-lost event, and **that ground was never checked against the source and is wrong** — `FocusScope` carries `focus-lost(reason: FocusReason)` and `FocusReason.window-activation` is the desktop saying the window is no longer active, which is what a click away does; the pulldown aggregates everything that can hold the focus (the scope that handles the keys and the four fields of the two forms) and takes the focus back when the view changes; **and the focus was then measured to be an unreliable click-away signal on macOS** — the pulldown dismissed itself in **four opens out of five** because another application took the foreground — so macOS watches the **mouse** (AppKit's global event monitor: safe API, no event tap, no accessibility permission, and `block2` was already in the graph so no new crate was added) and excludes the **menu bar**, because the tray's own click toggles the pulldown, while Windows and Linux watch the **keyboard focus**; verified natively on macOS 15 (away dismisses, inside does not, and the tray's own click neither dismisses nor fails to toggle — three clicks in a row opened, closed and opened it again with no dismissal line), and the same session measured the GUI against the terminal client: **46.9 MB** of resident set (**14 MB** of physical footprint) for a GUI whose pulldown was never opened and **41.9 MB** (**26 MB**) with the window on screen, against **3.2 MB** (**2.3 MB**) for the TUI and **5.2 MB** (**4.0 MB**) for the client daemon that does the polling, with **no network socket at all** on the GUI's process; CI run **`40017131833`** on `481cda0` is **green on all ten jobs**, including the three `GUI` legs; **amended 2026-10-23 (ninth) — the scroll box reaches the bottom, the two views share one box, and the panel is narrower**: the fleet's scroll box was **201 points** tall in a body of **348** and the detail's box **51**, because the two forms are always in the tree (their fields have to be nameable) and were **220 points tall each** whether they were showing or not, and a Slint layout lays out the **invisible** items as if they were visible — they took 440 points of a body that had 348, and **147 points of dead space** sat under the last host; a hidden pane now declares **zero height**, the fleet and the detail scroll in **one** box and so share **one** height (opening the detail no longer resizes the panel, so the control that brings the fleet back does not move under the pointer), and the pulldown is **194 points narrower** — **412 px** rather than 606, because it is a dropdown and most of what it carries is vertical; the run that covers it, **`40029395421`** on `f7c3fb7`, is **green on all ten jobs**, including the three `GUI` legs; **amended 2026-10-23 (tenth) — the `×` is gone, and the `EggPool` plane is always shown**: the `×` in the upper right was a **fourth dismissal control** that did what `Esc`, the tray's click and a click away already do, so it is gone and the header strip carries the fleet summary and the drag area and nothing else; the `EggPool` plane was **behind the detail view** in two ways — the footer's link was shown only in the detail, and the plane's numbers were one of the **selected host's groups** — so a fleet that was not opened in the detail carried no `EggPool` at all; the plane describes the **service** and not a host, so it is now **pinned below the scrolling box**, shown in **every** view, never scrolled out of reach, with its link in the footer in every view, and it is **open from the first frame** because the GUI publishes the `EggPool` intent when it attaches; the panel is **exactly as tall as the plane it shows** and a plane with nothing to say takes **no room at all** — a configuration with no `EggPool` entry carries none; measured on macOS 15 (arm64) against the real seven-host fleet and a live `EggPool`: the pulldown is **412×536** with the plane and **412×446** without it, and **412×536** in **both** views, with the plane's own ninety points measured at `EGGPOOL` heading **y = 399** against the scrolling box's edge at **y = 396**, and the detail's last `DRIVES` row clipped at **y = 395**; the GUI workspace's own suite is **182 passed / 0 failed** and its release binary is **11,979,552 bytes**, **+0** on the build before this work; the run that covers it, **`40041653415`** on `05ed618`, is **green on all ten jobs**, including the three `GUI` legs, whose native tray exercises assert the pulldown's **position** and whose fixture configuration has no `EggPool` entry, so the plane takes no room there |
 
 Dependency order:
 
@@ -1230,6 +1377,508 @@ Do not check boxes based on comments, intent, compilation alone, or an earlier c
 
 Plans 081 and 082 are complete because Plan 081's Ubuntu one-daemon lifecycle smoke, Ubuntu two-config stop-isolation smoke, and native CI run `31813136597` all passed, and Plan 082's same-file identity tests, local checks, release-binary relative/absolute smoke, and record reconciliation all passed. Plan 083 is complete because its client behavior and focused tests passed under the default local check and CI run `32094925174`; Plan 084 is complete because its four corrective findings passed the exact local CI-equivalent checks and CI run `32100189772`.
 
+## Closed scope record for Plan 187
+
+Completed:
+
+- sequence the line and close all three children: **188** (the launch and
+  toolchain boundary), **189** (the tray and the compact monitor MVP) and
+  **190** (the counted qualification and the packaging decision — **implemented,
+  pending release qualification**, not closed: its native-platform acceptance
+  gate is unchecked);
+- hold every invariant this roadmap set out to a **verified** state rather than
+  an intended one, with the evidence named per invariant: zero additional
+  remote reads when a frontend opens (the counted harness and the native
+  25-host measurement), the cron intent growing only the *local* document
+  (1903 → 2276 bytes, with the remote's history fetch untouched), the
+  `EggPool` pane driven by the converged intents of the attached frontends
+  (`7d` asked for, `30d` never) rather than always-on because a tray exists,
+  monotonic generations with missing values keeping `None` semantics and an
+  unsupported scheduler not being a host outage, the launcher's ownership
+  rules unchanged and green, a GUI exit never stopping polling, and the Rust
+  1.89 core, the TUI, the headless release path and `greggd`'s footprint all
+  unchanged;
+- land the optional Slint desktop frontend as a **frontend, never a second
+  poller**, with a native tray and a compact monitor window whose truthfulness
+  rules live in a pure projection that is testable without a desktop session,
+  and whose scheduler and `EggPool` words are shared with the TUI rather than
+  reimplemented;
+- land **one launcher** for two differently named frontend binaries
+  (`clientd::DaemonExecutable` + `ensure_running_with_executable`, with
+  `ensure_running` reduced to its `Current` wrapper), including the correction
+  of the rotation branch that stopped the stale daemon and then *attached* to
+  the daemon it had just stopped;
+- land the **isolated toolchain** — the GUI's own workspace, lockfile and Rust
+  1.92 floor, excluded from the root workspace so the MSRV job never sees
+  Slint — and resolve the one structural dependency conflict with a
+  byte-identical vendored `annotate-snippets` 0.12.9 and a single relaxed
+  bound, scoped to the GUI workspace;
+- land the **counted qualification** (the request budget is flat in every
+  phase, deterministically and natively) and the explicit **packaging
+  decision**: source-build-only, one operator path, an existing Gregg
+  installation required, no asset-name collision, no downgrade, and the Slint
+  royalty-free attribution verified present in the shipped binary;
+- update `README.md`, `crates/gregg/README.md`, `apps/gregg-gui/README.md`,
+  `architecture/gregg-client.md`, `AGENTS.md`,
+  `.opencode/skills/gregg-client/SKILL.md` and `CHANGELOG.md` in the same pass
+  as the behavior each of them describes;
+- **run one corrective pass (2026-10-21) and reconcile the closure language
+  with it.** The pass found that the closure described the *evidence*
+  accurately and the *code* inaccurately: the `#[cfg(windows)]` branch of
+  `is_executable_file` in `crates/gregg/src/clientd/launch.rs` asked
+  `std::fs::Metadata` for its `extensions()` — a method that does not exist —
+  and broke the **whole** `gregg` crate on Windows, so the Windows CI job was
+  **red for every commit of this line** from `9029bc9` to `14a4b93` (run
+  `39628897811`); and the GUI's no-SNI-host fallback, which this roadmap
+  required by name, was **never implemented** — the GUI hid its only window and
+  left the operator with nothing to press. The cause was structural: the GUI
+  workspace had **no CI at all**, so a `#[cfg(windows)]` branch nothing else
+  compiles, and a UI requirement nothing asserts, both shipped unnoticed. The
+  pass fixed the Windows branch (the extension lives on the **path**, and
+  Windows' own rule applies: a name with no extension is runnable, a name with
+  an extension is runnable only when Windows runs it), locked it with
+  **Windows-gated tests**, made the host list and the cron job list scroll with
+  bounded heights, implemented the no-tray fallback (probe, report, and never
+  hide the only control surface when there is no tray), and gave the GUI
+  workspace **its own CI** — fmt, clippy, tests and a release build on macOS,
+  Windows and Linux natively, plus native tray exercises on the Windows and
+  Linux legs. The GUI's costs were re-measured after the change and are
+  recorded in `apps/gregg-gui/EVIDENCE.md`.
+
+Preserved exclusions:
+
+- any change to `greggd`, the read-only remote HTTP API, the wire protocol, the scheduler, the cron cache, the EggPool worker, or the TUI's rendering geometry and key bindings;
+- a second remote HTTP client, a second polling plane, or any GUI feature that needs remote-polling access;
+- a webview, a network dashboard, a remote control surface, new HTTP routes, remote cron mutation, alerts, tray-based elevation, a telemetry database, secret storage, an auto-update framework, a mandatory daemon binary split, a replacement of Ratatui, a custom overlay window, or an SBC compilation benchmark;
+- new CI jobs, matrices, evidence bundles, uploaded artifacts, signed releases, crates.io publication, or a release workflow — **superseded for one build-check job by the corrective pass's explicit approval**: the GUI workspace now has a single CI job that formats, lints, tests and release-builds it on the three desktop targets and exercises the tray natively on Windows and Linux. It adds no artifact, no bundle, no release asset, no publication and no packaging step, and it does not touch the root workspace's jobs;
+- rewriting the historical Plan 091 soak record or the completed client-daemon Plans 161-172 records.
+
+Not satisfied by this roadmap, and deliberately left unchecked:
+
+- the **interactive three-desktop-platform demonstration**. Only macOS was exercised interactively: a Windows run needs a Windows host (and the repository's rule is that only a native Windows run is authority), and a Linux tray run needs a desktop session with a `StatusNotifierItem` host plus the plain-GNOME "no SNI host" fallback case. **Windows and Linux are not shippable on the strength of this line**, which is consistent with the packaging decision — the GUI is not shipped for any target yet, and the source build is the only distribution. **The corrective pass narrows this bullet rather than satisfying it**: a CI runner *is* a native Windows host and a native Linux host, so the code is now compiled, linted, tested and started there, and the required no-SNI-host fallback is now implemented and exercised against a desktop with no host — but a CI runner is not an operator's desktop, so a **visible** notification-area icon and a real GNOME session are still unproven and still not claimed.
+
+Recorded environment conditions, not caused by this line:
+
+- the default local check does not pass on this host and did not before the line either, and neither does the workspace Clippy gate. `cargo test --workspace --all-targets --all-features` fails 13-16 tests on an untouched worktree at commit `eb45029` — the `eggpool` worker tests, the `scheduler` fleet-scaling tests (which pass again when the machine is idle), and `clientd::ipc::tests::a_config_inside_the_temp_directory_yields_one_location`, which hardcodes `/tmp` while the code uses `std::env::temp_dir()` on a host that sets `TMPDIR`. `cargo clippy --workspace --all-targets --all-features -- -D warnings` fails in `gregg-host` (24 errors) and `greggd` (17 errors) with `clippy::borrow_as_ptr` and `clippy::too_many_lines`, identically on that same clean worktree, because the local clippy 1.99.1 has lints the CI's clippy version does not flag. `git diff` over `crates/gregg-host`, `crates/greggd` and `crates/gregg-protocol` is empty for this line. None of these were "fixed": they are outside this line's scope, and silencing a lint the CI does not raise, or editing a test to tolerate this host's temp directory, would have masked a real environment sensitivity and changed core crates for no reason.
+
+## Scope record for Plan 190 — implemented, pending release qualification
+
+The work below is **done and recorded**. The plan itself is **not closed**: its
+native-platform acceptance gate is unchecked, and the outstanding items are
+listed in the plan's *Release qualification* section.
+
+Completed:
+
+- build the **blocking** counted multi-frontend proof in `apps/gregg-gui/src/evidence.rs` and record it in `apps/gregg-gui/EVIDENCE.md`: the **real** client daemon (not a stub) against **two counted in-process remotes** — one serving `/v2/status`, `/v2/scheduler` and `/v2/scheduler/history`, one answering `404` for the scheduler routes because it is an older `greggd` — with a terminal-style frontend and the GUI's real `Bridge` attached to the same config. `/v2/status` is **flat at 4 polls per four-second window in every phase** (daemon alone, with the TUI, with the TUI **and** the GUI, and after both frontends closed), and the scheduler summary and revision-gated history are fetched at their own cadence and never multiply;
+- show, in the same harness, that the cron intent grows the **local IPC document** (1903 → 2276 bytes) and not the remote budget (the remote's history counter stayed at the one discovery fetch), that the `EggPool` pane drives **one** daemon-owned worker on the **converged** window (`7d` asked for, `30d` never) that stops asking the remote when the last pane closes, that the daemon **outlives** its frontends and hands a reattacher the newest document without refetching history, that distinct config paths reach distinct daemons while two spellings of one path reach one, and that the GUI **refuses an incompatible daemon without stopping it**;
+- measure the same claim **natively** on this host against 25 synthetic endpoints with the real daemon and the real GUI binary, with the measurement window **aligned to the daemon's own start** so every configuration is sampled over the same phase of the poll cadence: 375 `/v2/status` and 39 `/v2/scheduler` requests in **every** configuration — daemon alone, daemon + GUI tray-only, and daemon + GUI with the monitor visible. The GUI adds **nothing** to the remote request budget;
+- report the **unaligned** first measurement too (325 status requests against 375), because it disagreed with the aligned one and the reason — a phase artifact of the five-second cadence — is exactly what a reader needs to know about a measurement;
+- measure the footprint with the repository's own release profile, **re-measured after the corrective pass** against a **purpose-built Slint-only baseline rebuilt to match** (same Slint features, the **same `main.slint`**, and the same activation code): `gregg-gui` is **10,803,360 bytes** stripped against a **9,956,032-byte** baseline, so everything the GUI adds over a pure-Slint build of the same UI is **847,328 bytes (+8.5%)**. The scroll container comes from Slint's `std-widgets`, so *both* binaries grew — the GUI by 1,026,800 bytes and the baseline by 1,026,816 — and the **difference** stayed put (847,328 against 847,344 bytes before, a change of 16 bytes on a ten-megabyte binary); a baseline that was not rebuilt would have reported the whole growth as the GUI's cost, and the earlier pair (9,776,560 against 8,929,216) is recorded in `apps/gregg-gui/EVIDENCE.md`. `gregg` (5,224,096 bytes) and `greggd` (3,356,800 bytes) are **unchanged** and carry none of the GUI's cost — `git diff` over `crates/greggd` and `crates/gregg-protocol` is empty;
+- measure the per-process resource cost with `getrusage` (microsecond CPU resolution; macOS's `ps` has one-second resolution and no context-switch counter) and **record the decision: accept**. Over a 73-second lifetime on the 25-host fleet the GUI used **0.49 s of CPU — about 0.65% of one core** — while the daemon used 0.11 to 0.16 s; the daemon's wakeup count rises from 8,279 alone to about 11,400 with a frontend attached, a delta of about 3,200 over 73 s (44/s), which matches the "one timer wake per attached frontend every 20 ms" the daemon already documents. The GUI adds no *new kind* of cost; it adds one more frontend to a cost the architecture already accepted;
+- **not** touch the frontend's shared 10 ms no-header poll in `crates/gregg/src/clientd/frontend.rs` to quiet the wakeups: it is core behaviour shared with the TUI, this line must not reopen the headless client's correctness, and the effect could not be distinguished from this host's measurement noise. Opening that work means a new, explicitly approved plan, not a quiet change inside a qualification plan;
+- report the measurement **noise** instead of smoothing it: RSS at the moment of sampling varied between **72 MB and 83 MB** for the same configuration, and an A/B attempt to compare a current-thread and a multi-thread bridge runtime was **inconclusive** — the two builds measured closer together than two runs of the *same* build measured apart. The runtime shape was therefore **left unchanged**: a speculative change the measurement cannot distinguish from noise is not a change;
+- record the **packaging decision**: the GUI is **source-build-only** — no installer, no bundle, no release asset. Shipping an unsigned, un-notarized binary would meet the operator with a Gatekeeper warning first, and the cross-platform evidence a shipping decision needs does not exist yet. The GUI **requires an existing Gregg installation**, does not bundle a second `gregg` and does not start a second daemon; the resolution order is an explicit `--gregg <path>` that must prove it is a Gregg client by answering `gregg <version>` to a bounded probe, then an installer-owned client beside the GUI, then an actionable diagnostic — with no fallback that launches itself, does a `PATH` lookup or polls the fleet directly. The binary is named `gregg-gui`, so there is no asset-name collision with `gregg` or `greggd`;
+- verify the **Slint licence against the shipped artifact**, not against the source: the path is `LicenseRef-Slint-Royalty-free-2.0` (not GPL), and the attribution text is present in the **release binary** itself, reachable in the application through the `About` button and the tray's `About Gregg` item;
+- update `README.md`, `crates/gregg/README.md`, `apps/gregg-gui/README.md`, `architecture/gregg-client.md`, `.opencode/skills/gregg-client/SKILL.md`, `AGENTS.md` and `CHANGELOG.md` with the concrete evidence;
+- **run one corrective pass (2026-10-21) and reconcile this closure with it.**
+  Two of this plan's own acceptance requirements were not merely unverified but
+  **broken or absent**, and the closure said "not performed", which described
+  the evidence and hid the code. (1) The native matrix requires a "native MSVC
+  compile" on Windows; the `#[cfg(windows)]` branch of `is_executable_file` in
+  `crates/gregg/src/clientd/launch.rs` asked `std::fs::Metadata` for its
+  `extensions()` — a method that does not exist — and broke the **whole**
+  `gregg` crate on Windows, so the Windows CI job was **red for every commit
+  of this line** from `9029bc9` to `14a4b93` (run `39628897811`). It is fixed,
+  with the **path**'s extension and Windows' own rule (a name with no
+  extension is runnable; a name with an extension is runnable only when
+  Windows runs it), and locked by **Windows-gated tests** that run on the
+  native Windows job. (2) The matrix requires that, on a desktop with no
+  `StatusNotifierItem` host, "the application must provide a visible/failsafe
+  window and clear guidance, **not hide its only control surface**"; that
+  fallback was **never implemented** — the GUI hid its only window and left the
+  operator with nothing to press. It is now implemented: the GUI probes for a
+  tray host (on Linux, the `org.kde.StatusNotifierWatcher` name on the session
+  bus, which is exactly what Slint's `ksni` backend requires), reports the
+  result in one machine-readable line, shows the operator what is going on in
+  the window, and closes by quitting rather than hiding when there is no tray.
+  The host list and the cron job list also **scroll** with bounded heights
+  now; before, a large fleet pushed the metrics, cron and EggPool panes out of
+  the fixed-size window. The GUI workspace gained **its own CI** — fmt, clippy,
+  tests and a release build on macOS, Windows and Linux natively, plus native
+  tray exercises on the Windows and Linux legs — which is what makes the first
+  defect impossible to ship again. The footprint and the resource cost were
+  re-measured after the change and are recorded in
+  `apps/gregg-gui/EVIDENCE.md`. The **first run of that job** (CI run
+  `39647073131`) is the evidence that it earns its place: the **core Windows
+  job went green** for the first time in this line's history — the native
+  proof that the compilation break is gone — and the new job itself caught
+  **two** defects that no root job could have seen: the GUI's Unix-only test
+  helpers were dead code on Windows, which is a build failure there because
+  the job compiles the tests with `-D warnings`, and the Linux runner was
+  missing `libxkbcommon-x11`, which made the GUI panic as it opened its
+  window. The **next run** (`39650126619`) has the GUI's job green on macOS
+  and Linux, and the Linux leg is the **native Linux tray proof**: a real
+  `StatusNotifierItem` host owns `org.kde.StatusNotifierWatcher`, the real GUI
+  registers an item with it, the watcher's own `RegisteredStatusNotifierItems`
+  lists that item, the item's tooltip carries the live fleet status
+  (`Gregg — 1 online`) and its menu carries the fleet summary and the five
+  items — and the second pass, on a bus with **no** host, has the GUI report
+  `gregg-gui: tray=unavailable reason="no StatusNotifierItem host on this
+  desktop"` and still be running three seconds later. So the Linux tray and
+  the no-tray fallback are both proven natively. (3) The **first native
+  Windows run of that job** then found a defect no amount of reading had: the
+  GUI started and created a native window, but the **client daemon it launched
+  never came up**. The cause was in the core launcher, not in the GUI — the
+  launch lock's path was derived from the endpoint, and on Windows the
+  endpoint is a **named pipe**, so the lock path was inside the pipe *device*
+  namespace, where no file can ever exist. The lock could therefore never be
+  taken, and the launcher failed **before it ever spawned a daemon**, which
+  also meant the **terminal client** could not launch a daemon on Windows
+  either. It is fixed: the Windows lock is now a **real file beside the
+  config**, named after the same identity digest (the Unix path is
+  unchanged), and the launcher's Windows rules now live in their own
+  `#[cfg(all(test, windows))]` module — the old module was
+  `#[cfg(all(test, unix))]`, so the `#[cfg(windows)]` tests written inside it
+  **never compiled on Windows and never ran**, which is how the first defect
+  above got through in the first place. The Windows native exercise now also
+  proves the **core** launch path on its own, before the GUI starts:
+  `gregg daemon restart` takes the lock and spawns a daemon, `gregg daemon
+  status` identifies it through the daemon's own handshake, and `gregg daemon
+  stop` releases it. The **final run** (`39667817523`, and the identical
+  `39667345294` one commit earlier) is **green on every job**, including the
+  GUI's own job on **Windows**: the exercise reports `daemon restart: client
+  daemon d45402fdf71b3bd9 restarted`, then `client daemon d45402fdf71b3bd9
+  running (protocol 1, version 1.0.15) at \\.\pipe\gregg-client-d45402fdf71b3bd9`
+  — a daemon reached through the Windows **named pipe**, the very endpoint
+  whose derived lock path could never be taken — then the GUI's own
+  `gregg-gui: tray=available`, three native top-level windows, and `the fleet
+  fixture served 8 request(s): the daemon is polling`. The same run's core
+  `Windows` job executed the six new `clientd::launch::windows_tests`
+  natively, all of them `ok`.
+
+Preserved exclusions:
+
+- any change to `greggd`, the read-only remote HTTP API, the wire protocol, the scheduler, the cron cache, the EggPool worker, or the TUI's rendering geometry;
+- a second remote HTTP client, a second polling plane, or any GUI feature that needs remote-polling access;
+- new CI jobs, matrices, evidence bundles, uploaded artifacts, signed releases, crates.io publication, or a release workflow — **superseded for one build-check job by the corrective pass's explicit approval**: the GUI workspace now has a single CI job that formats, lints, tests and release-builds it on the three desktop targets and exercises the tray natively on Windows and Linux. It adds no artifact, no bundle, no release asset, no publication and no packaging step, and it does not touch the root workspace's jobs;
+- a GPU renderer, a webview, a new worker, a native non-Slint tray front end, or any broad GUI rewrite — each of those is a **future** decision with its own plan, not a consequence of this one;
+- rewriting the historical Plan 091 soak record, the completed client-daemon Plans 161-172 records, or Plans 187-189's records.
+
+Not satisfied by this plan, and deliberately left unchecked:
+
+- the **interactive** Windows-native and Linux-native halves of the native matrix. The native matrix needs a Windows host and a Linux desktop session with a `StatusNotifierItem` host (plus the plain-GNOME "no SNI host" fallback case), and this plan was implemented on a macOS host. Nothing about those two targets is claimed **as an interactive desktop run**, and they **block shipment for Windows and Linux** — which is consistent with the packaging decision: the GUI is not shipped for any target yet. The macOS matrix itself is **partial**: Apple Silicon only, with no Intel build and no recorded DPI measurement. **The corrective pass narrows this bullet rather than satisfying it**: a CI runner *is* a native Windows host and a native Linux host, so the code is now compiled, linted, tested and **started** there, and the no-SNI-host fallback is now implemented and exercised against a desktop with no host — but a CI runner is not an operator's desktop, so a **visible** notification-area icon and a real GNOME session remain unproven and unclaimed.
+- the **launcher-side** end-to-end refusal to replace an incompatible daemon. The harness's stand-in completes the handshake and *then* reports a newer protocol version, which proves the GUI's own reporting and its "no second connection to the peer" property; the launcher's refusal belongs to `launch.rs`, whose 25 named tests are unchanged and green and are referenced rather than duplicated.
+- the **Windows handle inheritance of a detached daemon spawn**, which the native Windows exercise exposed and this line does **not** fix. On Windows a detached child inherits **every** inheritable handle the parent holds — not only the three standard ones — because Rust creates the child with `bInheritHandles = TRUE`. A launcher whose stdout is a pipe therefore leaves that pipe's write end open in the daemon, and the pipe never reaches EOF, so a command that spawns the daemon with a piped stdout (`gregg daemon restart | tee log`) hangs. The GUI is not affected (its streams are a console or a file) and neither is the terminal client in normal use. Closing it needs a handle *list* — `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` through `STARTUPINFOEX` — which the standard library does not expose, so it means `windows-sys` plus `unsafe` code in `crates/gregg/src/clientd/launch.rs`, which the repository's unsafe allowlist does not cover. It is recorded as an outstanding defect in `apps/gregg-gui/EVIDENCE.md` and in the launcher's own documentation; it is a core change with its own plan, not a consequence of this one.
+- the **footprint as a release-time question**. The measured cost is 10,803,360 bytes stripped, 72–83 MB resident and roughly 0.65% of one core. The **accept** decision stands for a **source build on a developer's machine**; whether a ten-megabyte binary and ~80 MB resident is the right thing to ship in a menu bar all day is a **shipping** decision, not a defect, and it is unresolved.
+- the **vendored `annotate-snippets` patch** in the GUI workspace, which reconciles the conflicting `unicode-width` requirements of Slint and Ratatui. It works, and it is byte-identical to the upstream 0.12.9 release rather than a fork of anyone's code — but it is **recorded dependency debt**, to be removed when the shared client-library boundary is revisited.
+
+Recorded environment conditions, not caused by this plan:
+
+- the **workspace Clippy gate** does not pass on this host either, and did not before the plan either. `cargo clippy --workspace --all-targets --all-features -- -D warnings` fails in `gregg-host` (24 errors) and `greggd` (17 errors) with `clippy::borrow_as_ptr` and `clippy::too_many_lines`. Both are **pre-existing**: the same failures appear, with the same counts, on the untouched worktree at commit `eb45029`, and `git diff` over `crates/gregg-host` and `crates/greggd` is empty for this line. The cause is the **local toolchain** — clippy 1.99.1 has lints the CI's clippy version does not flag — not the code. `gregg`, `gregg-protocol` and `gregg-update` are clippy-clean here, and so is the GUI workspace. They were not "fixed" here: silencing a lint the CI does not raise would have meant changing core crates for no reason, in a line whose whole point is not to touch them;
+- the default local check does not pass on this host and did not before the plan either. `cargo test --workspace --all-targets --all-features` fails 14-16 tests on an untouched worktree at commit `eb45029`: the `eggpool` worker tests, the `scheduler` fleet-scaling tests, and `clientd::ipc::tests::a_config_inside_the_temp_directory_yields_one_location`. Re-verified during this plan on that clean worktree: the `ipc` test and the `eggpool` worker test fail there with none of this line's changes present. The `ipc` test hardcodes `/tmp` while the code uses `std::env::temp_dir()`, so it fails wherever the temp directory is not `/tmp` (this host sets `TMPDIR`); the `eggpool`/`scheduler` tests combine tokio's `start_paused` auto-advance with real loopback TCP I/O, so a loaded machine advances virtual time past the connect before the request is issued — the fleet-scaling tests pass again when the machine is idle and fail while another build is running. The upstream CI run for the commit is green on every job. These were not "fixed" here: they are outside this line's scope, and changing the tests to pass would have masked a real environment sensitivity.
+- the **identity probe's ten-second budget** is the same kind of sensitivity, and it is **pre-existing**: `clientd::launch::verify_gregg_client_executable` spawns a candidate executable with `version`, drains its output on its own thread and waits at most ten seconds for it to exit. On a heavily loaded host that budget was exceeded, and the three core tests that use it (`an_executable_that_answers_as_gregg_passes_the_identity_check`, `an_executable_that_answers_as_something_else_fails_the_identity_check`, `an_executable_that_fails_the_identity_check_is_reported`) failed with `version did not answer within 10000 ms`; the GUI's own `bridge::tests::an_explicit_client_must_identify_itself`, which uses the same probe, failed in the same window with the same message. **Neither the probe nor its budget nor those tests is touched by this line.** Measured afterwards: the core launcher suite passed **12 consecutive runs** with zero failures, and the four identity tests pass in about half a second when the machine is idle. They were not "fixed" here either, for the same reason as the two above — raising the budget or weakening the assertion would hide an environment sensitivity rather than remove it.
+
+## Scope record for Plan 191 — implemented, pending native interactive acceptance
+
+Required, and implemented:
+
+- replace the separate monitor window with **one tray pulldown** — a
+  borderless, always-on-top panel opened from the native tray menu — carrying
+  the fleet summary, the host list, the selected host's metrics, drives,
+  interfaces, cron, records and `EggPool`;
+- position the panel within the work area, keep its position and size, and
+  dismiss it with `Esc`, the tray toggle and its close control, stating the
+  absence of click-away dismissal in the user documentation rather than
+  hiding it;
+  > **Superseded by Plan 192's eighth amendment (2026-10-23).** The click-away
+  > dismissal is **not** absent: Slint 1.18 **does** expose a focus-lost event,
+  > with the reason attached, and `FocusReason.window-activation` is the signal
+  > a click away produces. The ground for excluding it was never checked
+  > against the source. The pulldown now closes when the operator clicks away.
+  > **The close control is gone**, by Plan 192's tenth amendment: it was a
+  > fourth dismissal control that did what `Esc`, the tray's click and a click
+  > away already do, and it said nothing the footer did not already say.
+  > **Amended again by the same amendment.** macOS watches the **mouse**
+  > (AppKit's global event monitor — safe API, no event tap, no accessibility
+  > permission) because the focus was **measured** to be unreliable there: the
+  > pulldown dismissed itself in four opens out of five when another
+  > application took the foreground. Windows and Linux watch the **keyboard
+  > focus**, which is the only portable signal they have.
+- follow the desktop colour scheme through Slint's `Palette`, and give the
+  buttons hover and pressed states;
+- add host **add**, **remove** and **rename** to the panel through
+  `gregg::cli::add_host` / `remove_host` against the same `ConfigStore`,
+  inheriting the CLI's endpoint grammar, validation, config lock and atomic
+  write unchanged, and surfacing a refusal as a visible reason with the
+  config left byte-identical;
+- present an endpoint change as a **replacement** that states the host's
+  identity changes, applied only on the operator's explicit confirmation;
+- keep the daemon's `DaemonRequest` set, the protocol version, the handshake
+  and the daemon's ownership of polling unchanged;
+- record the framework review, and either drop the `std-widgets` import with a
+  smaller measured binary or keep it with the measurement recorded — it was
+  **kept**, with the measurement recorded in the plan;
+- prove the host-management path on all three targets in CI against a real
+  `ConfigStore` in a temporary directory, without a desktop session and
+  without touching a developer's config;
+- leave the **interactive** native acceptance unchecked unless it is
+  performed and recorded per target, exactly as Plan 190 leaves it. **It is
+  unchecked.**
+
+Preserved exclusions:
+
+- a second polling plane, a second daemon, or any HTTP client in the GUI;
+- a protocol change: no new `DaemonRequest`, no version bump, no handshake
+  change;
+- any change to `greggd`'s API, the cron plane, the `EggPool` plane, or the
+  daemon's ownership of polling;
+- any change to the TUI's behaviour, key bindings or rendering;
+- a new dependency in the GUI workspace;
+  > **Amended by Plan 192's eighth amendment (2026-10-23):** `block2` is now a
+  > **direct** dependency of the GUI workspace, because the macOS mouse watch's
+  > handler is an Objective-C block. It was **already in the graph** through
+  > `objc2`, so **no new crate** is built and the lockfile still holds the same
+  > 604 packages.
+- a new CI job, workflow, matrix, artifact or evidence bundle;
+- a release asset, installer, bundle, packaging job or publication step;
+- click-away dismissal of the panel, per-platform input hooks, and hand-rolled
+  tray icons;
+  > **Amended by Plan 192's eighth amendment (2026-10-23):** click-away
+  > dismissal is **not** excluded any more. **Amended again by the same
+  > amendment:** macOS implements it by watching the **mouse** (AppKit's global
+  > event monitor — safe API, no event tap, no accessibility permission) and
+  > Windows and Linux by watching the **keyboard focus**. The per-platform hook
+  > that the focus rule needs is gone; the mouse watch is macOS-only and there
+  > is still no hand-rolled tray icon.
+- rewriting Plans 187-190's records.
+
+## Scope record for Plan 192 — implemented, pending native interactive acceptance
+
+Required:
+
+- **the tray's click opens the pulldown**, and the pulldown shows the panel's
+  content: the fleet summary, the host list, the selected host's metrics,
+  drives, interfaces, cron, records, the `EggPool` plane and the host
+  add/remove/rename/re-point forms. There is **no launcher entry**;
+- the **native menu is not the primary surface** on any platform, and on macOS
+  it is detached, with `Reload`, `About` and `Quit` carried by the pulldown;
+- the pulldown is **positioned and clamped within the work area on every path
+  that opens it** — the tray's click, the startup path, and a desktop with no
+  tray host — by deferring the first open into the event loop so the work area
+  is available, and the native exercises assert the **position**, not only that
+  a window exists;
+- the pulldown's **position and size survive a restart**, in a bounded and
+  validated state file beside the config, with a corrupt or out-of-range file
+  falling back to the default;
+- the pulldown **reads as a dropdown**: rounded, shadowed, with a pointer
+  toward the tray item, and sized to its content rather than a fixed 560×520;
+  > **Amended by the ninth amendment (2026-10-23):** the pulldown's scroll
+  > boxes now reach the **bottom** of the panel, the two views share **one**
+  > box and so one height, and the panel is **narrower** — 412 px rather than
+  > 606. The defect was that the two forms, which are always in the tree
+  > because their fields have to be nameable, were **220 points tall each**
+  > whether they were showing or not — and a Slint layout lays out the
+  > **invisible** items as if they were visible, so they took 440 points of a
+  > body that had 348 and the fleet's scroll box was left with 201, leaving
+  > 147 points of dead space under the last host. A hidden pane now declares
+  > **zero height**; the detail scrolls in the fleet's box, so opening it does
+  > not resize the panel and the control that brings the fleet back does not
+  > move under the pointer.
+- the **application chrome is dropped**: the `Close` button that overhangs the
+  header strip, the `METRICS` and `CRON` headings, the bottom button bar that
+  duplicated the tray menu, the daemon-identity line, and the per-row `Edit` and
+  `Remove` buttons that crowd the row and blur into the selection tint;
+- the **no-tray fallback still holds**: the pulldown is the only control
+  surface, it opens at startup, and closing it quits the GUI;
+- the host-management path is unchanged in kind: the **CLI's own library code**
+  (`gregg::cli::add_host` / `remove_host` against the same `ConfigStore`), with
+  a refused mutation leaving the config byte-identical;
+- the GUI still opens **no HTTP client** and starts **no polling plane**, and
+  the daemon's `DaemonRequest` set is unchanged;
+- the GUI's own CI job still formats, lints, tests and release-builds on
+  macOS, Windows and Linux, and the native tray exercises still pass;
+- the **interactive** native acceptance is recorded per target, or left
+  unchecked and blocking shipment, exactly as Plan 190 leaves it. **It is
+  unchecked.**
+
+Preserved exclusions:
+
+- a second polling plane, a second daemon, or any HTTP client in the GUI;
+- a protocol change: no new `DaemonRequest`, no version bump, no handshake
+  change;
+- any change to `greggd`'s API, the cron plane, the `EggPool` plane, or the
+  daemon's ownership of polling;
+- any change to the TUI's behaviour, key bindings or rendering;
+- click-away dismissal, per-platform input hooks, and hand-rolled tray icons;
+  > **Amended by the eighth amendment (2026-10-23):** click-away dismissal is
+  > **not** excluded any more. Slint 1.18 **does** expose a focus-lost event,
+  > with the reason attached, and `FocusReason.window-activation` is the signal
+  > a click away produces.
+  > **Amended again by the same amendment:** the focus was **measured** to be an
+  > unreliable click-away signal on macOS — the pulldown dismissed itself in
+  > **four opens out of five** because another application took the foreground —
+  > so macOS watches the **mouse** (AppKit's global event monitor, safe API, no
+  > event tap, no accessibility permission) and excludes the menu bar, because
+  > the tray's own click toggles the pulldown. Windows and Linux keep the
+  > focus rule. There is still no hand-rolled tray icon, and `block2` — the
+  > crate that carries the monitor's Objective-C block — was already in the GUI
+  > workspace's graph, so no new crate was added.
+- a GPU renderer, and a vendored patch of Slint's runtime code;
+- a new dependency in the GUI workspace;
+  > **Amended by Plan 192's eighth amendment (2026-10-23):** `block2` is now a
+  > **direct** dependency of the GUI workspace, because the macOS mouse watch's
+  > handler is an Objective-C block and the type has to be named. It was
+  > **already in the graph** through `objc2`, so **no new crate** is built and
+  > the lockfile still holds the same 604 packages. `objc2-app-kit` also gains
+  > the `NSEvent`, `NSScreen` and `block2` features.
+- a new CI job, workflow, matrix, artifact or evidence bundle;
+- a release asset, installer, bundle, packaging job or publication step;
+- rewriting the historical records of Plans 187-190.
+
+### What the implementation did with that scope
+
+Every **required** item above is met, with two of them met *by the mechanism*
+rather than by an observation, and one left **unchecked** on purpose:
+
+- the pulldown carries the content and the launcher is gone. The tray's
+  `clicked` callback opens it, and the native menu is `if root.native-menu :
+  Menu { MenuItem { title: "Quit Gregg" } }` — **detached entirely on macOS**,
+  because an attached menu swallows the click;
+- the pulldown is **placed on every path**: the first open is deferred into the
+  event loop and the placement is retried until the native window exists, so
+  `work_area()` answers and the size is clamped to it;
+- the geometry **survives a restart**, in `<config>.gui-state` — bounded to
+  4 KiB, validated on read, written atomically, and falling back to the default
+  when it is corrupt;
+- the pulldown **reads as a dropdown** and is **sized to its content**, with
+  Rust owning the size because Slint 1.18 cannot expose a layout's preferred
+  size to a `.slint` file;
+- the **application chrome is dropped**, and the host actions now live in the
+  pulldown's own affordances rather than on every row;
+- the **protocol is untouched**, the GUI still opens no HTTP client, and the
+  client daemon remains the only poller;
+- the **native tray exercises were updated** — the menu expectation is now
+  `Quit Gregg`, and the GUI's own `pulldown=placed` line is parsed and asserted
+  so the exercises check the **position** and not only that a window exists.
+  **Both legs passed** in CI run `39811582623`: Linux placed the pulldown at
+  (852, 36) inside a 1264×980 work area, and Windows at (596, 460) inside
+  1008×708 — the bottom of that work area, where the Windows taskbar is.
+
+**Left unchecked, on purpose:** the **interactive** native acceptance. No tray
+icon was clicked on any platform, so the gesture that opens the pulldown — and
+Linux's, which the desktop decides — has not been observed in a real session.
+That blocks shipment for Windows and Linux and keeps the GUI a source build,
+exactly as Plan 190 leaves it.
+
+### Deviations from that scope
+
+- **The native menu carries `Quit Gregg` on Windows and Linux**, not nothing: a
+  menu with one entry is what a native menu is good at, and it keeps a
+  right-click on the tray icon useful on the two platforms where a right-click
+  still reaches it. On macOS it is detached, because an attached menu swallows
+  the click that has to open the pulldown.
+- **The tray's tooltip carries the fleet summary** — the counts and up to five
+  host names — so the tray still states the fleet's health without being
+  opened, and the native exercise's `--expect-host-name` has a target. The
+  summary is also in the pulldown's header.
+- **The shadow is drawn by hand**, in three translucent rounded rectangles,
+  because the software renderer's `draw_box_shadow` is an empty stub and a
+  vendored patch of Slint's runtime code is excluded by the plan.
+
+### What was not performed
+
+- **No interactive native run on any platform** — no tray icon was seen, no
+  pulldown was opened by a pointer, and no GNOME session was used. The CI legs
+  drive the tray *protocol*, not a desktop shell, so they prove the mechanism
+  and the placement, not the gesture;
+- the **macOS Intel build** was not produced locally, and there is still **no DPI
+  measurement** at 125 % or 150 %;
+- **Wayland was never executed** — the CI Linux leg runs under `xvfb-run`,
+  which is X11;
+- the **pre-existing core Windows handle-inheritance defect** is untouched;
+- the **default local check does not pass on this host, and did not before the
+  plan either** — `cargo test --workspace --all-targets --all-features` fails
+  13-16 tests here (the `eggpool` worker tests, the `scheduler` fleet-scaling
+  tests and `clientd::ipc::tests::a_config_inside_the_temp_directory_yields_one_location`).
+  Re-verified on a **pristine worktree at `ce25e35`**, with none of this plan's
+  changes present, and the same tests fail there; this plan changed **no file
+  under `crates/`**. Not "fixed" here: it is outside this line's scope, and
+  changing the tests to pass would mask a real environment sensitivity.
+
+## Closed scope record for Plan 189
+
+Completed:
+
+- implement the optional `gregg-gui` frontend as a **three-layer** split: a pure `FrontendSnapshot -> GuiViewModel` projection (`apps/gregg-gui/src/model.rs`, no threads, no channels, no Slint), a protocol owner (`apps/gregg-gui/src/bridge.rs`, which holds no HTTP client, no poll scheduler, no parsed remote configuration and no history store), and a presentation owner (`apps/gregg-gui/src/main.rs`, which mutates Slint components only on the UI thread). The truthfulness rules live in the pure layer so they are testable **without a desktop session** — a rule enforced only by a renderer is a rule the next renderer will break;
+- ship a **native system-tray entry** built on Slint's `SystemTrayIcon` (an `NSStatusItem` on macOS, the Shell notification area on Windows, `StatusNotifierItem`/AppIndicator on Linux), containing exactly one `Menu` whose items are a bounded fleet summary, Open Monitor, Reload, About Gregg and Quit Gregg — no unbounded host list in a native menu, and no custom popover;
+- ship a **compact monitor window** (560×520 logical pixels, resizable) showing the fleet, the selected host's metrics, drives and interfaces, its scheduler jobs and retained records, and the `EggPool` plane, with the host and job rows clickable and `Reload`, `EggPool`, `About` and `Quit` buttons;
+- draw the tray icon **procedurally** in the fleet's health colour (green / amber / red) with **no binary asset committed**, and make it *light*, because a menu bar is dark on macOS and on most Linux desktops and a dark icon on a dark bar is invisible — which is how a tray icon that "works" can still leave the operator with no tray entry at all;
+- make the GUI's push model explicit: the bridge calls a notification callback when it publishes, and the callback **schedules** the update with `slint::invoke_from_event_loop`. There is **no polling timer** — `slint::Timer` appears nowhere in the GUI sources — so an idle GUI redraws for no reason at all, and a redraw only ever happens because something changed;
+- make the `EggPool` and cron intents **desired state** on a `watch` channel rather than a command queue: the newest value wins, a rejected write stays dirty and is republished, and a reconnect publishes the **new full** desired state, because the daemon answering a new attachment has never seen the old one. The intent governs what the daemon **transmits**, never what it fetches, so a released intent costs the fleet nothing. The cron intent is published only while a job is open and is released when the view closes or the host changes; the `EggPool` intent only while that pane is open;
+- keep the window and the tray **independent** top-level Slint components driven from one Rust model, because a tray-rooted component does not share `Globals` with a window-rooted one and each instance gets its own copy of every global;
+- make closing the monitor window **hide** it and leave the tray and the observation running, by running `slint::run_event_loop_until_quit()` rather than `run_event_loop`; Quit is the only thing that ends the GUI, and it never ends the client daemon;
+- resolve the client daemon in an order that cannot mislead: an explicit `--gregg <path>` must **identify itself** (a bounded `<path> version` probe whose answer must be `gregg <version>`), an installer-owned client beside the GUI is accepted without a probe, and otherwise the GUI exits with an actionable diagnostic naming `--gregg`. It never falls back to launching itself and never starts polling the fleet directly;
+- extract the shared display vocabulary into `gregg::cron` (`state_label`, `outcome_label`, `load_gate_label`, `duration_label`, `elapsed_since`, `countdown_to`, `job_is_running`, `job_is_load_deferred`) and `gregg::eggpool` (`outcome_text`, `health_error_text`), and make the TUI's own `ui/cron.rs` and `ui/eggpool.rs` delegate to them. A second implementation of "load delayed" or "authentication required" is a second thing that can drift from the truth; **the TUI's rendered output is unchanged** and its existing tests still assert the same words;
+- prove the one-polling-plane property for the GUI specifically, with `bridge::evidence::a_gui_window_costs_the_fleet_exactly_one_polling_plane`: a real client daemon against an in-process counted HTTP remote, a TUI-like frontend and the GUI's `Bridge` attached at once, asserting the request count does not grow with the window count and that the first frontend keeps receiving documents;
+- verify the native macOS behaviour for real: the tray entry is present in the menu bar; the tray menu contains exactly the summary header, Open Monitor, Reload, About Gregg and Quit Gregg; **Open Monitor raises the window to the front** (the window is first in the front-to-back window order); the close button **hides** the window while the tray and the daemon keep running; **Reload** produces an immediate poll and a scheduler summary read and then resumes the normal cadence; **About Gregg** renders the Slint royalty-free attribution *inside the application*; **Quit Gregg** ends the GUI while the client daemon **survives and keeps polling**; and the GUI process itself opens **no network connections** of its own;
+- **fix the defect the native run found**: "Open Monitor" did nothing when the GUI was launched the way a real one is launched. A tray application is a *background* application, macOS does not activate the app that owns an `NSStatusItem` menu, and a background app cannot bring its own window to the front with `orderFront:` — so from a background launch the process had **no on-screen window at all**. Slint 1.18 exposes no activation API, so `apps/gregg-gui/src/platform.rs` calls `NSApplication activateIgnoringOtherApps:` through **macOS-only** `objc2`/`objc2-app-kit` (only the `NSApplication` feature; Windows and Linux are a no-op). The same background-launch scenario now puts the window **first in the front-to-back order** immediately after the tray click, with no manual activation. Plan 189 required "app activation" to work, so this was in scope;
+- re-measure the GUI's footprint against a baseline rebuilt to match: the same Slint features, the **same `main.slint`**, and the same activation code, but no `gregg` dependency. `gregg-gui` is **9,776,560 bytes** stripped against an **8,929,216-byte** baseline, so everything the GUI adds over a pure-Slint build of the same UI is **847,344 bytes (+9.5%)**. (These are the figures **at Plan 189's time**. After Plan 190's corrective pass the scroll container grew both binaries — the GUI to 10,803,360 bytes and the baseline to 9,956,032 — while the difference stayed put at 847,328 bytes; the current figures are in Plan 190's record and in `apps/gregg-gui/README.md`);
+- update `README.md`, `crates/gregg/README.md`, `apps/gregg-gui/README.md`, `architecture/gregg-client.md`, `.opencode/skills/gregg-client/SKILL.md` and `CHANGELOG.md` in the same pass as the behavior, covering the tray, the launch and helper-resolution expectations, the error states, the licence attribution and the mouse actions.
+
+Preserved exclusions:
+
+- any change to `greggd`, the read-only remote HTTP API, the wire protocol, the scheduler, the cron cache, the EggPool worker, or the TUI's rendering geometry;
+- a second remote HTTP client, a second polling plane, or any GUI feature that needs remote-polling access;
+- a custom floating popover, compositor-positioning hacks, remote control, scheduled-job editing, an alert daemon, a theme engine, a webview, GUI viewport persistence, a framework-agnostic widget library, a new remote telemetry field, or a general system-service lifecycle redesign;
+- moving `clientd/protocol.rs` types into `gregg-protocol`, publishing `gregg-gui` to crates.io, or adding the GUI to the root workspace;
+- new CI jobs, matrices, evidence bundles, or a release workflow;
+- rewriting the historical Plan 091 soak record or the completed client-daemon Plans 161-172 records.
+
+Not satisfied by this plan, and deliberately left unchecked:
+
+- the **Windows-native and Linux-native** halves of the native tray matrix. The macOS run is real and is recorded above; a Windows run needs a Windows host and a Linux tray run needs a desktop session with a `StatusNotifierItem` host, and this plan was closed on a macOS host. Plan 190 owns that matrix.
+- the **keyboard** half of "GUI keyboard/mouse actions". The MVP is mouse-driven and every action is reachable by pointer, including quitting; no keyboard shortcuts were added, and the documentation says so rather than implying one.
+
+Recorded environment conditions, not caused by this plan:
+
+- the **workspace Clippy gate** does not pass on this host either, and did not before the plan either. `cargo clippy --workspace --all-targets --all-features -- -D warnings` fails in `gregg-host` (24 errors) and `greggd` (17 errors) with `clippy::borrow_as_ptr` and `clippy::too_many_lines`. Both are **pre-existing**: the same failures appear, with the same counts, on the untouched worktree at commit `eb45029`, and `git diff` over `crates/gregg-host` and `crates/greggd` is empty for this line. The cause is the **local toolchain** — clippy 1.99.1 has lints the CI's clippy version does not flag — not the code. `gregg`, `gregg-protocol` and `gregg-update` are clippy-clean here, and so is the GUI workspace. They were not "fixed" here: silencing a lint the CI does not raise would have meant changing core crates for no reason, in a line whose whole point is not to touch them;
+- the default local check does not pass on this host and did not before the plan either. `cargo test --workspace --all-targets --all-features` fails 14-16 tests on an untouched worktree at commit `eb45029`: the `eggpool` worker tests, the `scheduler` fleet-scaling tests, and `clientd::ipc::tests::a_config_inside_the_temp_directory_yields_one_location`. The `ipc` test hardcodes `/tmp` while the code uses `std::env::temp_dir()`, so it fails wherever the temp directory is not `/tmp` (this host sets `TMPDIR`); the `eggpool`/`scheduler` tests combine tokio's `start_paused` auto-advance with real loopback TCP I/O, so a loaded machine advances virtual time past the connect before the request is issued — the fleet-scaling tests pass again when the machine is idle and fail while another build is running. The upstream CI run for the commit is green on every job. These were not "fixed" here: they are outside this line's scope, and changing the tests to pass would have masked a real environment sensitivity.
+
+## Closed scope record for Plan 188
+
+Completed:
+
+- introduce `clientd::DaemonExecutable` and `ensure_running_with_executable` as the single daemon-launch boundary, with `ensure_running` reduced to `ensure_running_with_executable(store, &DaemonExecutable::Current)`, so the TUI keeps its own-image behavior and `probe`, `classify`, `rotate`, `wait_ready` and the config-specific launch lock are shared rather than duplicated;
+- spawn the **exact resolved absolute path** — never a name from `PATH` — with no PID file and no process-name matching, and keep the existing argv (`--config <path> daemon run`) and stream detachment;
+- resolve and prove the executable usable **before anything destructive**, and raise the failure **only where a spawn is authorized**, so an unusable helper can neither stop nor refuse a daemon that is already serving, and is reported before the stop of a daemon that is being replaced;
+- refuse to launch the calling frontend: `DaemonExecutable::Path` rejects a path that canonicalizes to `current_exe()`, which is exactly the `gregg-gui daemon run` failure this plan exists to prevent;
+- add `verify_gregg_client_executable` (a bounded `gregg version` identity probe whose child is killed and reaped on the deadline) and `adjacent_daemon_executable` for the installer-owned default;
+- correct the rotation branch, which stopped the stale daemon and then *attached* to the daemon it had just stopped — a shape that could only fail, leaving the operator with a killed daemon and no replacement. Rotation is now one operation: stop, spawn the resolved executable, wait for readiness;
+- create `apps/gregg-gui` as an **independent Cargo workspace** with its own lockfile, its own `rust-toolchain.toml` and `rust-version = "1.92"`, excluded from the root workspace so the Rust 1.89 MSRV job never sees Slint; `cargo metadata` confirms the root workspace still has exactly its five core members;
+- pin Slint to `=1.18.1` with the minimal feature set (`std`, `backend-winit`, `renderer-software`, `software-renderer-systemfonts`, `system-tray`, `compat-1-18`) and `default-features = false`, keeping the femtovg OpenGL renderer, skia, wgpu, Qt and accessibility out; define the `Window` and the `SystemTrayIcon` as separate top-level components, the tray containing exactly one `Menu` and not requiring a window;
+- measure the cost the plan asked to measure rather than guess it: **747,936 bytes (+7.8%)** is what the whole `gregg` library costs the Slint binary (8,813,296-byte Slint-only baseline against the 9,561,232-byte `gregg-gui`), so no extraction plan is required and none was written;
+- record the Slint feature graph, toolchain floor, licensing path, dependency tree and integration API in `apps/gregg-gui/README.md` and `apps/gregg-gui/dependency-tree.txt`;
+- update `README.md`, `crates/gregg/README.md`, `architecture/gregg-client.md`, `.opencode/skills/gregg-client/SKILL.md`, `AGENTS.md` and `CHANGELOG.md` to describe the boundary and the separate GUI workspace;
+- run the focused launcher tests, the GUI workspace's own tests and clippy, and the default local check.
+
+Preserved exclusions:
+
+- any change to `greggd`, the read-only remote HTTP API, the wire protocol, the scheduler, the cron cache, the EggPool worker, or the TUI's rendering geometry;
+- a second remote HTTP client, a second polling plane, or any GUI feature that needs remote-polling access;
+- making Ratatui/Crossterm optional in the core crate, a new shared `gregg-client` crate, or any other speculative dependency extraction;
+- moving `clientd/protocol.rs` types into `gregg-protocol`, or publishing `gregg-gui` to crates.io;
+- new CI jobs, matrices, evidence bundles, or a release workflow;
+- rewriting the historical Plan 091 soak record or the completed client-daemon Plans 161-172 records.
+
+Not satisfied by this plan, and deliberately left unchecked:
+
+- the **Windows-native** matrix item ("not only compiled on Linux"). The launcher's argv construction is unchanged and argv-only, but only a native Windows run can close it, and this plan was closed on a macOS host.
+
+Recorded environment conditions, not caused by this plan:
+
+- the **workspace Clippy gate** does not pass on this host either, and did not before the plan either. `cargo clippy --workspace --all-targets --all-features -- -D warnings` fails in `gregg-host` (24 errors) and `greggd` (17 errors) with `clippy::borrow_as_ptr` and `clippy::too_many_lines`. Both are **pre-existing**: the same failures appear, with the same counts, on the untouched worktree at commit `eb45029`, and `git diff` over `crates/gregg-host` and `crates/greggd` is empty for this line. The cause is the **local toolchain** — clippy 1.99.1 has lints the CI's clippy version does not flag — not the code. `gregg`, `gregg-protocol` and `gregg-update` are clippy-clean here, and so is the GUI workspace. They were not "fixed" here: silencing a lint the CI does not raise would have meant changing core crates for no reason, in a line whose whole point is not to touch them;
+- the default local check does not pass on this host and did not before the plan either. `cargo test --workspace --all-targets --all-features` fails 15-16 tests on an untouched worktree at the same commit: ten `eggpool` worker tests, two `scheduler` fleet-scaling tests, and `clientd::ipc::tests::a_config_inside_the_temp_directory_yields_one_location`. The `ipc` test hardcodes `/tmp` while the code uses `std::env::temp_dir()`, so it fails wherever the temp directory is not `/tmp` (this host sets `TMPDIR`); the `eggpool`/`scheduler` tests combine tokio's `start_paused` auto-advance with real loopback TCP I/O, so a loaded machine advances virtual time past the connect before the request is issued. The upstream CI run for this commit is green on every job. These were not "fixed" here: they are outside this line's scope, and changing the tests to pass would have masked a real environment sensitivity.
+
 ## Closed scope record for Plan 085
 
 Completed:
@@ -1393,5 +2042,6 @@ Preserved exclusions:
 | [`056-eggpool-summary-pane-roadmap.md`](056-eggpool-summary-pane-roadmap.md) with Plans 057-062 | One optional EggPool endpoint, four fixed periods/metrics, bounded worker, and compact second pane | completed historical baseline; post-closure command/status corrections tracked by Plans 151-152 |
 | [`063-narrow-correctness-and-simplification-roadmap.md`](063-narrow-correctness-and-simplification-roadmap.md) with Plans 064-065 | Windows v2 staleness, strict endpoint parsing, package truth, verification deduplication, and runtime cleanup | completed; CI run `30964819950` passed |
 | [`161-cron-observability-and-client-daemon-roadmap.md`](161-cron-observability-and-client-daemon-roadmap.md) with Plans 162-168 | Bounded read-only `greggd` scheduler observability, the per-config per-user Gregg client daemon that owns all remote polling for multiple TUIs, the plain `c` cron view, terminal-output sanitization, the measured footprint closure, and the cross-platform verification of the Windows transport | closed at `154ab36` with Plans 162-167; **the macOS/Windows/MSRV jobs were not run by that closure**, and running them exposed that the Windows client daemon had never compiled, which Plan 168 corrected and verified |
+| [`187-slint-gui-roadmap.md`](187-slint-gui-roadmap.md) with Plans 188-190 | The optional Slint desktop frontend: the daemon-executable and toolchain boundary, the native tray and compact monitor MVP, and the counted cross-platform qualification with the packaging decision | closed with Plans 188-190 — **188 and 189 closed, 190 implemented and pending release qualification**; the request budget is proven flat in every phase, the GUI's cost is measured against a matched Slint-only baseline, and the packaging decision is **source-build-only**; **corrective pass 2026-10-21** fixed the broken Windows build, the missing no-tray fallback and the unusable Windows launch lock, and gave the GUI workspace its own CI; **the interactive Windows and Linux native acceptance were not performed**, so those two targets are not shippable on the strength of this line; the product line continues as **Plan 191** (one tray pulldown instead of a separate monitor window, plus host add/remove/edit), which is **planned** |
 
 Plans 010-035 describing retired staged release/evidence work remain archived under `plans/archive/v1.0.1-release/` and are not current requirements.

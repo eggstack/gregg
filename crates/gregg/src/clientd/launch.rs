@@ -32,7 +32,7 @@
 //! daemon self-healing across a client upgrade without any global registry of
 //! active configs.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -70,10 +70,47 @@ const ROTATE_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 /// running at the same moment as a TUI launch does not make one wait on the
 /// other. It is derived from the same config identity as the endpoint, so two
 /// configs can never contend and two configs can never share a daemon.
+///
+/// # Why Windows does not derive it from the endpoint
+///
+/// On Unix the endpoint is a socket file, so the lock is that file's name
+/// with a `.launch.lock` extension and the lock sits beside the socket it
+/// guards.
+///
+/// On Windows the endpoint is a **named pipe**, and the whole `\\.\pipe\`
+/// namespace is a *device* namespace, not a filesystem. A path in it can
+/// never be created: opening one asks for a pipe instance with that name and
+/// fails with `ERROR_FILE_NOT_FOUND` ("the system cannot find the file
+/// specified") when no such pipe exists. Deriving the lock from the endpoint
+/// therefore produced a path on which the lock could never be taken, and the
+/// launcher failed with `failed to read \\.\pipe\gregg-client-<id>.launch.lock`
+/// **before it ever got as far as spawning a daemon** — so on Windows neither
+/// the TUI nor the GUI could start a client daemon at all.
+///
+/// The Windows lock is therefore a **real file beside the config**, named
+/// after the same identity digest, so the two platforms keep the same
+/// properties: one lock per config, never the config mutation lock, and a
+/// path that a file can actually be created at.
 #[must_use]
 pub fn launch_lock_path(identity: &ClientDaemonIdentity) -> PathBuf {
-    let primary = identity.candidates().first().cloned().unwrap_or_default();
-    primary.with_extension("launch.lock")
+    #[cfg(unix)]
+    {
+        let primary = identity.candidates().first().cloned().unwrap_or_default();
+        primary.with_extension("launch.lock")
+    }
+    #[cfg(windows)]
+    {
+        let directory = identity
+            .normalized_config_path()
+            .parent()
+            .map_or_else(std::env::temp_dir, Path::to_path_buf);
+        directory.join(format!("gregg-client-{}.launch.lock", identity.id()))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = identity;
+        PathBuf::new()
+    }
 }
 
 /// Why a client daemon could not be ensured.
@@ -112,16 +149,121 @@ pub enum EnsureError {
     /// plain absence.
     #[error("{0}")]
     Transport(#[from] AttachError),
+    /// The selected daemon executable cannot be used.
+    ///
+    /// A separately named frontend has to say *which* Gregg client it should
+    /// launch, and getting that wrong must produce a diagnostic the operator
+    /// can act on — not a readiness timeout fifteen seconds later, and never a
+    /// silent fallback to direct remote polling.
+    #[error("{0}")]
+    Executable(String),
 }
+
+/// Which executable a frontend launches as the client daemon.
+///
+/// # Why this exists
+///
+/// The client daemon is the `gregg` binary. A frontend that *is* `gregg` can
+/// therefore use its own image: [`DaemonExecutable::Current`] resolves to
+/// `current_exe()` and is the TUI's behavior.
+///
+/// A frontend that is **not** `gregg` — a separately named desktop GUI — must
+/// not do that. Spawning itself with `daemon run` produces a process that
+/// exits immediately, a readiness wait that times out, and a diagnostic that
+/// blames the daemon for a mistake the launcher made. Such a frontend names
+/// the Gregg client explicitly with [`DaemonExecutable::Path`].
+///
+/// # What is *not* here
+///
+/// No process-name matching, no PID file, no `PATH` search. The executable is
+/// always an explicit path, and it is always the exact path that gets spawned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DaemonExecutable {
+    /// The calling frontend's own executable.
+    ///
+    /// Correct only for a frontend that *is* a Gregg client — that is, the
+    /// `gregg` TUI. A separately named frontend must not use this.
+    Current,
+    /// An explicit path to a Gregg client executable.
+    ///
+    /// The path is resolved to an absolute path before it is used, so it is
+    /// never subject to a `PATH` lookup that could select a different binary.
+    Path(PathBuf),
+}
+
+impl DaemonExecutable {
+    /// The path this selection names, if it names one.
+    ///
+    /// `None` for [`DaemonExecutable::Current`], whose path depends on the
+    /// running process and is therefore resolved by
+    /// [`resolve_daemon_executable`] instead.
+    #[must_use]
+    pub fn explicit_path(&self) -> Option<&Path> {
+        match self {
+            Self::Current => None,
+            Self::Path(path) => Some(path.as_path()),
+        }
+    }
+}
+
+/// How long a self-identifying executable probe may take.
+///
+/// The probe runs `<exe> version`, which is a trivial local command. The
+/// budget is generous because a cold, slow disk can make even that slow, and
+/// tight because the answer is needed before a launch is authorized.
+const IDENTITY_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The name the client binary reports for itself.
+///
+/// `gregg version` prints exactly this, followed by a space and the workspace
+/// version. A path that answers with anything else is not a Gregg client, and
+/// launching it as `daemon run` would fail in a way that has nothing to do
+/// with the daemon.
+const CLIENT_IDENTITY_PREFIX: &str = "gregg ";
 
 /// Attach to the client daemon for this config, starting one if needed.
 ///
 /// This is the whole of Plan 165's "operationally invisible" promise: bare
 /// `gregg` must work, and it must never leave two daemons for one config or
 /// overwrite a peer it does not own.
+///
+/// The launched executable is this frontend's own image, which is correct
+/// because this frontend *is* the `gregg` client. A separately named frontend
+/// must use [`ensure_running_with_executable`] instead.
 pub async fn ensure_running(store: &ConfigStore) -> Result<Attachment, EnsureError> {
+    ensure_running_with_executable(store, &DaemonExecutable::Current).await
+}
+
+/// Attach to the client daemon for this config, launching a **named** executable
+/// if one has to be started.
+///
+/// The lifecycle is exactly the one [`ensure_running`] has: a side-effect-free
+/// probe, then the config-specific launch lock, then a re-probe and a
+/// re-classification under that lock. Nothing about the ownership rules,
+/// the foreign-peer refusal, or the directional version guard changes with the
+/// executable; only *which* binary gets spawned does.
+///
+/// # Ordering guarantee
+///
+/// The executable is resolved **before** anything destructive happens, and a
+/// resolution failure is raised **only** when a spawn is actually authorized.
+/// That ordering is deliberate:
+///
+/// - A daemon that is already running needs no helper at all, so "the GUI
+///   packaged the wrong helper" must never stop or refuse a working daemon.
+/// - A daemon that *is* replaced must be replaced by something, so an unusable
+///   executable has to be reported **before** the old daemon is stopped —
+///   otherwise a missing helper turns a healthy config into a dead one.
+pub async fn ensure_running_with_executable(
+    store: &ConfigStore,
+    executable: &DaemonExecutable,
+) -> Result<Attachment, EnsureError> {
     let identity = ClientDaemonIdentity::for_path(store.path());
     let version = env!("CARGO_PKG_VERSION");
+
+    // Resolve once, up front, but do not fail on it yet. See the ordering
+    // guarantee above: the error is raised only where a spawn is authorized.
+    let resolved = resolve_daemon_executable(executable);
 
     // First, a **side-effect-free** probe. It may only answer "attach" or
     // "take the lock"; it never stops anything, because this point is outside
@@ -157,13 +299,26 @@ pub async fn ensure_running(store: &ConfigStore) -> Result<Attachment, EnsureErr
         // that waited on the lock kill the current daemon the winner had
         // already installed.
         Probe::Replaceable => {
-            rotate(&identity, version).await?;
-            daemon::attach(&identity, version)
-                .await
-                .map_err(EnsureError::Transport)?
+            // The executable must be proven usable *before* the stop: rotation
+            // replaces a daemon, and a replacement that cannot be started would
+            // leave the operator with no daemon at all.
+            let executable = match resolved {
+                Ok(executable) => executable,
+                Err(error) => return Err(error),
+            };
+            let ready = rotate_and_replace(&identity, version, store.path(), &executable).await;
+            // The lock is released before attaching so a slow client never
+            // blocks another launch; readiness has already been established at
+            // this point.
+            drop(lock);
+            return ready;
         }
         Probe::Absent => {
-            spawn_daemon(store.path())?;
+            let executable = match resolved {
+                Ok(executable) => executable,
+                Err(error) => return Err(error),
+            };
+            spawn_daemon(store.path(), &executable)?;
             let ready = wait_ready(&identity, version, READY_TIMEOUT).await;
             // The lock is released before attaching so a slow client never
             // blocks another launch; readiness has already been established at
@@ -332,6 +487,31 @@ async fn rotate(identity: &ClientDaemonIdentity, version: &str) -> Result<(), En
     Ok(())
 }
 
+/// Replace a stale owned daemon with a fresh one.
+///
+/// The stop and the spawn are **one** operation. The daemon that was stopped
+/// is not the daemon the caller ends up talking to: the replacement is started
+/// with the resolved executable and waited for, and the caller's next attach
+/// finds *that* daemon.
+///
+/// This matters because the two halves used to be separated, and the
+/// separation was wrong: the branch stopped the stale daemon and then
+/// *attached*, which can only fail, because the daemon it had just stopped is
+/// no longer listening. The operator was told "the client daemon could not be
+/// reached" for a daemon that had been killed a moment earlier and never
+/// replaced. Rotation is only meaningful if something takes the old daemon's
+/// place.
+async fn rotate_and_replace(
+    identity: &ClientDaemonIdentity,
+    version: &str,
+    config_path: &Path,
+    executable: &Path,
+) -> Result<Attachment, EnsureError> {
+    rotate(identity, version).await?;
+    spawn_daemon(config_path, executable)?;
+    wait_ready(identity, version, READY_TIMEOUT).await
+}
+
 /// Wait, bounded, for the endpoint to stop being served.
 ///
 /// [`crate::clientd::ipc::endpoint_is_live`] rather than `Path::exists()`: a
@@ -381,21 +561,46 @@ async fn wait_ready(
     }
 }
 
-/// Spawn the exact current executable as a detached `gregg daemon run`.
+/// Spawn the named executable as a detached `gregg daemon run`.
 ///
 /// Detached, and with every standard stream null: the daemon outlives this
 /// process, so it must not hold a terminal, and it must not inherit a pipe
 /// that would keep a parent waiting. It is never given a controlling terminal
 /// or process group.
 ///
-/// The exact executable is used rather than a name from `PATH`, so a stale or
+/// # The "must not inherit a pipe" half holds on Unix only
+///
+/// On Unix, `Stdio::null()` is exactly that: the daemon's three standard
+/// streams are `/dev/null`, and no descriptor of the launcher's is inherited
+/// but the ones the launcher asked for.
+///
+/// On Windows it is **not** the same, and the difference is a real defect
+/// rather than a subtlety. Rust's `Command` has to pass the three null
+/// handles to the child, so it creates the process with
+/// `bInheritHandles = TRUE`, and Windows then hands the child **every**
+/// inheritable handle the parent holds — not only the three standard ones.
+/// A launcher whose stdout is a pipe therefore leaves that pipe's write end
+/// open in the daemon, and the pipe never reaches EOF: the launching command
+/// finishes, but a reader on the other end waits for as long as the daemon
+/// lives. (`gregg daemon restart | tee log` hangs this way.)
+///
+/// It is **not** fixed here. Closing it needs a handle *list* —
+/// `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` through `STARTUPINFOEX` — which the
+/// standard library does not expose, so it means `windows-sys` and `unsafe`
+/// code in this module, which the repository's unsafe allowlist does not
+/// currently cover. It is recorded as an outstanding defect in
+/// `plans/README.md` and in `apps/gregg-gui/EVIDENCE.md`.
+///
+/// It does not affect the GUI, whose standard streams are a console or a file
+/// rather than a pipe, and it does not affect the terminal client in normal
+/// use, where stdout is the terminal.
+///
+/// The **exact** path is used rather than a name from `PATH`, so a stale or
 /// shadowing `gregg` earlier in the path can never become the daemon this
-/// frontend then attaches to.
-fn spawn_daemon(config_path: &std::path::Path) -> Result<(), EnsureError> {
-    let executable = std::env::current_exe().map_err(|error| {
-        EnsureError::Spawn(format!("could not locate this executable: {error}"))
-    })?;
-
+/// frontend then attaches to. The path has already been made absolute by
+/// [`resolve_daemon_executable`], so the spawn can never fall back to a
+/// `PATH` lookup.
+fn spawn_daemon(config_path: &Path, executable: &Path) -> Result<(), EnsureError> {
     let mut command = std::process::Command::new(executable);
     command
         .arg("--config")
@@ -430,7 +635,282 @@ fn spawn_daemon(config_path: &std::path::Path) -> Result<(), EnsureError> {
         // reparented and keeps running for the operator's session, which is
         // the whole point of a background client daemon.
         .map(|_child| ())
-        .map_err(|error| EnsureError::Spawn(error.to_string()))
+        .map_err(|error| {
+            EnsureError::Spawn(format!("could not start {}: {error}", executable.display()))
+        })
+}
+
+/// Resolve the executable a launch will use, proving it is usable first.
+///
+/// The proof is deliberately cheap and side-effect-free:
+///
+/// - the path must exist and be a regular file;
+/// - on Unix it must carry an execute bit, because a readable non-executable
+///   file would fail at spawn time with a message about permissions rather
+///   than about the wrong file;
+/// - it must not be **this** frontend's own executable.
+///
+/// That last rule is the whole point of the boundary. A separately named
+/// frontend that points its launcher at itself would spawn
+/// `gregg-gui --config … daemon run`, which is not a Gregg client: it exits
+/// immediately, the readiness wait times out, and the operator is told "the
+/// client daemon did not become ready" for a reason that has nothing to do
+/// with the daemon. The comparison is by canonical path, so a symlink, a
+/// relative spelling, or a `..` segment cannot slip past it.
+///
+/// Identity is deliberately **not** checked here: running an unknown binary is
+/// a decision the caller makes, not one this function makes for it. A caller
+/// that needs proof of identity calls [`verify_gregg_client_executable`].
+fn resolve_daemon_executable(executable: &DaemonExecutable) -> Result<PathBuf, EnsureError> {
+    let path = match executable {
+        DaemonExecutable::Current => std::env::current_exe().map_err(|error| {
+            EnsureError::Executable(format!("could not locate this executable: {error}"))
+        })?,
+        DaemonExecutable::Path(path) => path.clone(),
+    };
+
+    let absolute = std::path::absolute(&path).map_err(|error| {
+        EnsureError::Executable(format!(
+            "the client daemon executable {} is not a usable path: {error}",
+            path.display()
+        ))
+    })?;
+
+    let metadata = std::fs::metadata(&absolute).map_err(|error| {
+        EnsureError::Executable(format!(
+            "the client daemon executable {} cannot be used: {error}",
+            absolute.display()
+        ))
+    })?;
+    if !metadata.is_file() {
+        return Err(EnsureError::Executable(format!(
+            "the client daemon executable {} is not a file",
+            absolute.display()
+        )));
+    }
+    if !is_executable_file(&absolute, &metadata) {
+        return Err(EnsureError::Executable(format!(
+            "the client daemon executable {} is not executable",
+            absolute.display()
+        )));
+    }
+
+    // Refuse to launch ourselves. `DaemonExecutable::Current` is exempt: that
+    // variant *is* the frontend's own image, and for the `gregg` TUI that is
+    // exactly the right binary to launch.
+    if matches!(executable, DaemonExecutable::Path(_)) {
+        if let Ok(current) = std::env::current_exe() {
+            if same_file(&absolute, &current) {
+                return Err(EnsureError::Executable(format!(
+                    "{} is this frontend, not a Gregg client; a separately named \
+                     frontend must point at the `gregg` executable",
+                    absolute.display()
+                )));
+            }
+        }
+    }
+
+    Ok(absolute)
+}
+
+/// Whether a file can be executed.
+///
+/// Unix answers from the mode bits. Windows has no execute bit, so the
+/// **name** carries the meaning there, and the name is a property of the
+/// path rather than of the metadata — which is why this takes both.
+///
+/// The Windows rule is the one Windows itself applies when it is handed a
+/// path to run:
+///
+/// - a path with **no** extension is runnable, because Windows appends
+///   `.exe` to a name that carries none (`C:\tools\gregg` runs
+///   `C:\tools\gregg.exe`);
+/// - a path **with** an extension is runnable only when that extension is
+///   one Windows runs, so a `.txt` file is not a program.
+///
+/// The earlier version of this function asked the *metadata* for its
+/// extensions, which does not exist: `Metadata` has no extension, only
+/// `Path` does. The branch was therefore never compiled on the machine that
+/// wrote it, and it broke the whole Windows build of the crate.
+fn is_executable_file(path: &Path, metadata: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = path;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(windows)]
+    {
+        let _ = metadata;
+        match path.extension() {
+            None => true,
+            Some(extension) => {
+                extension.eq_ignore_ascii_case("exe")
+                    || extension.eq_ignore_ascii_case("com")
+                    || extension.eq_ignore_ascii_case("cmd")
+                    || extension.eq_ignore_ascii_case("bat")
+            }
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (path, metadata);
+        true
+    }
+}
+
+/// Whether two paths name the same file.
+///
+/// Canonicalization is what makes this more than a string comparison: a
+/// symlink, a relative spelling, or a `..` segment all reach the same file
+/// without looking alike. A path that cannot be canonicalized is compared
+/// lexically, so an unresolvable path is never reported as "the same file"
+/// just because it could not be checked.
+fn same_file(left: &Path, right: &Path) -> bool {
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+/// Ask an executable to identify itself, and require it to be a Gregg client.
+///
+/// This is the "positive identity check" that lets an operator point a
+/// separately named frontend at an arbitrary executable. Without it, a wrong
+/// path would be spawned as `daemon run`, fail, and be reported as a daemon
+/// that would not start — a diagnostic about the wrong thing.
+///
+/// The probe is `gregg version`, which prints `gregg <version>` and needs no
+/// configuration and no network. The returned string is the identity the
+/// executable reported, so a caller can record which build it found.
+///
+/// # Errors
+///
+/// Returns [`EnsureError::Executable`] when the executable is missing, cannot
+/// be run, does not answer in time, or answers with something other than a
+/// Gregg client identity.
+pub fn verify_gregg_client_executable(executable: &Path) -> Result<String, EnsureError> {
+    verify_gregg_client_executable_with_timeout(executable, IDENTITY_PROBE_TIMEOUT)
+}
+
+/// [`verify_gregg_client_executable`] with an explicit deadline.
+///
+/// The deadline is a parameter so the "never answers" case can be exercised
+/// without spending the production budget in a test.
+fn verify_gregg_client_executable_with_timeout(
+    executable: &Path,
+    timeout: Duration,
+) -> Result<String, EnsureError> {
+    let absolute = std::path::absolute(executable).map_err(|error| {
+        EnsureError::Executable(format!(
+            "the client daemon executable {} is not a usable path: {error}",
+            executable.display()
+        ))
+    })?;
+
+    let mut child = std::process::Command::new(&absolute)
+        .arg("version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| {
+            EnsureError::Executable(format!(
+                "could not run {} version: {error}",
+                absolute.display()
+            ))
+        })?;
+
+    // Drain stdout on its own thread. Two reasons, and both are real: a child
+    // that writes more than the pipe buffer would otherwise block forever and
+    // never exit, and the answer has to be in hand the moment the child does
+    // exit.
+    let stdout = child.stdout.take().map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut buffer = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut pipe, &mut buffer);
+            buffer
+        })
+    });
+
+    // The probe is bounded. An executable that never exits must not hang the
+    // launcher, and it must not leave an orphan behind either: the child is
+    // killed and reaped on the deadline.
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => {
+                return Err(EnsureError::Executable(format!(
+                    "could not run {} version: {error}",
+                    absolute.display()
+                )));
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(EnsureError::Executable(format!(
+                "{} version did not answer within {} ms",
+                absolute.display(),
+                timeout.as_millis()
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+
+    let answer = stdout
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default();
+    let answer = String::from_utf8_lossy(&answer);
+    let answer = answer.trim();
+
+    if !status.success() {
+        return Err(EnsureError::Executable(format!(
+            "{} version exited with {status}; it is not a usable Gregg client",
+            absolute.display()
+        )));
+    }
+
+    if !answer.starts_with(CLIENT_IDENTITY_PREFIX) {
+        return Err(EnsureError::Executable(format!(
+            "{} did not identify itself as a Gregg client (it answered {:?})",
+            absolute.display(),
+            answer
+        )));
+    }
+    Ok(answer.to_owned())
+}
+
+/// Find an installer-owned Gregg client next to a frontend executable.
+///
+/// A bundled or installed desktop frontend sits beside the `gregg` client it
+/// is meant to launch, so the adjacent file is the natural default: it is
+/// owned by the same installation, so it needs no identity probe and no
+/// operator configuration.
+///
+/// Returns `None` when there is no such file, which is not an error — the
+/// caller decides what to do about it.
+#[must_use]
+pub fn adjacent_daemon_executable(frontend_exe: &Path) -> Option<PathBuf> {
+    let directory = frontend_exe.parent()?;
+    // The order is platform-specific because the two names are not
+    // interchangeable. On Windows the runnable file is `gregg.exe`; a bare
+    // `gregg` is only *found* by Windows because it appends `.exe` to a name
+    // that carries no extension, so when both files exist the one that can
+    // actually be run is the one that must win.
+    #[cfg(windows)]
+    let names = ["gregg.exe", "gregg"];
+    #[cfg(not(windows))]
+    let names = ["gregg", "gregg.exe"];
+    for name in names {
+        let candidate = directory.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 /// Restart the client daemon for this config.
@@ -440,8 +920,28 @@ fn spawn_daemon(config_path: &std::path::Path) -> Result<(), EnsureError> {
 /// simply started, which is the useful half of the behavior for a manager that
 /// wants to guarantee liveness.
 pub async fn restart(store: &ConfigStore) -> Result<(), EnsureError> {
+    restart_with_executable(store, &DaemonExecutable::Current).await
+}
+
+/// Restart the client daemon for this config, launching a **named** executable.
+///
+/// The lifecycle, the ownership rules and the refusal to stop a daemon this
+/// binary does not own are identical to [`restart`]. Only the launched
+/// executable differs.
+///
+/// The executable is resolved **before** the stop, so an unusable helper is
+/// reported while the running daemon is still up rather than after it has
+/// been killed.
+pub async fn restart_with_executable(
+    store: &ConfigStore,
+    executable: &DaemonExecutable,
+) -> Result<(), EnsureError> {
     let identity = ClientDaemonIdentity::for_path(store.path());
     let version = env!("CARGO_PKG_VERSION");
+
+    // Resolve before anything destructive: a restart that cannot start a
+    // replacement must not stop the daemon it would have replaced.
+    let resolved = resolve_daemon_executable(executable)?;
 
     // The stop belongs *inside* the launch lock, and the decision to stop is
     // re-made from it. An unlocked `status` can observe a daemon that a
@@ -467,7 +967,7 @@ pub async fn restart(store: &ConfigStore) -> Result<(), EnsureError> {
     // not a reason to skip the spawn either: `bind` refuses an endpoint it
     // cannot claim, so the collision surfaces as a real error instead of as a
     // silent success.
-    let ready = spawn_and_confirm(store.path(), &identity, version, READY_TIMEOUT).await;
+    let ready = spawn_and_confirm(store.path(), &identity, version, &resolved, READY_TIMEOUT).await;
     drop(lock);
     ready
 }
@@ -479,12 +979,13 @@ pub async fn restart(store: &ConfigStore) -> Result<(), EnsureError> {
 /// successful one. `ready_timeout` is a parameter so the wait can be exercised
 /// without spending the production budget.
 async fn spawn_and_confirm(
-    config_path: &std::path::Path,
+    config_path: &Path,
     identity: &ClientDaemonIdentity,
     version: &str,
+    executable: &Path,
     ready_timeout: Duration,
 ) -> Result<(), EnsureError> {
-    match spawn_daemon(config_path) {
+    match spawn_daemon(config_path, executable) {
         Ok(()) => wait_ready(identity, version, ready_timeout)
             .await
             .map(|_| ()),
@@ -713,6 +1214,7 @@ mod tests {
             store.path(),
             &identity,
             "test",
+            &std::env::current_exe().expect("this test binary"),
             Duration::from_millis(200),
         ));
 
@@ -997,5 +1499,514 @@ mod tests {
             );
             squatter_task.abort();
         });
+    }
+
+    // ── The executable boundary (Plan 188) ─────────────────────────────
+
+    /// Write a fixture that answers `version` the way a Gregg client does.
+    fn fixture_client(dir: &TempDir, name: &str, body: &str) -> PathBuf {
+        let path = dir.0.join(name);
+        std::fs::write(&path, body).expect("writes fixture");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&path).expect("metadata").permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&path, permissions).expect("chmod");
+        }
+        path
+    }
+
+    #[test]
+    fn the_current_executable_is_usable_but_an_explicit_path_to_this_frontend_is_refused() {
+        // `DaemonExecutable::Current` is the TUI's own image, which is exactly
+        // the right binary to launch — so it resolves.
+        let current = resolve_daemon_executable(&DaemonExecutable::Current)
+            .expect("the running executable is usable");
+        assert!(current.is_absolute());
+
+        // The same file named explicitly is refused, because a separately named
+        // frontend that launched itself would spawn `gregg-gui daemon run`,
+        // which is not a Gregg client.
+        let error = resolve_daemon_executable(&DaemonExecutable::Path(current))
+            .expect_err("this frontend must not be launchable as the daemon");
+        let EnsureError::Executable(message) = error else {
+            panic!("expected an executable error, got {error:?}");
+        };
+        assert!(
+            message.contains("this frontend"),
+            "the diagnostic must name the mistake: {message}"
+        );
+    }
+
+    #[test]
+    fn a_missing_executable_is_reported_with_its_path_instead_of_a_readiness_timeout() {
+        let dir = TempDir::new("missing-exe");
+        let missing = dir.0.join("not-installed");
+        let error = resolve_daemon_executable(&DaemonExecutable::Path(missing.clone()))
+            .expect_err("a missing executable is not usable");
+        let EnsureError::Executable(message) = error else {
+            panic!("expected an executable error, got {error:?}");
+        };
+        assert!(
+            message.contains("not-installed"),
+            "the diagnostic must name the path: {message}"
+        );
+    }
+
+    #[test]
+    fn a_directory_is_not_a_usable_executable() {
+        let dir = TempDir::new("dir-exe");
+        let error = resolve_daemon_executable(&DaemonExecutable::Path(dir.0.clone()))
+            .expect_err("a directory is not an executable");
+        let EnsureError::Executable(message) = error else {
+            panic!("expected an executable error, got {error:?}");
+        };
+        assert!(message.contains("not a file"), "{message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_without_the_execute_bit_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new("no-exec-bit");
+        let path = dir.0.join("readable");
+        std::fs::write(&path, b"not a program").expect("writes fixture");
+        let mut permissions = std::fs::metadata(&path).expect("metadata").permissions();
+        permissions.set_mode(0o644);
+        std::fs::set_permissions(&path, permissions).expect("chmod");
+
+        let error = resolve_daemon_executable(&DaemonExecutable::Path(path))
+            .expect_err("a non-executable file is not usable");
+        let EnsureError::Executable(message) = error else {
+            panic!("expected an executable error, got {error:?}");
+        };
+        assert!(message.contains("not executable"), "{message}");
+    }
+
+    #[test]
+    fn an_explicit_executable_is_resolved_to_an_absolute_path() {
+        // A relative path must not become a `PATH` lookup at spawn time: a
+        // stale or shadowing `gregg` earlier in the path could otherwise
+        // become the daemon this frontend then attaches to.
+        let dir = TempDir::new("absolute");
+        let fixture = fixture_client(&dir, "gregg", "#!/bin/sh\necho 'gregg 1.2.3'\n");
+        let cwd = std::env::current_dir().expect("cwd");
+        let relative = relative_from(&cwd, &fixture);
+        assert!(
+            relative.is_relative(),
+            "the fixture path must be relative for this test to mean anything"
+        );
+        let resolved =
+            resolve_daemon_executable(&DaemonExecutable::Path(relative)).expect("resolves");
+        assert!(resolved.is_absolute(), "{resolved:?} is not absolute");
+        assert!(
+            same_file(&resolved, &fixture),
+            "the resolved path must still name the same file"
+        );
+    }
+
+    /// The relative spelling of `target` as seen from `base`.
+    ///
+    /// `pathdiff` is not a dependency, and this only has to be right for two
+    /// absolute paths.
+    fn relative_from(base: &Path, target: &Path) -> PathBuf {
+        let base: Vec<_> = base.components().collect();
+        let target: Vec<_> = target.components().collect();
+        let shared = base
+            .iter()
+            .zip(&target)
+            .take_while(|(left, right)| left == right)
+            .count();
+        let mut relative = PathBuf::new();
+        for _ in shared..base.len() {
+            relative.push("..");
+        }
+        for component in &target[shared..] {
+            relative.push(component.as_os_str());
+        }
+        relative
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_executable_that_answers_as_gregg_passes_the_identity_check() {
+        let dir = TempDir::new("identity-ok");
+        let fixture = fixture_client(&dir, "gregg", "#!/bin/sh\necho 'gregg 9.9.9'\n");
+        let answer = verify_gregg_client_executable(&fixture).expect("is a Gregg client");
+        assert_eq!(answer, "gregg 9.9.9");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_executable_that_answers_as_something_else_fails_the_identity_check() {
+        let dir = TempDir::new("identity-other");
+        let fixture = fixture_client(&dir, "other", "#!/bin/sh\necho 'some other tool'\n");
+        let error = verify_gregg_client_executable(&fixture)
+            .expect_err("another tool is not a Gregg client");
+        let EnsureError::Executable(message) = error else {
+            panic!("expected an executable error, got {error:?}");
+        };
+        assert!(
+            message.contains("did not identify itself as a Gregg client"),
+            "{message}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_executable_that_fails_the_identity_check_is_reported() {
+        let dir = TempDir::new("identity-fail");
+        let fixture = fixture_client(&dir, "failing", "#!/bin/sh\nexit 3\n");
+        let error =
+            verify_gregg_client_executable(&fixture).expect_err("a failing probe is not a client");
+        let EnsureError::Executable(message) = error else {
+            panic!("expected an executable error, got {error:?}");
+        };
+        assert!(message.contains("not a usable Gregg client"), "{message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_executable_that_never_answers_is_killed_at_the_deadline() {
+        let dir = TempDir::new("identity-hang");
+        let fixture = fixture_client(&dir, "hang", "#!/bin/sh\nsleep 30\n");
+        let started = std::time::Instant::now();
+        let error =
+            verify_gregg_client_executable_with_timeout(&fixture, Duration::from_millis(300))
+                .expect_err("a silent executable is not a client");
+        let EnsureError::Executable(message) = error else {
+            panic!("expected an executable error, got {error:?}");
+        };
+        assert!(message.contains("did not answer"), "{message}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the probe must be bounded, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_adjacent_client_is_found_next_to_a_frontend() {
+        let dir = TempDir::new("adjacent");
+        let frontend = dir.0.join("gregg-gui");
+        fixture_client(&dir, "gregg-gui", "#!/bin/sh\nexit 0\n");
+        let client = dir.0.join("gregg");
+        fixture_client(&dir, "gregg", "#!/bin/sh\necho 'gregg 1.0.0'\n");
+
+        assert_eq!(
+            adjacent_daemon_executable(&frontend),
+            Some(client),
+            "an installer-owned client beside the frontend is the default"
+        );
+    }
+
+    #[test]
+    fn no_adjacent_client_is_not_an_error() {
+        let dir = TempDir::new("no-adjacent");
+        let frontend = dir.0.join("gregg-gui");
+        assert_eq!(adjacent_daemon_executable(&frontend), None);
+    }
+
+    #[test]
+    fn an_unusable_executable_is_reported_instead_of_a_readiness_timeout() {
+        // The whole point of the boundary: a frontend that names an executable
+        // which cannot be used must be told so immediately, not after a
+        // readiness timeout that blames the daemon.
+        let dir = TempDir::new("unusable-exe");
+        let store = store_for(&dir);
+        let missing = dir.0.join("not-installed");
+
+        let started = std::time::Instant::now();
+        let outcome = runtime().block_on(ensure_running_with_executable(
+            &store,
+            &DaemonExecutable::Path(missing),
+        ));
+        let Err(error) = outcome else {
+            panic!("a missing executable cannot be launched");
+        };
+        assert!(
+            matches!(error, EnsureError::Executable(_)),
+            "unexpected classification: {error:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "an unusable executable took {:?}; it should be reported immediately",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_running_daemon_is_still_attached_to_when_the_helper_is_unusable() {
+        // "Do not stop a known working daemon merely because the GUI packaged
+        // the wrong helper." A daemon that is already serving needs no helper
+        // at all, so an unusable one must not turn into a failed launch.
+        let dir = TempDir::new("running-daemon");
+        let store = store_for(&dir);
+        let identity = ClientDaemonIdentity::for_path(store.path());
+        let endpoint = identity
+            .candidates()
+            .first()
+            .cloned()
+            .expect("has a candidate");
+        let missing = dir.0.join("not-installed");
+
+        runtime().block_on(async move {
+            let cancel = CancellationToken::new();
+            tokio::spawn(run_daemon(
+                ConfigStore::new(store.path().to_path_buf()),
+                identity.clone(),
+                cancel.clone(),
+            ));
+            // Wait for the daemon to actually serve before asserting the
+            // attach; an attach to a daemon that is not up yet would prove
+            // nothing about the helper.
+            for _ in 0..400 {
+                if endpoint.exists() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert!(endpoint.exists(), "the daemon should have come up");
+
+            let attached = ensure_running_with_executable(&store, &DaemonExecutable::Path(missing))
+                .await
+                .expect("a running daemon must still be attachable");
+            assert!(
+                !attached.hello.daemon_id.is_empty(),
+                "the attachment must be to the running daemon"
+            );
+            cancel.cancel();
+        });
+    }
+
+    /// Rotation must *replace* the daemon it stopped.
+    ///
+    /// The branch used to stop the stale daemon and then **attach**, which can
+    /// only fail: the daemon it had just stopped is no longer listening. The
+    /// operator was told "the client daemon could not be reached" for a daemon
+    /// that had been killed a moment earlier and never replaced.
+    ///
+    /// The fixture here is an executable that exits immediately, so the
+    /// replacement never becomes ready. That makes the *shape* of the failure
+    /// the assertion: a rotation that tries to replace reports `NotReady`,
+    /// while the old "stop and attach" shape reported a transport error from
+    /// the attach that could not succeed. The old daemon must also be gone —
+    /// a rotation that left it running would have changed nothing.
+    #[test]
+    fn a_rotation_stops_the_stale_daemon_and_starts_a_replacement() {
+        let dir = TempDir::new("rotate");
+        let store = store_for(&dir);
+        let identity = ClientDaemonIdentity::for_path(store.path());
+        let endpoint = identity
+            .candidates()
+            .first()
+            .cloned()
+            .expect("has a candidate");
+        let fixture = fixture_client(&dir, "replacement", "#!/bin/sh\nexit 0\n");
+
+        runtime().block_on(async move {
+            let cancel = CancellationToken::new();
+            tokio::spawn(run_daemon(
+                ConfigStore::new(store.path().to_path_buf()),
+                identity.clone(),
+                cancel.clone(),
+            ));
+            for _ in 0..400 {
+                if endpoint.exists() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert!(endpoint.exists(), "the daemon should have come up");
+
+            let outcome = rotate_and_replace(&identity, "test", store.path(), &fixture).await;
+
+            let Err(error) = outcome else {
+                panic!("a replacement that never served must not report success");
+            };
+            assert!(
+                matches!(error, EnsureError::NotReady { .. }),
+                "a replacement that never served must report NotReady, got {error:?}"
+            );
+            // The stale daemon is gone: rotation stopped it. What replaced it
+            // is a separate question, answered by the readiness result above.
+            let running = crate::clientd::daemon::status(&identity)
+                .await
+                .expect("status answers")
+                .running;
+            assert!(!running, "the stale daemon must have been stopped");
+            cancel.cancel();
+        });
+    }
+}
+
+/// The Windows-only rules of this module.
+///
+/// This is a **separate** module from the Unix one on purpose. The Unix suite
+/// is `#[cfg(all(test, unix))]`, so a `#[cfg(windows)]` test written *inside*
+/// it is a test that never compiles on Windows and therefore never runs —
+/// which is exactly how the Windows executable rule, and then the Windows
+/// launch lock, both reached a merged branch unexercised.
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use crate::clientd::identity::ClientDaemonIdentity;
+    use crate::config::Config;
+    use std::path::PathBuf;
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "gregg-launch-{tag}-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).expect("temp dir");
+            Self(path)
+        }
+
+        fn config_path(&self) -> PathBuf {
+            self.0.join("gregg.toml")
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A config on disk, so the identity is derived from a path that exists.
+    fn store_for(dir: &TempDir) -> ConfigStore {
+        let config = Config {
+            refresh_seconds: 1,
+            ..Config::default()
+        };
+        let store = ConfigStore::new(dir.config_path());
+        store.write(&config).expect("writes config");
+        store
+    }
+
+    // ── The Windows executable rules ──────────────────────────────────
+    //
+    // The rule they cover is the Windows one, and the branch they guard is
+    // the branch that broke the Windows build when it asked `Metadata` for
+    // its extensions.
+    #[test]
+    fn a_windows_executable_is_recognised_by_its_extension() {
+        let dir = TempDir::new("windows-executable");
+        let program = dir.0.join("gregg.exe");
+        std::fs::write(&program, b"not a real program").expect("writes the file");
+        let metadata = std::fs::metadata(&program).expect("metadata");
+        assert!(
+            is_executable_file(&program, &metadata),
+            "a .exe file is a program on Windows"
+        );
+
+        let document = dir.0.join("notes.txt");
+        std::fs::write(&document, b"not a program").expect("writes the file");
+        let metadata = std::fs::metadata(&document).expect("metadata");
+        assert!(
+            !is_executable_file(&document, &metadata),
+            "a .txt file is not a program on Windows"
+        );
+    }
+
+    #[test]
+    fn a_windows_name_without_an_extension_is_runnable() {
+        // Windows appends `.exe` to a name that carries no extension, so
+        // `C:\tools\gregg` runs `C:\tools\gregg.exe`. Refusing the bare name
+        // would refuse a path Windows itself resolves.
+        let dir = TempDir::new("windows-bare-name");
+        let program = dir.0.join("gregg");
+        std::fs::write(&program, b"not a real program").expect("writes the file");
+        let metadata = std::fs::metadata(&program).expect("metadata");
+        assert!(
+            is_executable_file(&program, &metadata),
+            "a name without an extension is runnable on Windows"
+        );
+    }
+
+    #[test]
+    fn the_runnable_windows_client_wins_over_the_bare_name() {
+        let dir = TempDir::new("windows-adjacent");
+        let frontend = dir.0.join("gregg-gui.exe");
+        std::fs::write(&frontend, b"not a real program").expect("writes the file");
+        std::fs::write(dir.0.join("gregg"), b"not a real program").expect("writes the file");
+        let client = dir.0.join("gregg.exe");
+        std::fs::write(&client, b"not a real program").expect("writes the file");
+
+        assert_eq!(
+            adjacent_daemon_executable(&frontend),
+            Some(client),
+            "the file Windows can actually run must be the one that is chosen"
+        );
+    }
+
+    // ── The Windows launch lock ───────────────────────────────────────
+    //
+    // The regression this module exists for. The lock path used to be
+    // derived from the endpoint, and on Windows the endpoint is a named
+    // pipe: the lock path was therefore inside the Windows *device*
+    // namespace, where no file can exist. The lock could never be taken and
+    // the launcher failed before it ever spawned a daemon. The GUI's
+    // Windows exercise found it; the TUI would have hit the same wall.
+    #[test]
+    fn the_windows_launch_lock_is_not_in_the_pipe_namespace() {
+        let dir = TempDir::new("windows-lock-namespace");
+        let identity = ClientDaemonIdentity::for_path(&dir.config_path());
+        let path = launch_lock_path(&identity);
+
+        let rendered = path.to_string_lossy();
+        assert!(
+            !rendered.starts_with(r"\\.\pipe"),
+            "a launch lock in the pipe namespace can never be created: {rendered}"
+        );
+    }
+
+    #[test]
+    fn the_windows_launch_lock_is_a_file_that_can_actually_be_locked() {
+        let dir = TempDir::new("windows-lock");
+        let store = store_for(&dir);
+        let identity = ClientDaemonIdentity::for_path(store.path());
+        let path = launch_lock_path(&identity);
+
+        std::fs::create_dir_all(path.parent().expect("has a parent")).expect("creates parent");
+        let held = FileLockGuard::acquire(&path, Duration::from_millis(500))
+            .unwrap_or_else(|error| panic!("the launch lock must be takeable on Windows: {error}"));
+        assert!(path.exists(), "the lock file is a real file on disk");
+
+        // A second acquirer must not be able to take it: that is the
+        // contention the lock exists to serialize.
+        let contended = FileLockGuard::acquire(&path, Duration::from_millis(50));
+        assert!(
+            contended.is_err(),
+            "a held launch lock must make a second launcher wait and then give up"
+        );
+
+        drop(held);
+        FileLockGuard::acquire(&path, Duration::from_millis(500)).expect("acquire after release");
+    }
+
+    #[test]
+    fn the_windows_launch_lock_is_distinct_per_config_and_from_the_config_lock() {
+        let dir = TempDir::new("windows-lock-distinct");
+        let first = ClientDaemonIdentity::for_path(&dir.0.join("a").join("gregg.toml"));
+        let second = ClientDaemonIdentity::for_path(&dir.0.join("b").join("gregg.toml"));
+        assert_ne!(
+            launch_lock_path(&first),
+            launch_lock_path(&second),
+            "two configs must never contend for one launch lock"
+        );
+
+        // Deliberately not the config mutation lock: an ordinary `gregg add`
+        // must not make a TUI launch wait, or vice versa.
+        let store = ConfigStore::new(dir.0.join("a").join("gregg.toml"));
+        assert_ne!(launch_lock_path(&first), store.lock_path());
     }
 }
