@@ -1404,6 +1404,131 @@ The GUI workspace's own suite is **166 passed / 0 failed** (160 before this
 work, plus six new tests), its clippy is clean under `-D warnings`, its
 formatting is clean, and its release binary is **11,962,992 bytes**.
 
+### The pulldown closes when the operator clicks away (2026-10-23)
+
+The next report was about the pulldown's **behaviour**: a menu closes when the
+operator clicks somewhere else, and the pulldown did not. It stayed over
+whatever was behind it, which is not what a menu does.
+
+**The stated limit was wrong.** The documentation said, in four places, that
+Slint 1.18 "exposes no focus-lost event". That was never checked against the
+source, and it is not true. Slint 1.18's `FocusScope` carries:
+
+```text
+callback focus-changed-event(reason: FocusReason);
+callback focus-gained(reason: FocusReason);
+callback focus-lost(reason: FocusReason);
+```
+
+and `FocusReason` has five variants — `programmatic`, `tab-navigation`,
+`pointer-click`, `popup-activation` and **`window-activation`**. The last one
+is the desktop saying *this window is no longer the active one*, which is what
+a click away does. The winit backend delivers it: `WinitWindowEvent::Focused`
+becomes `activation_changed(have_focus)`, which dispatches
+`WindowEvent::WindowActiveChanged`, which is `WindowInner::set_active`, which
+sends `FocusEvent::FocusOut(FocusReason::WindowActivation)` to the focused
+item.
+
+So the click away needs **no per-platform input hook**: no event tap, no global
+mouse monitor, no accessibility permission, and nothing that is macOS-only. The
+signal was there the whole time.
+
+**What was built.**
+
+- The pulldown aggregates **everything that can hold the keyboard focus**: the
+  scope that handles the keys, and the four fields of the two forms. A text
+  field takes the focus away from the scope when it is clicked, so a click away
+  with a form open has to be caught too.
+- The form's fields are **named**, which is why the form's pane is always in
+  the tree and only its visibility changes: a field inside a conditional block
+  cannot be named from the top of the component, and the aggregate lives at the
+  top.
+- When the **view changes**, the pulldown **takes the focus back**: a form that
+  goes away takes the focus with it, and the pulldown must not mistake that for
+  a click away.
+- Every dismissal — `Esc`, the ×, the tray's click and the click away — now
+  goes through **one** function, so they leave the same thing behind: the
+  fleet view, and no half-typed form.
+
+**Measured, natively**, on macOS 15 arm64, the release build, against the live
+window list:
+
+| what the operator did | the pulldown |
+| --- | --- |
+| clicked **away** (the desktop) | `onscreen=false` — dismissed |
+| clicked **inside** (a host row) | `onscreen=true` — still there |
+| clicked **into a field**, then away | `onscreen=false` — dismissed |
+
+```text
+gregg-gui: the pulldown was dismissed: it lost the keyboard focus
+```
+
+The third row is the one that needed the fields: the field held the focus, so
+the scope that handles the keys never saw the window lose it, and a pulldown
+that only watched the scope would have stayed on screen.
+
+**The limit that is left is stated rather than papered over.** The signal is
+*the focus was lost*, not *a click landed elsewhere*. A desktop that takes the
+focus away for another reason — another application activating on its own, a
+full-screen space being left — dismisses the pulldown too. A native status-item
+menu does not have that problem, because it is **modal**: it grabs the mouse
+and the keyboard, so nothing else can take the focus while it is open. A Slint
+window cannot be modal, so the pulldown watches the focus instead of the mouse.
+
+### What the GUI costs, and what it polls (2026-10-23)
+
+The same session asked two questions that are worth answering with numbers
+rather than with assurances: **how does the GUI's memory compare with the
+terminal client's**, and **is the GUI polling the fleet a second time**.
+
+**Memory.** The same fleet, the same release builds, sampled every two seconds
+for thirty seconds on this machine (macOS 15, arm64), with `footprint`'s
+physical footprint beside the resident set:
+
+| | resident set (min / median / max) | physical footprint |
+| --- | --- | --- |
+| **the TUI** (`gregg`) | 2,320 / **3,408** / 3,408 KB | 2.2 MB |
+| **the client daemon** — the poller, shared by both frontends | 3,088 / **4,912** / 5,008 KB | 3.1 MB |
+| **the GUI**, the pulldown never opened | 40,016 / **49,152** / 49,248 KB | 15 MB |
+| **the GUI**, the pulldown built | 68,800 / **70,752** / 73,840 KB | 27 MB |
+
+The GUI is **about fourteen times the TUI's resident set** before it has been
+opened, and **about twenty-one times** once its window exists. That is Slint's
+software renderer and the window server, and the table above says where it
+comes from: the TUI is a terminal renderer with no window.
+
+**Polling.** Measured on the live processes, with the GUI attached to a
+seven-host fleet:
+
+| | remote sockets | local sockets |
+| --- | --- | --- |
+| the client daemon (the poller) | **14 established TCP connections** to the fleet's hosts | the endpoint the frontends attach to |
+| the TUI | **none** | 7 Unix sockets (the daemon's endpoint) |
+| the GUI | **none** | 4 Unix sockets (the daemon's endpoint) |
+
+`lsof -nP -a -p <pid> -i` on the GUI's process lists **no network socket at
+all**. The GUI opens no TCP connection, never opens an HTTP client, and never
+polls a host: it is a frontend, and the daemon is the poller. The GUI's own
+dependency list is checked by a test as well — `bridge::tests::
+the_gui_crate_depends_on_no_http_client` reads the manifest and refuses
+`reqwest`, `axum`, `ureq`, `isahc`, `surf`, `attohttpc`, `ehttp`, `curl` and
+`hyper`.
+
+**One stale process was found while measuring this**, and it is worth naming:
+`~/.local/bin/gregg`, version **1.0.14**, has been running since 2026-10-20 and
+**does** hold TCP connections to the fleet's hosts. It is a build from before
+the client daemon existed — the current release is 1.0.15, and it is a
+frontend. It is a leftover, not the current client, and it is the one process
+on this machine that polls the fleet outside the client daemon.
+
+**What the dismissal cost.** The release binary is **11,979,520 bytes**, which
+is **+16,528 bytes (+0.1%)** on top of the previous build: a focus callback, an
+aggregate over five elements and one function. It adds **no dependency** — no
+event tap, no global mouse monitor, and nothing that is macOS-only — and the
+GUI workspace's suite is **171 passed / 0 failed** (166 before this work, plus
+five new tests), with clippy clean under `-D warnings` and the formatting
+clean.
+
 ### The native exercises, on CI run `39811582623`
 
 The GUI workspace is not a member of the root workspace, so no root job

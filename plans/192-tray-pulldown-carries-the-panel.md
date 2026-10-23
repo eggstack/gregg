@@ -255,6 +255,48 @@ the GUI is **not shippable** for Windows or Linux.
 > commit added assumed the **top** anchor, and Windows hangs the pulldown from the bottom, where
 > the taskbar is. The fix is `fd11201`.
 
+> **Amendment, 2026-10-23 (eighth) — the pulldown closes when the operator clicks away.**
+> The direction this plan set — *the pulldown reads as a dropdown* — is unchanged and is still the
+> goal, and this amendment brings the pulldown's **behaviour** in line with the **shape** the
+> earlier amendments gave it: a dropdown that stays on screen when the operator clicks the desktop
+> behind it does not read as a dropdown.
+>
+> This plan **excluded** click-away dismissal, on the stated ground that *"Slint 1.18 exposes no
+> focus-lost event"*. **That ground was never checked against the source, and it is wrong.**
+> `FocusScope` has a `focus-lost(reason: FocusReason)` callback, and `FocusReason` has a
+> **`window-activation`** variant — the desktop saying the window is no longer the active one,
+> which is what a click away does. The winit backend delivers it: `Focused` → `activation_changed`
+> → `WindowEvent::WindowActiveChanged` → `WindowInner::set_active` → `FocusOut(WindowActivation)`.
+>
+> So the dismissal needs **no per-platform input hook** — no event tap, no global mouse monitor,
+> no accessibility permission — and it is **not** macOS-only: the exclusion is withdrawn, and the
+> three `GUI` legs are the authority for Windows and Linux.
+>
+> - The pulldown aggregates **everything that can hold the keyboard focus**: the scope that handles
+>   the keys, and the **four fields** of the two forms. A text field takes the focus away from the
+>   scope when it is clicked, so a click away with a form open has to be caught too.
+> - The form's fields are **named**, which is why the form's pane is always in the tree and only its
+>   visibility changes: a field inside a conditional block cannot be named from the top of the
+>   component, and the aggregate lives at the top.
+> - When the **view changes** the pulldown **takes the focus back**, because a form that goes away
+>   takes the focus with it, and the pulldown must not mistake that for a click away.
+> - Every dismissal — `Esc`, the ×, the tray's click and the click away — goes through **one**
+>   function now, so they leave the same thing behind: the fleet view, and no half-typed form.
+>
+> The limit that is left is stated rather than papered over: the signal is *the focus was lost*,
+> not *a click landed elsewhere*, so a desktop that takes the focus away for another reason
+> dismisses the pulldown too. A native status-item menu does not have that problem, because it is
+> **modal** — it grabs the mouse and the keyboard, so nothing else can take the focus while it is
+> open. A Slint window cannot be modal, so the pulldown watches the focus instead of the mouse.
+>
+> Verified natively on macOS 15 (arm64), the release build, against the live window list: a click
+> **away** dismisses the pulldown (`onscreen=false`), a click **inside** does not, and a click
+> away with a **field focused** does — the last one being the case the fields are named for. The
+> same session measured the GUI against the terminal client: **49 MB** of resident set for a GUI
+> whose pulldown was never opened and **71 MB** once it was built, against **3.4 MB** for the TUI
+> and **4.9 MB** for the client daemon that does the polling — and `lsof` on the GUI's process
+> lists **no network socket at all**, so the fleet is not polled twice.
+
 ## Objective
 
 Make the **tray's click open the pulldown**, and make the pulldown **carry the panel's contents**
@@ -404,6 +446,11 @@ operator drags the panel once and expects it to stay there.
   of polling;
 - any change to the TUI's behaviour, key bindings or rendering;
 - click-away dismissal, per-platform input hooks, and hand-rolled tray icons;
+  > **Amended by the eighth amendment.** Click-away dismissal is **no longer excluded**, and the
+  > ground for excluding it was wrong: Slint 1.18 **does** expose a focus-lost event, with the
+  > reason attached, and `FocusReason.window-activation` is the signal a click away produces. It
+  > needs no per-platform input hook, so the rest of this line still holds: there is no event tap,
+  > no global mouse monitor and no hand-rolled tray icon.
 - a GPU renderer, and a vendored patch of Slint's runtime code;
 - a new dependency in the GUI workspace;
 - a new CI job, workflow, matrix, artifact or evidence bundle;
@@ -754,6 +801,16 @@ to the GUI workspace.
   > not a placeholder.
 - **The shadow is drawn by hand.** Slint's software renderer has no box shadow, and a vendored
   patch of Slint's runtime code is excluded by this plan.
+- **The pulldown is dismissed by a click away, and this plan had excluded that.**
+  > **Amended by the eighth amendment.** The exclusion rested on the claim that Slint 1.18
+  > exposes no focus-lost event, which was never checked against the source and is wrong:
+  > `FocusScope` carries `focus-lost(reason: FocusReason)`, and `FocusReason.window-activation`
+  > is the desktop saying the window is no longer active — which is what a click away does. The
+  > pulldown watches the keyboard focus, aggregates every element that can hold it (the scope
+  > that handles the keys and the four fields of the two forms), and takes the focus back when
+  > the view changes. The limit that is left is that the signal is *the focus was lost*, not *a
+  > click landed elsewhere*: a desktop that takes the focus away for another reason dismisses
+  > the pulldown too.
 
 ### What was not performed
 

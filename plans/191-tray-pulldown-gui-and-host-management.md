@@ -150,6 +150,12 @@ that does not exist portably, and it is excluded. The first implementation
 ships Esc/toggle/close dismissal, and the limitation is reported rather than
 hidden. If Esc-and-toggle dismissal proves unusable in practice, that is a
 stop condition, not something to paper over.
+> **Superseded on 2026-10-23 by Plan 192's eighth amendment.** The premise was
+> never checked against the source, and it is **wrong**: Slint 1.18's
+> `FocusScope` carries `focus-lost(reason: FocusReason)`, and
+> `FocusReason.window-activation` is the desktop saying the window is no longer
+> active — which is what a click away does. The panel now dismisses itself when
+> the operator clicks elsewhere, with no per-platform input hook at all.
 
 ### Style
 
@@ -273,7 +279,10 @@ mutation.
 - [x] The panel opens from the tray, is positioned within the work area,
       keeps its position and size, and is dismissed by `Esc`, the tray toggle
       and its close control. The absence of click-away dismissal is stated in
-      the user documentation. — **Corrected on 2026-10-22.** The `Esc` handling,
+      the user documentation.
+      > **Superseded on 2026-10-23 by Plan 192's eighth amendment:** the
+      > click-away dismissal is **not** absent — it ships, and the statement that
+      > Slint 1.18 exposes no focus-lost event is withdrawn as wrong. — **Corrected on 2026-10-22.** The `Esc` handling,
       the close control, the tray toggle and the stated limit are as described,
       and the position is clamped to the display's bounds *when the work area is
       available*. But the work area is **not** available on the startup path:
@@ -460,7 +469,7 @@ Two earlier runs on this branch failed, and both causes are fixed in the impleme
 | ---- | ----- | -------- |
 | The framework decision is recorded, and the `std-widgets` import is removed with a smaller binary or kept with the measurement recorded | **Met** | The review is above. `std-widgets` was **kept**: the panel's `Button` and `LineEdit` come from it. The measurement is below. |
 | The separate monitor window is gone; one pulldown carries every pane | **Met** | `src/ui/main.slint` has no `Window` component other than `Pulldown`. |
-| The panel opens from the tray, is positioned within the work area, keeps its position and size, and is dismissed by `Esc`, the tray toggle and its close control; the absence of click-away dismissal is stated | **Met, with a stated limit** | The position is clamped to the display's bounds and remembered; `Esc` is handled by the panel's focus scope. The absence of click-away dismissal is stated in `apps/gregg-gui/README.md`. |
+| The panel opens from the tray, is positioned within the work area, keeps its position and size, and is dismissed by `Esc`, the tray toggle and its close control; the absence of click-away dismissal is stated | **Met, with a stated limit** — **the limit is superseded on 2026-10-23** | The position is clamped to the display's bounds and remembered; `Esc` is handled by the panel's focus scope. The absence of click-away dismissal was stated in `apps/gregg-gui/README.md`; **Plan 192's eighth amendment withdrew that statement as wrong** — Slint 1.18 does expose a focus-lost event, and the click-away dismissal now ships. |
 | The panel follows the desktop colour scheme through `Palette`, and the buttons have hover and pressed states | **Met** | `Palette` is imported and used for every colour; the buttons are `std-widgets`' `Button`, which has both states. |
 | Add, remove and rename work from the panel against the real config path, with the CLI's validation and atomic write, and a refused mutation leaves the config byte-identical and shows a visible reason | **Met** | `hosts.rs` tests write to a real `ConfigStore` in a temporary directory and compare the file's bytes before and after a refusal. |
 | An endpoint change is presented as a replacement, states that the host's identity changes, and is applied only on the operator's explicit confirmation | **Met** | The form's note says the host is replaced and its identity changes, and the confirming button is labelled **Replace endpoint**. |

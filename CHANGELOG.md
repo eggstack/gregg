@@ -9,6 +9,31 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The desktop frontend's pulldown closes when the operator clicks away.** A
+  menu closes when the operator clicks somewhere else, and the pulldown now
+  does too: it is dismissed by `Esc`, the tray's click, its own × control
+  **and a click away**.
+
+  The signal is the **keyboard focus**. A window that loses the focus has lost
+  it to a click somewhere else, and Slint 1.18 **does** expose that —
+  `FocusScope`'s `focus-lost` callback carries the **reason**, and
+  `FocusReason.window-activation` is the desktop saying the window is no longer
+  active. The claim that Slint 1.18 exposed no focus-lost event was wrong, and
+  it is withdrawn: the dismissal needs **no per-platform input hook**, no event
+  tap, no global mouse monitor and no accessibility permission, and it is not
+  macOS-only.
+
+  The pulldown watches **everything that can hold the focus** — the scope that
+  handles the keys and the four fields of the two forms — so a click away
+  dismisses it with a form open, and it takes the focus back when the view
+  changes, so a form that goes away is not mistaken for a click away. Every
+  dismissal now goes through one path and leaves the same thing behind: the
+  fleet view, and no half-typed form.
+
+  The limit that is left is stated rather than papered over: the signal is *the
+  focus was lost*, not *a click landed elsewhere*, so a desktop that takes the
+  focus away for another reason dismisses the pulldown too.
+
 - **The desktop frontend's pulldown has two views, and the fleet view is a
   table of blocks.** The pulldown's **fleet** is now the TUI's condensed fleet
   row **turned on its side**: every host is a **block of its own**, so the fleet
@@ -121,10 +146,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   surface** — a borderless, always-on-top panel that opens from the native tray
   menu and carries the fleet summary, the host list, the selected host's
   metrics, drives and interfaces, its scheduler jobs and retained records, and
-  the `EggPool` plane. The panel is dismissed with `Esc`, the tray's click, or
-  its own close control; there is **no click-away dismissal**,
-  because Slint 1.18 exposes no focus-lost event, and that limit is stated in
-  the documentation rather than papered over. The panel is anchored to the
+  the `EggPool` plane. The panel is dismissed with `Esc`, the tray's click, its
+  own close control **or a click away**: the pulldown watches the keyboard
+  focus, and the claim that Slint 1.18 exposes no focus-lost event was wrong
+  (see the entry above). The panel is anchored to the
   trailing edge of the display, on the side where the desktop's own shell
   lives, clamped so it can never open off the screen, and it keeps the
   position the operator gave it — a borderless panel carries its own

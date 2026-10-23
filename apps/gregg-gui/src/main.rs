@@ -249,6 +249,12 @@ struct UiState {
     panel_message: String,
     /// Whether the last action failed.
     panel_message_is_error: bool,
+    /// Whether this desktop has a tray, as the last probe found.
+    ///
+    /// The probe runs off the UI thread, so its answer is kept here rather
+    /// than asked for at the moment it is needed: a dismissal must not
+    /// freeze the pulldown while the session bus is asked.
+    tray_support: platform::TraySupport,
 }
 
 impl UiState {
@@ -475,6 +481,7 @@ fn main() {
     let state: Arc<Mutex<UiState>> = Arc::new(Mutex::new(UiState {
         connection: ConnectionState::Connecting,
         panel_offset: geometry.offset,
+        tray_support: tray_support.clone(),
         ..UiState::default()
     }));
 
@@ -684,26 +691,28 @@ fn create_panel(ctx: &PanelContext) -> Pulldown {
     // would leave the operator with no way back to the GUI and no way to
     // quit it, so the GUI ends instead.
     //
-    // The desktop is asked again *here*, and not at startup, because a tray
-    // host can start after the desktop session is up — Slint retries the
-    // registration whenever the icon is set again — and a GUI that decided
-    // at startup would keep quitting the panel on a desktop that has a
-    // tray by now.
+    // The answer is the one the last probe found, and the probe runs every
+    // time the panel is opened: a tray host can start after the desktop
+    // session is up — Slint retries the registration whenever the icon is
+    // set again — and a GUI that decided at startup would keep quitting
+    // the panel on a desktop that has a tray by now.
     let callback_state = Arc::clone(&state);
     panel.window().on_close_requested(move || {
-        let support = platform::tray_support();
-        match platform::close_action(&support) {
+        let Ok(mut guard) = callback_state.lock() else {
+            return slint::CloseRequestResponse::HideWindow;
+        };
+        match platform::close_action(&guard.tray_support) {
             platform::CloseAction::HideToTray => {
-                if let Ok(mut state) = callback_state.lock() {
-                    state.panel_visible = false;
-                }
+                guard.panel_visible = false;
+                drop(guard);
                 slint::CloseRequestResponse::HideWindow
             }
             platform::CloseAction::Quit => {
                 eprintln!(
                     "gregg-gui: close with tray=unavailable -> quitting ({})",
-                    platform::tray_reason(&support)
+                    platform::tray_reason(&guard.tray_support)
                 );
+                drop(guard);
                 let _ = slint::quit_event_loop();
                 slint::CloseRequestResponse::KeepWindowShown
             }
@@ -893,16 +902,35 @@ fn create_panel(ctx: &PanelContext) -> Pulldown {
     let callback_state = Arc::clone(&state);
     let callback_panel = panel.as_weak();
     panel.on_close_requested(move || {
-        let Ok(mut state) = callback_state.lock() else {
+        dismiss_pulldown(&callback_panel, &callback_state);
+    });
+
+    // The pulldown no longer holds the keyboard focus: the operator clicked
+    // away from it, which is how a menu is dismissed.
+    //
+    // The panel is only dismissed while it is on screen. A panel that is
+    // already hidden has lost the focus for a different reason — it was
+    // hidden, or it was never focused — and dismissing it again would be
+    // noise.
+    let callback_state = Arc::clone(&state);
+    let callback_panel = panel.as_weak();
+    panel.on_focus_left(move || {
+        let Some(panel) = callback_panel.upgrade() else {
             return;
         };
-        state.panel_visible = false;
-        // A panel that is dismissed leaves the fleet view behind it.
-        state.view_mode = ViewMode::Fleet;
-        state.form = HostForm::default();
-        if let Some(panel) = callback_panel.upgrade() {
-            let _ = panel.hide();
+        if !panel.window().is_visible() {
+            return;
         }
+        {
+            let Ok(guard) = callback_state.lock() else {
+                return;
+            };
+            if !guard.panel_visible {
+                return;
+            }
+        }
+        eprintln!("gregg-gui: the pulldown was dismissed: it lost the keyboard focus");
+        dismiss_pulldown(&callback_panel, &callback_state);
     });
 
     let callback_state = Arc::clone(&state);
@@ -959,6 +987,50 @@ fn create_panel(ctx: &PanelContext) -> Pulldown {
     panel
 }
 
+/// Dismiss the pulldown.
+///
+/// The panel is hidden and the tray brings it back, which is what a menu
+/// does when the operator clicks somewhere else. A desktop with **no** tray
+/// ends the GUI instead: the pulldown is the only surface there is, and a
+/// hidden pulldown with no tray is an application the operator can no
+/// longer reach.
+///
+/// Every dismissal goes through here — `Esc`, the panel's own close
+/// control, and the click away — so they all leave the same thing behind.
+fn dismiss_pulldown(panel: &slint::Weak<Pulldown>, state: &Arc<Mutex<UiState>>) {
+    let Some(panel) = panel.upgrade() else {
+        return;
+    };
+    let Ok(mut guard) = state.lock() else {
+        return;
+    };
+    match platform::close_action(&guard.tray_support) {
+        platform::CloseAction::HideToTray => {
+            dismiss_state(&mut guard);
+            drop(guard);
+            let _ = panel.hide();
+        }
+        platform::CloseAction::Quit => {
+            eprintln!(
+                "gregg-gui: the pulldown was dismissed with tray=unavailable -> quitting ({})",
+                platform::tray_reason(&guard.tray_support)
+            );
+            drop(guard);
+            let _ = slint::quit_event_loop();
+        }
+    }
+}
+
+/// The state a dismissal leaves behind.
+///
+/// The pulldown is down, and it comes back to the fleet: not to the host's
+/// detail and not to a half-typed form.
+fn dismiss_state(state: &mut UiState) {
+    state.panel_visible = false;
+    state.view_mode = ViewMode::Fleet;
+    state.form = HostForm::default();
+}
+
 /// Bring the pulldown up, and place it on the display.
 ///
 /// The application is activated *before* the panel is shown. On macOS a
@@ -989,8 +1061,18 @@ fn show_pulldown(panel: &Pulldown, state: &Arc<Mutex<UiState>>) {
     place_pulldown(panel, state, PLACEMENT_ATTEMPTS);
 
     let weak = panel.as_weak();
+    let probe_state = Arc::clone(state);
     platform::tray_support_async(move |support| {
         let text = platform::tray_warning_text(&support);
+        {
+            // The answer is kept, so that a dismissal does not have to ask
+            // the desktop again: the probe runs off the UI thread, and a
+            // dismissal must not freeze the pulldown while the session bus
+            // is asked.
+            if let Ok(mut guard) = probe_state.lock() {
+                guard.tray_support = support.clone();
+            }
+        }
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(panel) = weak.upgrade() {
                 panel.set_tray_warning(text.into());
@@ -1302,6 +1384,7 @@ fn push_view(state: &mut UiState, panel: &slint::Weak<Pulldown>) {
     panel.set_panel_message(state.panel_message.clone().into());
     panel.set_panel_message_is_error(state.panel_message_is_error);
 
+    let previous_mode = panel.get_mode();
     match state.view_mode {
         ViewMode::Fleet => {
             panel.set_mode(PanelMode::Fleet);
@@ -1327,6 +1410,16 @@ fn push_view(state: &mut UiState, panel: &slint::Weak<Pulldown>) {
                 PanelMode::EditHost
             });
         }
+    }
+
+    // A field of the form takes the keyboard focus for itself, and when the
+    // form goes away the focus goes with it. The pulldown takes the focus
+    // back, or it would believe it had lost it and dismiss itself.
+    //
+    // It is only done when the view itself changed: taking the focus back
+    // while the operator is typing in a field would take it away from them.
+    if panel.get_mode() != previous_mode {
+        panel.invoke_take_focus();
     }
 
     resize_panel(state, &panel, &content_from_state(state, &panel));
@@ -1957,6 +2050,147 @@ mod tests {
         assert!(!state.panel_visible);
         assert!(state.panel_position.is_none());
         assert!(state.panel_offset.is_none());
+    }
+
+    /// The pulldown is dismissed when it loses the keyboard focus.
+    ///
+    /// That is the click away: a menu closes when the operator clicks
+    /// somewhere else, and the pulldown is a menu.
+    ///
+    /// The panel cannot ask the desktop whether the click landed outside
+    /// it — it never sees the click at all. What it can see is the keyboard
+    /// focus: the window losing its activation takes the focus away from
+    /// whatever held it, and nothing in the pulldown holds it afterwards.
+    ///
+    /// The `.slint` file is what says so, and it says it about **every**
+    /// thing that can hold the focus: the scope that handles the keys, and
+    /// the four fields of the two forms. A field takes the focus away from
+    /// the scope, and a click away with a field focused has to dismiss the
+    /// pulldown too.
+    #[test]
+    fn the_pulldown_is_dismissed_when_it_loses_the_keyboard_focus() {
+        assert!(
+            SLINT.contains("out property <bool> holds-focus:"),
+            "the pulldown says whether it holds the keyboard focus"
+        );
+        assert!(
+            SLINT.contains("key-handler.has-focus"),
+            "the scope that handles the keys holds the focus"
+        );
+        for field in [
+            "add-endpoint-field",
+            "add-name-field",
+            "edit-endpoint-field",
+            "edit-name-field",
+        ] {
+            assert!(
+                SLINT.contains(&format!("{field}.has-focus")),
+                "the field `{field}` holds the focus too"
+            );
+        }
+        assert!(
+            SLINT.contains("changed holds-focus => {"),
+            "the pulldown notices that it lost the focus"
+        );
+        assert!(
+            SLINT.contains("root.focus-left();"),
+            "losing the focus is what the Rust side is told"
+        );
+        assert!(
+            SLINT.contains("callback focus-left();"),
+            "the Rust side is told when the focus is lost"
+        );
+    }
+
+    /// The form's fields can only be named if the form is always there.
+    ///
+    /// A field inside a conditional block cannot be named from the top of
+    /// the component, and the pulldown has to name them: the focus is the
+    /// pulldown's own answer to "did the operator click away?". So the
+    /// form's pane is always in the tree and only its visibility changes.
+    #[test]
+    fn the_form_is_always_in_the_tree_so_that_its_fields_can_be_named() {
+        assert!(
+            !SLINT.contains("if root.mode == PanelMode.AddHost"),
+            "the form's pane is not a conditional block"
+        );
+        assert!(
+            SLINT.contains("visible: root.mode == PanelMode.AddHost;"),
+            "the form's pane is shown while a host is being added"
+        );
+        assert!(
+            SLINT.contains("visible: root.mode == PanelMode.EditHost;"),
+            "the form's pane is shown while a host is being edited"
+        );
+    }
+
+    /// The pulldown takes the keyboard focus back when the view changes.
+    ///
+    /// A field of the form holds the focus for itself, and when the form
+    /// goes away the focus goes with it. The pulldown would then believe
+    /// it had lost the focus and dismiss itself — so it takes the focus
+    /// back.
+    #[test]
+    fn the_pulldown_takes_the_focus_back_when_the_view_changes() {
+        assert!(
+            SLINT.contains("public function take-focus() {"),
+            "the pulldown can take the focus back"
+        );
+        assert!(
+            SLINT.contains("key-handler.focus();"),
+            "the focus goes back to the scope that handles the keys"
+        );
+    }
+
+    /// A dismissal leaves the fleet view behind it.
+    ///
+    /// The pulldown is a menu: it comes back to the fleet, not to the
+    /// host's detail or to a half-typed form.
+    #[test]
+    fn a_dismissal_leaves_the_fleet_view_behind_it() {
+        let mut state = UiState {
+            panel_visible: true,
+            view_mode: ViewMode::AddHost,
+            form: HostForm {
+                endpoint: "host:11310".to_owned(),
+                ..HostForm::default()
+            },
+            ..UiState::default()
+        };
+        dismiss_state(&mut state);
+        assert!(!state.panel_visible, "the pulldown is down");
+        assert_eq!(
+            state.view_mode,
+            ViewMode::Fleet,
+            "the fleet is what it comes back to"
+        );
+        assert!(
+            state.form.endpoint.is_empty(),
+            "the form is not left half-typed behind the pulldown"
+        );
+    }
+
+    /// A desktop with a tray hides the pulldown; one without ends the GUI.
+    ///
+    /// A hidden pulldown with no tray is an application the operator can no
+    /// longer reach, so the rule is the same for a click away as it is for
+    /// closing the window.
+    #[test]
+    fn a_click_away_ends_the_gui_on_a_desktop_with_no_tray() {
+        let with_tray = platform::TraySupport::Available;
+        let without_tray = platform::TraySupport::Unavailable {
+            reason: "no StatusNotifierItem host on this desktop".to_owned(),
+        };
+        assert_eq!(
+            platform::close_action(&with_tray),
+            platform::CloseAction::HideToTray,
+            "the tray brings the pulldown back"
+        );
+        assert_eq!(
+            platform::close_action(&without_tray),
+            platform::CloseAction::Quit,
+            "there is nowhere to bring the pulldown back to"
+        );
     }
 
     /// A drag moves the panel and remembers where it went, and the placement

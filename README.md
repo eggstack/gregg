@@ -270,7 +270,10 @@ macOS dropdown too: a rounded card of
 translucent material with a hairline edge, a soft shadow and a pointer toward
 the tray item — and it **wastes no vertical space**: there is no band of dead
 space between the title and the first host, because a Slint layout counts an
-empty row as a row.
+empty row as a row. And it **behaves** like a dropdown too: `Esc`, the tray's
+click, its own × control **and a click away** dismiss it, the last one because
+the pulldown watches the **keyboard focus** — a window that loses the focus has
+lost it to a click somewhere else.
 
 On a desktop with **no system tray** — a plain GNOME session has no
 `StatusNotifierItem` host — the tray cannot appear at all. The GUI notices,

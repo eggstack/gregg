@@ -631,6 +631,22 @@ export component Pulldown inherits Window {
     /// Whether the form's confirming button does anything.
     in property <bool> form-can-apply: false;
 
+    /// Whether the pulldown holds the keyboard focus.
+    ///
+    /// The window losing its activation takes the focus away from whatever
+    /// held it — the scope that handles the keys, or a field of the form —
+    /// and this says whether the pulldown still holds it. It is the
+    /// pulldown's own answer to "did the operator click away?".
+    ///
+    /// The form's fields are named here, which is why the form's pane is
+    /// always in the tree and only its visibility changes: a field inside a
+    /// conditional block cannot be named from the top.
+    out property <bool> holds-focus: key-handler.has-focus
+        || add-endpoint-field.has-focus
+        || add-name-field.has-focus
+        || edit-endpoint-field.has-focus
+        || edit-name-field.has-focus;
+
     /// The operator asked for a configuration reload.
     callback refresh-requested();
 
@@ -676,6 +692,31 @@ export component Pulldown inherits Window {
 
     /// The form's name field changed.
     callback name-edited(string);
+
+    /// The pulldown no longer holds the keyboard focus.
+    ///
+    /// The operator clicked away from it, which is how a menu is dismissed.
+    callback focus-left();
+
+    // The pulldown no longer holds the keyboard focus.
+    //
+    // The focus leaves the pulldown for two reasons, and only one of them
+    // is a click away: the other is the form taking the focus for a text
+    // field. The Rust side decides what a lost focus means.
+    changed holds-focus => {
+        if (!root.holds-focus) {
+            root.focus-left();
+        }
+    }
+
+    /// Give the keyboard focus back to the pulldown.
+    ///
+    /// A text field takes the focus for itself, and when the form goes away
+    /// the focus goes with it — so the pulldown takes the focus back, or it
+    /// would believe it had lost it and dismiss itself.
+    public function take-focus() {
+        key-handler.focus();
+    }
 
     /// The header strip was dragged, by this much.
     callback dragged(length, length);
@@ -1194,7 +1235,8 @@ export component Pulldown inherits Window {
                     }
 
                     // --------------------------------------------------- the forms
-                    if root.mode == PanelMode.AddHost : ScrollView {
+                    ScrollView {
+                        visible: root.mode == PanelMode.AddHost;
                         content-width: root.list-content-width;
                         vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
                         horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
@@ -1227,7 +1269,7 @@ export component Pulldown inherits Window {
                                 color: Palette.foreground;
                             }
 
-                            LineEdit {
+                            add-endpoint-field := LineEdit {
                                 text <=> root.form-endpoint;
                                 placeholder-text: "host:port";
                                 edited => {
@@ -1242,7 +1284,7 @@ export component Pulldown inherits Window {
                                 color: Palette.foreground;
                             }
 
-                            LineEdit {
+                            add-name-field := LineEdit {
                                 text <=> root.form-name;
                                 placeholder-text: "a name for this host";
                                 edited => {
@@ -1278,7 +1320,8 @@ export component Pulldown inherits Window {
                         }
                     }
 
-                    if root.mode == PanelMode.EditHost : ScrollView {
+                    ScrollView {
+                        visible: root.mode == PanelMode.EditHost;
                         content-width: root.list-content-width;
                         vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
                         horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
@@ -1311,7 +1354,7 @@ export component Pulldown inherits Window {
                                 color: Palette.foreground;
                             }
 
-                            LineEdit {
+                            edit-endpoint-field := LineEdit {
                                 text <=> root.form-endpoint;
                                 placeholder-text: "host:port";
                                 edited => {
@@ -1326,7 +1369,7 @@ export component Pulldown inherits Window {
                                 color: Palette.foreground;
                             }
 
-                            LineEdit {
+                            edit-name-field := LineEdit {
                                 text <=> root.form-name;
                                 placeholder-text: "a name for this host";
                                 edited => {

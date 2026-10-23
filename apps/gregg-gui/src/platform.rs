@@ -74,6 +74,17 @@ pub enum TraySupport {
     },
 }
 
+impl Default for TraySupport {
+    /// The optimistic answer: a desktop with a tray.
+    ///
+    /// The real answer is probed before the pulldown exists, and it is
+    /// probed again every time the pulldown is opened. This is only the
+    /// answer for a state that was built without one.
+    fn default() -> Self {
+        Self::Available
+    }
+}
+
 /// What closing the monitor window should do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloseAction {
@@ -105,6 +116,9 @@ pub fn classify_tray_support(bus_reachable: bool, watcher_present: bool) -> Tray
 /// Without one, hiding the window would leave the operator with nothing:
 /// the GUI would go on running with no way to reach it and no way to quit
 /// it, so closing the window ends the GUI instead.
+///
+/// A click away from the pulldown is the same decision: the pulldown is a
+/// menu, and a menu closes when the operator clicks somewhere else.
 pub fn close_action(tray: &TraySupport) -> CloseAction {
     match tray {
         TraySupport::Available => CloseAction::HideToTray,

@@ -499,12 +499,18 @@ still gains no message.
 
 Closing the panel **hides** it and leaves the tray and the observation
 running; Quit is the only thing that ends the GUI, and it never ends the client
-daemon. `Esc`, the tray's click and the panel's own close control all dismiss
-it. There is **no click-away dismissal**, because Slint 1.18
-exposes no focus-lost event: a window cannot be told that the click landed
-elsewhere, and the panel is always-on-top, so it stays over whatever is
-behind it. That limit is stated in the user documentation rather than papered
-over.
+daemon. `Esc`, the tray's click, the panel's own close control **and a click
+away** all dismiss it. The click away is the **keyboard focus**: a window that
+loses the focus has lost it to a click somewhere else, and Slint 1.18 does
+expose that — `FocusScope`'s `focus-lost` callback carries the **reason**, and
+`FocusReason.window-activation` is the desktop saying the window is no longer
+active. The pulldown aggregates every element that can hold the focus — the
+scope that handles the keys and the four fields of the two forms — so a click
+away dismisses it with a form open, and it takes the focus back when the view
+changes, so a form that goes away does not look like a lost focus. The limit
+that is left: the signal is *the focus was lost*, not *a click landed
+elsewhere*, so a desktop that takes the focus away for another reason
+dismisses the pulldown too.
 
 The panel is placed on the display it opens on, and it keeps the position the
 operator gave it. Slint 1.18 exposes no tray-icon position and no pointer

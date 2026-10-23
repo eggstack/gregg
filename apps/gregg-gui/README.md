@@ -304,6 +304,7 @@ outcomes, and the exact shape of the line a CI job asserts on.
 | Pulldown | The selected host's `Remove` | Removes the host from the configuration. |
 | Pulldown | **×** (in the header strip) | **Hides** the pulldown, and the tray brings it back. On a desktop with **no tray** it **ends the GUI** instead — a hidden pulldown with no tray is an application you can no longer reach. |
 | Pulldown | **Esc** | The same as ×. |
+| Pulldown | **A click away** | The same as ×. The pulldown watches the **keyboard focus**: a window that loses the focus has lost it to a click somewhere else. |
 | Pulldown | The header strip | **Drags** the pulldown. It has no window frame, so it has no title bar to drag. |
 
 The host's own actions are **the pulldown's affordances**, aimed at the
@@ -481,24 +482,51 @@ DRIVES
 
 ### How the pulldown is dismissed
 
-**`Esc`, the tray's click, and the pulldown's own × control.** That is the
-whole list.
+**`Esc`, the tray's click, the pulldown's own × control, and a click away.**
 
-There is **no click-away dismissal**, and that is a real limitation rather than
-an oversight. Slint 1.18 exposes no "the window lost focus" event: a window
-cannot be told that the click landed somewhere else, so a pulldown cannot close
-itself when the operator clicks the desktop behind it. The pulldown is also
-`always-on-top`, so it stays over whatever is behind it.
+The click away is the **keyboard focus**. A window that loses the keyboard focus
+has lost it to a click somewhere else, and a pulldown that stays up when the
+operator clicks the desktop behind it is not a pulldown — it is a second window
+that will not go away.
 
-The consequences are worth stating plainly:
+Slint 1.18 **does** expose that signal, and this was worth checking before
+believing otherwise: `FocusScope` has a `focus-lost` callback, and its argument
+is a `FocusReason` — `programmatic`, `tab-navigation`, `pointer-click`,
+`popup-activation` and **`window-activation`**. The last one is the desktop
+saying *this window is no longer the active one*, which is exactly what a click
+away does. So the dismissal needs **no per-platform input hook**: no event tap,
+no global mouse monitor, no accessibility permission, and nothing that is
+macOS-only.
 
-- a pulldown left open stays open until it is dismissed deliberately;
+The focus can be in either of two places, and the pulldown watches both:
+
+- the **scope that handles the keys** — the one `Esc` reaches — which holds the
+  focus whenever the operator has not clicked into a field;
+- a **field of the form**, which takes the focus for itself when it is clicked.
+
+So a click away dismisses the pulldown with a form open, not only with the
+fleet on screen. The form's fields are named for this, which is why the form's
+pane is always in the tree and only its visibility changes: a field inside a
+conditional block cannot be named from the top of the component. When the view
+changes, the pulldown **takes the focus back**, because a form that goes away
+takes the focus with it, and the pulldown must not mistake that for a click
+away.
+
+The limit that is left is worth stating plainly: the signal is *the focus was
+lost*, not *a click landed elsewhere*. A desktop that takes the focus away for
+some other reason — another application activating on its own, a full-screen
+space being left — dismisses the pulldown too. It is a close cousin of the
+native behaviour rather than a different thing: a native status-item menu is
+**modal**, so it grabs the mouse and the keyboard and nothing else can take the
+focus while it is open; a Slint window cannot be modal, so the pulldown watches
+the focus instead of the mouse.
+
 - `Esc` works, because the pulldown's own focus scope handles the key, and the
   key reaches it even when a text field has the focus.
 
-On a desktop with **no tray**, `Esc` and the × end the GUI instead, because a
-hidden pulldown with no tray is an application the operator can no longer
-reach.
+On a desktop with **no tray**, every dismissal — `Esc`, the ×, and the click
+away — ends the GUI instead, because a hidden pulldown with no tray is an
+application the operator can no longer reach.
 
 ### Host management
 
@@ -738,6 +766,40 @@ a seven-host fleet:
 | --- | --- | --- |
 | **idle, the pulldown never opened** | **45.5 MB** (35.8 min, 45.5 max over 60 s) | **about 1.6 %** of one core |
 | the pulldown open | 107 MB | about 8 % of one core |
+
+**What it costs against the terminal client.** The same fleet, the same
+release builds, sampled every two seconds for thirty seconds on this machine
+(macOS 15, arm64), with `footprint`'s physical footprint beside the resident
+set:
+
+| | resident set (min / median / max) | physical footprint |
+| --- | --- | --- |
+| **the TUI** (`gregg`) | 2,320 / **3,408** / 3,408 KB | 2.2 MB |
+| **the client daemon** — the poller, shared by both frontends | 3,088 / **4,912** / 5,008 KB | 3.1 MB |
+| **the GUI**, the pulldown never opened | 40,016 / **49,152** / 49,248 KB | 15 MB |
+| **the GUI**, the pulldown built | 68,800 / **70,752** / 73,840 KB | 27 MB |
+
+So the GUI is **about fourteen times the TUI's resident set** before it has
+been opened, and **about twenty-one times** once its window exists. That is
+Slint's software renderer and the window server, not the model: the TUI is a
+terminal renderer with no window, and the table above says where the difference
+comes from.
+
+**The fleet costs the same either way, and the GUI polls nothing.** The client
+daemon is the poller for both frontends, and the GUI reaches it over the same
+local protocol the TUI uses. Measured on the live processes, with the GUI
+attached to a seven-host fleet:
+
+| | remote sockets | local sockets |
+| --- | --- | --- |
+| the client daemon (the poller) | **14 established TCP connections** to the fleet's hosts | the endpoint the frontends attach to |
+| the TUI | **none** | 7 Unix sockets (the daemon's endpoint) |
+| the GUI | **none** | 4 Unix sockets (the daemon's endpoint) |
+
+`lsof -nP -a -p <pid> -i` on the GUI's process lists **no network socket at
+all** — it opens no TCP connection, never opens an HTTP client, and never polls
+a host. The GUI is a frontend and the daemon is the poller, and the two
+measurements above are the evidence for it.
 
 **Before the pulldown was built on demand** the same idle binary measured
 **82 MB** (82.0 MB median over a minute) — so the deferred window is worth
@@ -1075,8 +1137,9 @@ makes the difference attributable.
 | The GUI before Plan 191 (the separate monitor window) | 10,803,360 bytes (10.3 MiB) |
 | The GUI after Plan 191 (the tray pulldown, with host management) | 11,896,608 bytes (11.3 MiB) |
 | The GUI with the fleet view as a table of blocks (the previous build) | 12,012,560 bytes (11.5 MiB) |
-| **The GUI now** (the same fleet view, and a detail view that is the *same block* plus one condensed list) | **11,962,992 bytes** (11.4 MiB) |
-| **Difference** (before Plan 191 → now) | **+1,159,632 bytes (+10.7%)** |
+| The GUI with the compact fleet view and the detail view as the fleet's own block | 11,962,992 bytes (11.4 MiB) |
+| **The GUI now** (the same, and the pulldown closes when the operator clicks away) | **11,979,520 bytes** (11.4 MiB) |
+| **Difference** (before Plan 191 → now) | **+1,176,160 bytes (+10.9%)** |
 | The same GUI calling `gregg::cli::dispatch` (the rejected alternative) | 14,761,600 bytes |
 
 So the pulldown and the host-management forms cost about **1.02 MiB** more
@@ -1087,6 +1150,10 @@ replaced — the block's rows are five `Text`s and one bar each instead of five
 bar columns and their headings — and the vendored `softbuffer` patch costs
 **nothing measurable**: it changes one word in a pixel-format declaration that
 was already in the binary.
+
+The **click-away dismissal costs +16,528 bytes (+0.1%)**: it is a focus
+callback, an aggregate over five elements and one function, and it adds **no
+dependency** — no event tap, no global mouse monitor and nothing macOS-only.
 
 The detail view's rewrite cost **−16,496 bytes (−0.1%)**: the host's block is
 drawn by the *one* `HostBlock` component now, so the detail view's own metric

@@ -67,9 +67,17 @@ the host list, the selected host's metrics, drives, interfaces, cron, records
 and the EggPool plane, plus the forms that add, remove and edit hosts. The
 lists scroll with **bounded** heights: a large fleet must not push the metrics,
 cron and EggPool panes — or the buttons — out of the panel. It is dismissed by
-`Esc`, the tray's click and its own Close control; there is **no click-away
-dismissal**, because Slint 1.18 exposes no focus-lost event, and that limit is
-stated in the documentation rather than papered over.
+`Esc`, the tray's click, its own Close control **and a click away**: the
+pulldown watches the **keyboard focus**, and a window that loses the focus has
+lost it to a click somewhere else. Slint 1.18 **does** expose that signal —
+`FocusScope`'s `focus-lost` callback carries the **reason**, and
+`FocusReason.window-activation` is the desktop saying the window is no longer
+active — so the click-away needs **no per-platform input hook**. The focus can
+be in the scope that handles the keys **or in a field of the form**, and both
+count, so a click away dismisses the pulldown with a form open. The limit that
+is left is stated rather than papered over: the signal is *the focus was lost*,
+not *a click landed elsewhere*, so a desktop that takes the focus away for
+another reason dismisses the pulldown too.
 
 **The pulldown has two views, and the fleet view is a table of blocks.** The
 **fleet** is the TUI's condensed fleet row turned on its side: every host is a

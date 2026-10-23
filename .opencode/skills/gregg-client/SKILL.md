@@ -210,10 +210,17 @@ thing that ends the GUI, and it never ends the client daemon.
 monitor window is gone. A borderless, always-on-top panel carries every pane —
 the fleet summary, the host list, the selected host's metrics, drives,
 interfaces, cron, records and `EggPool` — plus the forms that add, remove,
-rename and re-point hosts. It is dismissed with `Esc`, the tray's click, or
-its own close control; there is **no click-away dismissal**, because Slint 1.18
-exposes no focus-lost event, and that limit is stated in the user
-documentation rather than papered over. It is anchored to the trailing edge of
+rename and re-point hosts. It is dismissed with `Esc`, the tray's click, its
+own close control **or a click away**: the pulldown watches the **keyboard
+focus**, and a window that loses the focus has lost it to a click somewhere
+else. Slint 1.18 **does** expose that — `FocusScope`'s `focus-lost` callback
+carries the **reason**, and `FocusReason.window-activation` is the desktop
+saying the window is no longer active — so the click-away needs **no
+per-platform input hook**. The focus can be in the scope that handles the keys
+**or in a field of the form**, and both count, so a click away dismisses the
+pulldown with a form open. The limit that is left is stated rather than
+papered over: the signal is *the focus was lost*, not *a click landed
+elsewhere*. It is anchored to the trailing edge of
 the display, on the side where the desktop's own shell lives, clamped so it can
 never open off the screen, and it keeps the placement the operator gave
 it — a borderless panel carries its own header strip to drag it, and its
