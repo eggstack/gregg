@@ -489,6 +489,9 @@ a pulldown — it is a second window that will not go away. Every one of the fou
 goes through the **same** path, so every one of them leaves the same thing
 behind: the fleet view, and no half-typed form.
 
+`Esc` reaches the pulldown because its own focus scope handles the key, and the
+key reaches it even when a text field has the focus.
+
 The click away is **two signals on two platforms**, because another
 application's mouse is not watchable everywhere.
 
@@ -567,9 +570,6 @@ The limits that are left are worth stating plainly:
   not seen; and the pointer's position is read when the click is **delivered**,
   not out of the click itself, which is why the menu bar's exclusion is a
   **band** and not a line.
-
-- `Esc` works, because the pulldown's own focus scope handles the key, and the
-  key reaches it even when a text field has the focus.
 
 On a desktop with **no tray**, every dismissal — `Esc`, the ×, and the click
 away — ends the GUI instead, because a hidden pulldown with no tray is an
@@ -790,9 +790,10 @@ The GUI is meant to **run constantly in the background**, so the numbers that
 matter are the ones it costs while nobody is looking at it.
 
 **The pulldown is built when the operator first opens it.** A window costs
-about thirty megabytes before it draws anything — the software renderer's
-buffer, its scene and its first frame — and a background GUI that nobody has
-opened yet should not be paying for it. So the panel's component is created on
+about thirty megabytes of resident set before it draws anything — the software
+renderer's buffer, its scene and its first frame — and **twelve megabytes of
+physical footprint**, which is what the machine really pays. A background GUI
+that nobody has opened yet should not be paying for it. So the panel's component is created on
 the first tray click, not at start-up, and it lives for as long as the process
 does once it exists. `--panel` (and a desktop with no tray at all) still opens
 it at start-up, because that is what those two paths are for.
@@ -833,6 +834,12 @@ the window exists but is hidden, **26 MB** with it on screen — against **2.3 M
 for the TUI and **4.0 MB** for the daemon that does the polling. So the GUI
 costs about **six times** the TUI before it is opened and about **eleven
 times** with its window on screen.
+
+The deferred window is worth about **12 MB** of footprint — the gap between the
+first GUI row and the last. The earlier measurement put it at **37 MB**, and
+that was `ps` RSS, which is the inflation this section is about: the same
+window costs a twelfth of its resident-set difference once the shared pages are
+counted once.
 
 The **resident set** is the number `ps` reports, and it is not monotonic
 because on macOS it counts shared, clean, reclaimable pages — the dyld shared
@@ -894,8 +901,9 @@ Two honest consequences:
 - **Destroying the window does not give the memory back.** Dropping the panel's
   component and watching for ninety-six seconds left the resident set exactly
   where it was (75,168 KB, flat), so the deferred window is a **one-off**
-  saving: it is worth thirty megabytes to a GUI that has never been opened,
-  and nothing to one that has.
+  saving: it is worth about thirty megabytes of resident set — **twelve** of
+  physical footprint — to a GUI that has never been opened, and nothing to one
+  that has.
 - **macOS reclaims most of it over hours.** A five-hour-old instance of the
   same binary measured **14–30 MB** — the dirty pages the allocator was
   holding are purged under the system's memory pressure. The number `ps`

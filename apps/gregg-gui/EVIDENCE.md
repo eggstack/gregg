@@ -879,8 +879,9 @@ pays too.
 **Destroying the window does not give the memory back.** A trivial Slint app
 whose window component was dropped was watched for ninety-six seconds: the
 resident set stayed flat at **75,168 KB**. So the deferred window is a
-**one-off** saving — worth thirty megabytes to a GUI that has never been
-opened, and nothing to one that has — and that is stated rather than implied.
+**one-off** saving — worth about thirty megabytes of resident set — **twelve**
+of physical footprint — to a GUI that has never been opened, and nothing to one
+that has — and that is stated rather than implied.
 
 **There is no leak.** `leaks` on the running GUI reports **287 leaks for
 14 KB**, every one of them in Apple's own XPC and Objective-C machinery. And

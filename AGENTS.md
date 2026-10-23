@@ -132,8 +132,9 @@ nobody is looking at is work nobody can see. A hidden pulldown is **not**
 re-rendered — the tray keeps the fleet's counts and its summary line straight
 from the document — and the pulldown is rebuilt **the moment it is opened**,
 so it shows the newest document. The pulldown's **component** is built on the
-**first tray click** rather than at start-up: a window costs about thirty
-megabytes before it draws anything, and a background GUI nobody has opened
+**first tray click** rather than at start-up: a window costs about **twelve
+megabytes** of physical footprint (and about thirty of `ps` resident set, which
+is the inflated figure on macOS), and a background GUI nobody has opened
 yet should not be paying for it. `--panel` and a desktop with no tray still
 open it at start-up, because that is what those two paths are for. Note that
 **dropping the window does not give the memory back** (measured: flat over

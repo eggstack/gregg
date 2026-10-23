@@ -719,18 +719,21 @@ is opened**, so what it shows is the newest document and not the last one it
 happened to be open for.
 
 The pulldown's **component** is built on the **first tray click**, not at
-start-up: a window costs about thirty megabytes before it draws anything, and
-a background GUI that nobody has opened yet should not be paying for it.
+start-up: a window costs about thirty megabytes of resident set before it draws
+anything — twelve of physical footprint, which is what the machine really pays —
+and a background GUI that nobody has opened yet should not be paying for it.
 `--panel` and a desktop with no tray still open it at start-up.
 
 **What the background GUI costs, measured.** On macOS 15 (arm64) with the real
-daemon and a seven-host fleet, the idle GUI's resident set is **45.5 MB** and
-its CPU is **about 1.6 %** of one core; the same binary with the panel built
-at start-up measured **82 MB**, so the deferred window is worth about
-**37 MB**. The rest of the cost is **Slint's software renderer and the window
-server, not the model**: the same measurements on a *trivial* Slint app give
-**27–35 MB** for an event loop with no component at all, **44 MB** with a tray
-icon and no window, and **62–74 MB** with a window that is never shown. The
+daemon and a seven-host fleet, the idle GUI's **physical footprint is 14 MB** —
+its resident set reads 46.9 MB, which is the inflated figure on macOS — and its
+CPU is **about 1.6 %** of one core; with the window on screen the footprint is
+**26 MB**, so the deferred window is worth about **12 MB** of footprint (the
+same gap measured **37 MB** of resident set). The rest of the cost is **Slint's
+software renderer and the window server, not the model**: the same
+measurements on a *trivial* Slint app give **27–35 MB** of resident set for an
+event loop with no component at all, **44 MB** with a tray icon and no window,
+and **62–74 MB** with a window that is never shown. The
 hidden-panel rule itself is **measurably neutral** (the same binary before and
 after differs by 0.6 MB of resident set and 0.06 s of CPU over a minute), and
 that is reported as what it is: the cost of an idle GUI is the daemon's

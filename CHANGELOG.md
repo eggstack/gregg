@@ -114,8 +114,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   icon and no window, and **62–74 MB** with a window that is never shown.
   There is **no leak** (`leaks` reports 287 leaks for 14 KB, all in Apple's
   own machinery), and dropping the window does **not** give the memory back,
-  so the deferred window is a one-off saving — worth thirty megabytes to a GUI
-  that has never been opened.
+  so the deferred window is a one-off saving — worth about thirty megabytes of
+  resident set, **twelve** of physical footprint, to a GUI that has never been
+  opened.
 
 - **A daemon-executable selection boundary for separately named frontends
   (Plan 188):** `clientd::ensure_running_with_executable` lets a frontend that

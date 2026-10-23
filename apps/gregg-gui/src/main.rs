@@ -542,8 +542,10 @@ fn main() {
     // one, and it carries `Quit` and nothing else.
     //
     // The pulldown is **built on the first click**, not at start-up. A window
-    // costs about thirty megabytes before it draws anything, and a background
-    // GUI that the operator has not opened yet should not be paying for it.
+    // costs about thirty megabytes of resident set before it draws anything —
+    // twelve of physical footprint, which is what the machine really pays —
+    // and a background GUI that the operator has not opened yet should not be
+    // paying for it.
     let callback_state = Arc::clone(&state);
     let callback_context = context.clone();
     let callback_panel = Arc::clone(&notify_panel);
@@ -613,8 +615,9 @@ thread_local! {
 /// Build the pulldown if it does not exist yet, and run `action` with it.
 ///
 /// The panel is built on demand, so this is where it is built: a window costs
-/// about thirty megabytes before it draws anything, and a background GUI that
-/// the operator has not opened yet should not be paying for it.
+/// about thirty megabytes of resident set before it draws anything — twelve of
+/// physical footprint, which is what the machine really pays — and a background
+/// GUI that the operator has not opened yet should not be paying for it.
 ///
 /// The panel lives in the UI thread's own storage because a Slint component is
 /// not `Send`, and Slint's own `show()` keeps the component alive only while
