@@ -815,22 +815,37 @@ a seven-host fleet:
 | the pulldown open | 107 MB | about 8 % of one core |
 
 **What it costs against the terminal client.** The same fleet, the same
-release builds, sampled every two seconds for thirty seconds on this machine
-(macOS 15, arm64), with `footprint`'s physical footprint beside the resident
-set:
+**final** release build (11,979,536 bytes), sampled every two seconds for
+twenty-four seconds on this machine (macOS 15, arm64), with `footprint`'s
+physical footprint beside the resident set:
 
 | | resident set (min / median / max) | physical footprint |
 | --- | --- | --- |
-| **the TUI** (`gregg`) | 2,320 / **3,408** / 3,408 KB | 2.2 MB |
-| **the client daemon** — the poller, shared by both frontends | 3,088 / **4,912** / 5,008 KB | 3.1 MB |
-| **the GUI**, the pulldown never opened | 40,016 / **49,152** / 49,248 KB | 15 MB |
-| **the GUI**, the pulldown built | 68,800 / **70,752** / 73,840 KB | 27 MB |
+| **the TUI** (`gregg`) | 3,168 / **3,168** / 3,168 KB | 2,352 KB (2.3 MB) |
+| **the client daemon** — the poller, shared by both frontends | 5,184 / **5,184** / 5,232 KB | 4,128 KB (4.0 MB) |
+| **the GUI**, the pulldown never opened | 46,912 / **46,928** / 47,056 KB | 14 MB |
+| **the GUI**, the pulldown built and hidden | 24,464 / **24,464** / 24,496 KB | 22 MB |
+| **the GUI**, the pulldown open | 38,512 / **41,856** / 41,936 KB | 26 MB |
 
-So the GUI is **about fourteen times the TUI's resident set** before it has
-been opened, and **about twenty-one times** once its window exists. That is
-Slint's software renderer and the window server, not the model: the TUI is a
-terminal renderer with no window, and the table above says where the difference
-comes from.
+The **physical footprint** is the honest number on macOS, and it is
+monotonic: **14 MB** before the pulldown has ever been opened, **22 MB** once
+the window exists but is hidden, **26 MB** with it on screen — against **2.3 MB**
+for the TUI and **4.0 MB** for the daemon that does the polling. So the GUI
+costs about **six times** the TUI before it is opened and about **eleven
+times** with its window on screen.
+
+The **resident set** is the number `ps` reports, and it is not monotonic
+because on macOS it counts shared, clean, reclaimable pages — the dyld shared
+cache, the system font collections — which the system hands back at its own
+pace. A *fresh* process reports its high-water mark: that is why the
+never-opened GUI, which had just started, reads higher than the one that had
+been open and dismissed. The resident set says the GUI is roughly **fifteen
+times** the TUI's before it is opened and **thirteen times** with its window
+open; the footprint says what the machine actually pays.
+
+What the difference is made of is Slint's software renderer and the window
+server, not the model: the TUI is a terminal renderer with no window, and the
+table above says where the difference comes from.
 
 **The fleet costs the same either way, and the GUI polls nothing.** The client
 daemon is the poller for both frontends, and the GUI reaches it over the same

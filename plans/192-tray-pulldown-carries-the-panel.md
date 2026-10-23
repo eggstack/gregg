@@ -312,11 +312,18 @@ the GUI is **not shippable** for Windows or Linux.
 >
 > Verified natively on macOS 15 (arm64) against the live window list: a click **away** dismisses
 > the pulldown (`onscreen=false`), a click **inside** does not, and the **tray's** own click — in
-> the menu bar — neither dismisses it by the watch nor fails to toggle it. The same session measured
-> the GUI against the terminal client: **49 MB** of resident set for a GUI whose pulldown was never
-> opened and **71 MB** once it was built, against **3.4 MB** for the TUI and **4.9 MB** for the
+> the menu bar — neither dismisses it by the watch nor fails to toggle it (three tray clicks in a
+> row opened, closed and opened it again, with no dismissal line in between). The same session
+> measured the GUI against the terminal client: **46.9 MB** of resident set — **14 MB** of physical
+> footprint — for a GUI whose pulldown was never opened, and **41.9 MB** (**26 MB**) with the
+> window on screen, against **3.2 MB** (**2.3 MB**) for the TUI and **5.2 MB** (**4.0 MB**) for the
 > client daemon that does the polling — and `lsof` on the GUI's process lists **no network socket
 > at all**, so the fleet is not polled twice.
+>
+> The run that covers this work, **`40017131833`** against `481cda0`, is **green on all ten jobs**,
+> including the three `GUI` legs — which are the only authority for this workspace's Windows and
+> Linux behaviour, because the workspace is not a member of the root workspace and no root job
+> compiles it.
 
 ## Objective
 

@@ -1492,20 +1492,28 @@ a click anywhere else                  -> a click away
 - The **focus** rule is kept where the mouse cannot be watched: **Windows and
   Linux** use it, and macOS uses the mouse.
 
-**Measured, natively**, on macOS 15 arm64, the debug build, against the live
-window list:
+**Measured, natively**, on macOS 15 arm64, the **release** build
+(11,979,536 bytes), against the live window list:
 
 | what the operator did | the pulldown |
 | --- | --- |
-| clicked the **tray** (the menu bar) | `onscreen=1` — opened, and **not** dismissed by the watch |
-| clicked the **tray** again | `onscreen=0` — closed by the toggle, and **not** dismissed by the watch |
-| clicked **inside** (a host row) | `onscreen=1` — still there |
-| clicked **away** (the work area) | `onscreen=0` — dismissed |
+| clicked the **tray** (the menu bar) | `onscreen=true` — opened, and **not** dismissed by the watch |
+| clicked the **tray** again | `onscreen=false` — closed by the toggle, and **not** dismissed by the watch |
+| clicked the **tray** a third time | `onscreen=true` — opened again: the toggle still works with the watch installed |
+| clicked **inside** (a host row) | `onscreen=true` — still there |
+| clicked **away** (the work area) | `onscreen=false` — dismissed |
 
 ```text
-gregg-gui: a click landed away from the pulldown at (400, 380)
+gregg-gui: a click landed away from the pulldown at (800, 380)
 gregg-gui: the pulldown was dismissed: the operator clicked away
 ```
+
+The three tray clicks in a row produced **no** "landed away" line at all: the
+menu bar's exclusion is what keeps the tray's own click from dismissing the
+pulldown, which would otherwise hide it and open it again in the same gesture.
+The "away" coordinates in the log are AppKit's — the **bottom-left** origin —
+so `(800, 380)` is the same click the driver made at `(800, 700)` from the
+top-left.
 
 The **tray** rows are the ones the focus rule could not pass: the tray's click
 is in the menu bar, and the watch has to leave it alone or the pulldown would
@@ -1525,27 +1533,55 @@ hide and open again.
   not seen; and the pointer's position is read at delivery time rather than out
   of the click itself, which is why the menu bar's exclusion is a band.
 
+**The CI run that covers this work is green.** Run **`40017131833`** against
+`481cda0` is **green on all ten jobs** — the core `Linux`, `macOS (macos-15)`,
+`macOS (macos-15-intel)`, `Windows`, `Scripts (shellcheck + pytest)`,
+`MSRV (Rust 1.89)` and `FreeBSD (gregg-host native)` jobs, and the three `GUI`
+legs (`macos-15`, `windows-2022`, `ubuntu-latest`). The `GUI` legs are the
+only authority for this workspace's Windows and Linux behaviour, because the
+workspace is not a member of the root workspace and no root job compiles it —
+and the `ubuntu-latest` leg is where the **native** Linux tray exercise runs,
+against a real `StatusNotifierItem` host.
+
+The GUI workspace's own suite is **174 passed / 0 failed** (166 before this
+work, plus eight new tests), its clippy is clean under `-D warnings`, its
+formatting is clean, and its release binary is **11,979,536 bytes**.
+
 ### What the GUI costs, and what it polls (2026-10-23)
 
 The same session asked two questions that are worth answering with numbers
 rather than with assurances: **how does the GUI's memory compare with the
 terminal client's**, and **is the GUI polling the fleet a second time**.
 
-**Memory.** The same fleet, the same release builds, sampled every two seconds
-for thirty seconds on this machine (macOS 15, arm64), with `footprint`'s
-physical footprint beside the resident set:
+**Memory.** The same fleet, the same **final** release build, sampled every two
+seconds for twenty-four seconds on this machine (macOS 15, arm64), with
+`footprint`'s physical footprint beside the resident set:
 
 | | resident set (min / median / max) | physical footprint |
 | --- | --- | --- |
-| **the TUI** (`gregg`) | 2,320 / **3,408** / 3,408 KB | 2.2 MB |
-| **the client daemon** — the poller, shared by both frontends | 3,088 / **4,912** / 5,008 KB | 3.1 MB |
-| **the GUI**, the pulldown never opened | 40,016 / **49,152** / 49,248 KB | 15 MB |
-| **the GUI**, the pulldown built | 68,800 / **70,752** / 73,840 KB | 27 MB |
+| **the TUI** (`gregg`) | 3,168 / **3,168** / 3,168 KB | 2,352 KB (2.3 MB) |
+| **the client daemon** — the poller, shared by both frontends | 5,184 / **5,184** / 5,232 KB | 4,128 KB (4.0 MB) |
+| **the GUI**, the pulldown never opened | 46,912 / **46,928** / 47,056 KB | 14 MB |
+| **the GUI**, the pulldown built and hidden | 24,464 / **24,464** / 24,496 KB | 22 MB |
+| **the GUI**, the pulldown open | 38,512 / **41,856** / 41,936 KB | 26 MB |
 
-The GUI is **about fourteen times the TUI's resident set** before it has been
-opened, and **about twenty-one times** once its window exists. That is Slint's
-software renderer and the window server, and the table above says where it
-comes from: the TUI is a terminal renderer with no window.
+The **physical footprint** is the honest number on macOS and it is monotonic:
+**14 MB** before the pulldown has ever been opened, **22 MB** once the window
+exists but is hidden, **26 MB** with it on screen, against **2.3 MB** for the
+TUI and **4.0 MB** for the daemon. The GUI is therefore about **six times** the
+TUI before it is opened and about **eleven times** with its window on screen.
+
+The **resident set** is not monotonic, and the reason is worth stating: on
+macOS `ps` counts shared, clean, reclaimable pages — the dyld shared cache, the
+system font collections — which the system hands back at its own pace, and a
+*fresh* process reports its high-water mark. That is why the never-opened GUI,
+which had just started, reads higher than the one that had been open and
+dismissed. The resident set says the GUI is roughly **fifteen times** the
+TUI's before it is opened and **thirteen times** with its window open.
+
+Either way the difference is Slint's software renderer and the window server,
+not the model: the TUI is a terminal renderer with no window, and the table
+above says where the difference comes from.
 
 **Polling.** Measured on the live processes, with the GUI attached to a
 seven-host fleet:
