@@ -253,6 +253,36 @@ struct UiState {
     panel_message_is_error: bool,
 }
 
+impl UiState {
+    /// Move the panel by the operator's drag, and remember where it went.
+    ///
+    /// `base` is where the GUI **asked** for the window to be — never where
+    /// the window reports itself to be. In another application's full-screen
+    /// space macOS draws the window 26 points lower than it was asked to be,
+    /// and a placement measured from the window's own report would carry
+    /// that shift into the memory: the pulldown would open a little lower
+    /// every time and never come back.
+    ///
+    /// What is remembered is an **offset** against the display's anchor
+    /// corner, so the placement means the same thing on a display of another
+    /// size.
+    fn drag_panel(
+        &mut self,
+        base: (f32, f32),
+        delta: (f32, f32),
+        size: (f32, f32),
+        area: Option<&placement::WorkArea>,
+    ) -> (f32, f32) {
+        let (x, y) = (base.0 + delta.0, base.1 + delta.1);
+        self.panel_position = Some((x, y));
+        if let Some(area) = area {
+            self.panel_offset =
+                Some(area.offset_of((x, y), size, placement::Anchor::for_platform()));
+        }
+        (x, y)
+    }
+}
+
 /// The parsed command line.
 struct Options {
     /// The `gregg` client executable to launch, if the operator named one.
@@ -902,15 +932,8 @@ fn create_panel(ctx: &PanelContext) -> Pulldown {
         let Some(base) = base else {
             return;
         };
-        let (x, y) = (base.0 + dx, base.1 + dy);
-        state.panel_position = Some((x, y));
-        // The placement is remembered relative to the display's own corner,
-        // so it still means the same thing on a display of another size.
         let area = placement::work_area(panel.window());
-        if let Some(area) = area.as_ref() {
-            state.panel_offset =
-                Some(area.offset_of((x, y), size, placement::Anchor::for_platform()));
-        }
+        let (x, y) = state.drag_panel(base, (dx, dy), size, area.as_ref());
         panel
             .window()
             .set_position(slint::LogicalPosition::new(x, y));
@@ -1964,6 +1987,66 @@ mod tests {
         assert_eq!(state.view_mode, ViewMode::Fleet);
         assert!(!state.panel_visible);
         assert!(state.panel_position.is_none());
+        assert!(state.panel_offset.is_none());
+    }
+
+    /// A drag moves the panel and remembers where it went, and the placement
+    /// it remembers is **relative to the display's corner**.
+    ///
+    /// The base of the drag is where the GUI *asked* for the window to be. In
+    /// another application's full-screen space macOS draws the window 26
+    /// points lower than it was asked to be — and a placement measured from
+    /// the window's own report would carry that shift into the memory, so
+    /// the pulldown would open a little lower every time and never come
+    /// back.
+    #[test]
+    fn a_drag_remembers_a_relative_placement() {
+        let area = placement::WorkArea::new(0.0, 0.0, 1920.0, 1080.0);
+        // The panel was asked for at the trailing corner.
+        let mut state = UiState {
+            panel_position: Some((1360.0, 0.0)),
+            ..UiState::default()
+        };
+
+        let (x, y) = state.drag_panel((1360.0, 0.0), (-200.0, 0.0), (560.0, 520.0), Some(&area));
+
+        assert_eq!((x, y), (1160.0, 0.0), "the panel moved by the drag");
+        assert_eq!(
+            state.panel_offset,
+            Some(placement::Offset { x: 200.0, y: 0.0 }),
+            "the placement is the gap at the trailing edge, not a place"
+        );
+        // The same placement, on a display of another size, is the same gap
+        // from that display's trailing corner.
+        let wider = placement::WorkArea::new(0.0, 0.0, 3840.0, 1080.0);
+        let offset = state.panel_offset.expect("an offset");
+        assert_eq!(
+            wider.place(offset, (560.0, 520.0), placement::Anchor::for_platform()),
+            (3080.0, 0.0),
+            "the gap is measured from the display it is opened on"
+        );
+    }
+
+    /// The drag's base is the position the GUI asked for, so the space's own
+    /// shift cannot walk into the memory.
+    #[test]
+    fn a_drag_does_not_carry_the_space_s_shift_into_the_placement() {
+        let area = placement::WorkArea::new(0.0, 0.0, 1920.0, 1080.0);
+        let mut state = UiState::default();
+        // The window is drawn 26 points lower than it was asked to be, which
+        // is what another application's full-screen space does.
+        let (x, y) = state.drag_panel((1360.0, 0.0), (0.0, 40.0), (560.0, 520.0), Some(&area));
+
+        assert_eq!(
+            (x, y),
+            (1360.0, 40.0),
+            "the drag is measured from the request"
+        );
+        assert_eq!(
+            state.panel_offset,
+            Some(placement::Offset { x: 0.0, y: 40.0 }),
+            "the space's own shift is not in the remembered placement"
+        );
     }
 
     /// The two views are the fleet and the selected host's detail, and the
