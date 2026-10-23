@@ -477,9 +477,10 @@ The GUI has **one surface**: a tray pulldown (Plans 191-192). The separate monit
 window is gone. The pulldown is a borderless, always-on-top panel with **two
 views**: the **fleet**, which is one line per host, and the **detail**, which
 is the selected host's metrics, drives and interfaces, its scheduler jobs and
-records, and the `EggPool` plane. The pulldown's own footer moves between
-them. The host list is bounded and scrollable, so a large fleet cannot push
-the panel off the desktop.
+records. The `EggPool` plane is a plane of its own and is shown in **both**:
+it is pinned below the scrolling box. The pulldown's own footer moves between
+the two views. The host list is bounded and scrollable, so a large fleet
+cannot push the panel off the desktop.
 
 **The tray's click opens the pulldown, and the pulldown carries the content**
 (Plan 192). The native tray menu is **not** the dropdown: it is the context
@@ -499,9 +500,12 @@ still gains no message.
 
 Closing the panel **hides** it and leaves the tray and the observation
 running; Quit is the only thing that ends the GUI, and it never ends the client
-daemon. `Esc`, the tray's click, the panel's own close control **and a click
-away** all dismiss it, and every one of them goes through the same path, so
-they all leave the same thing behind: the fleet view, and no half-typed form.
+daemon. `Esc`, the tray's click **and a click away** all dismiss it, and
+every one of them goes through the same path, so they all leave the same
+thing behind: the fleet view, and no half-typed form. There is **no `×`**: a
+fourth control that dismisses the pulldown the same way three others already
+do is a target the operator can miss, and it says nothing the footer does not
+already say.
 
 The click away is **two signals on two platforms**, because another
 application's mouse is not watchable everywhere. On **macOS** the pulldown
@@ -624,6 +628,16 @@ if they were visible — so two 220-point forms that were merely hidden took
 440 points of the body's height and left the fleet's scroll box a third of
 what the panel had room for. `visible: false` hides a pane; it does not
 unmake it.
+
+The `EggPool` plane is **pinned below that box**, and it is always shown. It
+describes the service and not a host, so it is not one of the selected host's
+groups, and it is not behind the detail view either: the footer carries the
+link that opens and closes it in **every** view, and the GUI publishes the
+`EggPool` intent when it attaches, so the daemon is already sending the plane
+the panel shows. The panel is exactly as tall as the plane it shows, and a
+plane with nothing to say takes **no room at all** — a configuration with no
+`EggPool` entry has none, and the panel carries no gap where one would have
+been.
 
 The pulldown is a **dropdown**, and most of what it carries is vertical, so it
 is **412 points** wide: a host's block is a header line and five rows, and the

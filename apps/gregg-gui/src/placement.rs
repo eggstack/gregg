@@ -157,6 +157,16 @@ pub mod metrics {
     /// The form's height.
     pub const FORM_HEIGHT: f32 = 220.0;
 
+    /// The height of a group's heading.
+    ///
+    /// A group is a quiet heading and the rows under it: the detail's own
+    /// groups and the `EggPool` plane are both drawn by the same component,
+    /// so they are both this tall.
+    pub const GROUP_HEADING: f32 = 15.0;
+
+    /// The height of one row in a group.
+    pub const GROUP_ROW: f32 = 15.0;
+
     /// The width the pane's content gets, in logical pixels.
     ///
     /// It is the fleet table's rows: the label column, the bar and the share
@@ -205,6 +215,11 @@ pub struct Content {
     pub warning: bool,
     /// Whether the form is showing instead of the fleet.
     pub form: bool,
+    /// How many rows the `EggPool` plane has.
+    ///
+    /// Zero when there is no plane to show: a configuration with no
+    /// `EggPool` entry has none, and the operator may have closed it.
+    pub eggpool_rows: usize,
 }
 
 /// The height of the fleet's own blocks.
@@ -273,6 +288,29 @@ pub fn notices_height(content: &Content) -> f32 {
     height
 }
 
+/// The height the `EggPool` plane takes, for the rows it has.
+///
+/// The plane is a heading and a row per fact, and it is **pinned** below the
+/// scrolling box: it is always on screen, so it is never scrolled away and
+/// never behind a view switch.
+///
+/// A plane with no rows is no plane at all, and it takes no room: a
+/// configuration with no `EggPool` entry has none, and the panel must not
+/// carry a gap where a plane would have been.
+#[must_use]
+pub fn eggpool_plane_height(rows: usize) -> f32 {
+    if rows == 0 {
+        return 0.0;
+    }
+    metrics::GROUP_HEADING + rows as f32 * metrics::GROUP_ROW
+}
+
+/// The height the `EggPool` plane takes, for the content it is carrying.
+#[must_use]
+pub fn eggpool_height(content: &Content) -> f32 {
+    eggpool_plane_height(content.eggpool_rows)
+}
+
 /// The pulldown's height, for the content it is carrying.
 ///
 /// The pulldown is a dropdown: it is as tall as what it shows, up to the
@@ -302,6 +340,10 @@ pub fn content_height(content: &Content) -> f32 {
         // and the box scrolls, so the panel's size does not depend on it.
         height += box_height(content);
     }
+    // The `EggPool` plane is pinned below the scrolling box, and it is the
+    // last thing in the body: the panel is exactly as tall as the plane it
+    // shows, and no taller.
+    height += eggpool_height(content);
     height
 }
 
@@ -1046,6 +1088,54 @@ mod tests {
         );
     }
 
+    /// The `EggPool` plane is pinned, and the panel is taller by it.
+    ///
+    /// The plane is shown in every view, so it is not inside the scrolling
+    /// box: it is pinned below it, and the panel is exactly as tall as the
+    /// plane it shows.
+    #[test]
+    fn the_panel_is_taller_by_the_eggpool_plane() {
+        let mut content = Content {
+            hosts: 4,
+            online_hosts: 4,
+            ..Content::default()
+        };
+        let without = content_height(&content);
+        content.eggpool_rows = 6;
+        let with = content_height(&content);
+        assert_eq!(
+            with - without,
+            metrics::GROUP_HEADING + 6.0 * metrics::GROUP_ROW,
+            "the panel is exactly as tall as the plane it shows"
+        );
+        assert_eq!(eggpool_plane_height(6), with - without);
+    }
+
+    /// A plane with nothing to say takes no room at all.
+    ///
+    /// A configuration with no `EggPool` entry has no plane, and the operator
+    /// may have closed it. A panel must not carry a gap where a plane would
+    /// have been — and a Slint layout lays out the invisible items as if they
+    /// were visible.
+    #[test]
+    fn a_plane_with_nothing_to_say_takes_no_room() {
+        assert_eq!(eggpool_plane_height(0), 0.0);
+        let content = Content {
+            hosts: 4,
+            online_hosts: 4,
+            ..Content::default()
+        };
+        assert_eq!(eggpool_height(&content), 0.0);
+        assert_eq!(
+            content_height(&content),
+            content_height(&Content {
+                eggpool_rows: 0,
+                ..content
+            }),
+            "no plane, no room"
+        );
+    }
+
     #[test]
     fn the_form_does_not_carry_the_fleet() {
         let few = content_height(&Content {
@@ -1160,6 +1250,8 @@ mod tests {
             ("the message", "0px : 30px"),
             ("the tray warning", "0px : 18px"),
             ("the form's height", "form-height: 220px"),
+            ("a group's heading", "heading-height: 15px"),
+            ("a group's row", "row-height: 15px"),
         ] {
             assert!(
                 slint.contains(expected),
@@ -1183,6 +1275,8 @@ mod tests {
         assert_eq!(metrics::MESSAGE_LINE, 30.0);
         assert_eq!(metrics::TRAY_WARNING_LINE, 18.0);
         assert_eq!(metrics::FORM_HEIGHT, 220.0);
+        assert_eq!(metrics::GROUP_HEADING, 15.0);
+        assert_eq!(metrics::GROUP_ROW, 15.0);
         assert_eq!(metrics::PANE_CONTENT_WIDTH, 360.0);
         assert_eq!(metrics::DEFAULT_WIDTH, 412.0);
     }

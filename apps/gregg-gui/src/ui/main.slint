@@ -4,8 +4,13 @@
 //
 // The tray's CLICK opens the pulldown, and the pulldown carries the content:
 // the fleet summary, the host list, the selected host's metrics, drives,
-// interfaces, cron, records and `EggPool`, the forms that add, remove and
-// edit hosts, and the application's own `Reload`, `About` and `Quit`.
+// interfaces, cron and records, the `EggPool` plane, the forms that add,
+// remove and edit hosts, and the application's own `Reload`, `About` and
+// `Quit`.
+//
+// The `EggPool` plane is **always on screen**: it is pinned below the
+// scrolling box, so it is shown in every view and never scrolls out of
+// reach.
 //
 // The native tray menu is NOT the dropdown. On macOS it is detached
 // altogether — AppKit routes a click to the tray's `clicked` callback only
@@ -40,10 +45,10 @@
 // height of the form.
 //
 // The two lists that grow with the fleet are the host list and the scheduler
-// job list, and both live in a `ScrollView`. The rest of the fleet's detail
-// — the metrics, the drives, the cron, the records and `EggPool` — lives in
-// one more `ScrollView`, so the scroll model is one scroll model: the host
-// list is bounded, and the detail below it scrolls as a whole.
+// job list, and both live in a `ScrollView`. The fleet view and the detail
+// view share **one** of them, so the scroll model is one scroll model and the
+// panel does not change size when the operator switches views. The
+// `EggPool` plane is pinned outside it, so that it is always on screen.
 //
 // The colours come from Slint's `Palette` global, which follows the
 // desktop's own colour scheme, and the buttons and the text fields come
@@ -148,8 +153,8 @@ export struct JobRow {
 export enum PanelMode {
     /// The fleet: one row per host, with its bars.
     Fleet,
-    /// The selected host's detail: its metrics, drives, interfaces, cron,
-    /// records and `EggPool`.
+    /// The selected host's detail: its metrics, drives, interfaces, cron and
+    /// records.
     Detail,
     /// The form that adds a host.
     AddHost,
@@ -590,8 +595,22 @@ export component Pulldown inherits Window {
     };
 
     /// The selected host's groups of detail: the numbers behind the shares,
-    /// the drives, the interfaces and the `EggPool` plane.
+    /// the drives and the interfaces.
     in property <[DetailSection]> detail-sections: [];
+
+    /// The `EggPool` plane, as a group of the panel.
+    ///
+    /// It is a plane of its own and **not** one of the selected host's
+    /// groups: it describes the service, and not a host, so it does not
+    /// belong to the detail view. It is shown in **every** view.
+    in property <DetailSection> eggpool-section: { heading: "", rows: [] };
+
+    /// The height the `EggPool` plane takes.
+    ///
+    /// It is zero when there is no plane to show — a configuration with no
+    /// `EggPool` entry has none — and a plane that is not there must not
+    /// leave a gap behind it.
+    in property <length> eggpool-height: 0px;
 
     /// The selected host's scheduler jobs.
     in property <[JobRow]> jobs;
@@ -673,7 +692,7 @@ export component Pulldown inherits Window {
     /// The operator asked for the about and attribution text.
     callback about-requested();
 
-    /// The operator opened or closed the `EggPool` pane.
+    /// The operator opened or closed the `EggPool` plane.
     callback eggpool-toggled();
 
     /// The operator asked for the form that adds a host.
@@ -944,8 +963,14 @@ export component Pulldown inherits Window {
 
                 // ------------------------------------------------ the header
                 // The pulldown has no window chrome, so the header strip is
-                // the pulldown's own title bar: it carries the summary, it
-                // drags the pulldown, and it holds the close control.
+                // the pulldown's own title bar: it carries the summary and it
+                // drags the pulldown.
+                //
+                // It carries **no close control**. A pulldown is dismissed by
+                // the tray's click, by `Esc` and by a click away, and a
+                // fourth control that does the same thing is a target the
+                // operator can miss and a button that says nothing the
+                // footer does not already say.
                 //
                 // It is as short as it can be while still being a drag
                 // target: the strip's height is a line of dead space above
@@ -957,8 +982,8 @@ export component Pulldown inherits Window {
                     // rounded corners.
                     background: #00000000;
 
-                    // The drag area sits underneath the summary and the close
-                    // control, so the close control still gets its click.
+                    // The drag area sits underneath the summary, so the
+                    // summary still gets its click.
                     TouchArea {
                         moved => {
                             root.dragged(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
@@ -972,7 +997,7 @@ export component Pulldown inherits Window {
 
                     HorizontalLayout {
                         padding-left: 12px;
-                        padding-right: 6px;
+                        padding-right: 12px;
                         spacing: 8px;
 
                         Text {
@@ -984,32 +1009,6 @@ export component Pulldown inherits Window {
                             overflow: elide;
                             wrap: no-wrap;
                             vertical-alignment: center;
-                        }
-
-                        // The close control. It is the pulldown's own
-                        // dismiss affordance; the tray's click and `Esc`
-                        // dismiss it too.
-                        Rectangle {
-                            preferred-width: 20px;
-                            preferred-height: 20px;
-                            horizontal-stretch: 0;
-                            border-radius: 4px;
-                            background: close-touch.has-hover ? Palette.alternate-background : #00000000;
-
-                            close-touch := TouchArea {
-                                clicked => {
-                                    root.close-requested();
-                                }
-                            }
-
-                            Text {
-                                text: "×";
-                                font-size: 15px;
-                                color: Palette.foreground;
-                                wrap: no-wrap;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
                         }
                     }
                 }
@@ -1142,9 +1141,8 @@ export component Pulldown inherits Window {
                     //
                     // The selected host's own numbers: its measured rows, its
                     // drives and its interfaces, its scheduler jobs and their
-                    // records, and the `EggPool` plane. It is behind the
-                    // footer's own control, so the fleet view stays a fleet
-                    // view.
+                    // records. It is behind the footer's own control, so the
+                    // fleet view stays a fleet view.
                     if root.mode == PanelMode.Detail : VerticalLayout {
                         spacing: 6px;
                         vertical-stretch: 1;
@@ -1439,6 +1437,38 @@ export component Pulldown inherits Window {
                         }
                     }
 
+                    // The `EggPool` plane.
+                    //
+                    // It is **always on screen**: it is not behind the detail
+                    // view, and it is not in the scroll box, so the operator
+                    // reads the service's own numbers without scrolling and
+                    // without switching views.
+                    //
+                    // It is a plane of its own and not one of the selected
+                    // host's groups — it describes the service, and not a
+                    // host — so it is pinned below the scrolling box rather
+                    // than scrolling with the fleet.
+                    //
+                    // It takes **no room at all** when there is nothing to
+                    // say: a configuration with no `EggPool` entry has no
+                    // plane, and a plane that is not there must not leave a
+                    // gap behind it. That is the same rule the forms follow,
+                    // and for the same reason — a Slint layout lays out the
+                    // invisible items as if they were visible.
+                    Rectangle {
+                        height: root.eggpool-height;
+                        visible: root.eggpool-height > 0px;
+
+                        DetailSectionView {
+                            x: 0px;
+                            y: 0px;
+                            width: root.list-content-width;
+                            section: root.eggpool-section;
+                            content-width: root.list-content-width;
+                            quiet-color: root.secondary-text;
+                        }
+                    }
+
                     // The attribution and about block. It is empty — and
                     // therefore invisible — until the operator asks for it,
                     // and it is outside the detail so that it is readable
@@ -1507,9 +1537,13 @@ export component Pulldown inherits Window {
                             }
                         }
 
+                        // The `EggPool` plane. It is shown in **every**
+                        // view, so the link that opens and closes it is
+                        // there in every view too — a control that appears
+                        // and disappears with the view is a control the
+                        // operator has to find.
                         Link {
                             label: "EggPool";
-                            visible: root.mode == PanelMode.Detail;
                             activated => {
                                 root.eggpool-toggled();
                             }
@@ -1517,9 +1551,9 @@ export component Pulldown inherits Window {
 
                         // The two views. The fleet is a list of hosts and
                         // their bars; the detail is the selected host's own
-                        // numbers, its drives, its interfaces, its scheduler
-                        // and the `EggPool` plane. The control says which one
-                        // the other one is.
+                        // numbers, its drives, its interfaces and its
+                        // scheduler. The control says which one the other
+                        // one is.
                         Link {
                             label: root.mode == PanelMode.Detail ? "Fleet" : "Detail";
                             visible: root.mode == PanelMode.Fleet || root.mode == PanelMode.Detail;

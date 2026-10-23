@@ -31,7 +31,10 @@ Plans 188, 189, 191 and 192 are implemented. What exists:
   header line that names the host and carries the readings that are not used
   shares, and under it a bar for each of the five used shares — and the
   **detail**, which is the selected host's metrics, drives and interfaces, its
-  scheduler jobs and records, and the `EggPool` plane. The pulldown's own footer moves between them, and it also
+  scheduler jobs and records. The `EggPool` plane is a plane of its own and is
+  **pinned below the scrolling box**, so it is shown in **both** views and
+  never scrolls out of reach. The pulldown's own footer moves between the two
+  views, and it also
   carries the fleet summary, the host add/remove/edit forms, and the
   application's own `Reload`, `About` and `Quit`. There is **no separate
   monitor window**. The list that grows with the fleet is **scrollable with a
@@ -297,15 +300,14 @@ outcomes, and the exact shape of the line a CI job asserts on.
 | Pulldown | `Detail` (or `Fleet`, in the detail) | Moves between the two views: the fleet's blocks, one per host, and the selected host's own numbers. |
 | Pulldown | `Reload` | The `Ctrl-R` boundary: the daemon re-reads its configuration and polls immediately. |
 | Pulldown | `Add host` | Opens the form that adds a host. |
-| Pulldown | `EggPool` | Opens and closes the `EggPool` plane. The intent is sent only while it is open. |
+| Pulldown | `EggPool` | Opens and closes the `EggPool` plane. The plane is **shown by default** and pinned below the scrolling box, so it is on screen in every view; the link is the operator's way to put it away. The intent is sent only while it is open. |
 | Pulldown | `About` | Shows the licence attribution in the pulldown. |
 | Pulldown | `Quit` | Ends the GUI. The client daemon keeps running. |
 | Pulldown | The selected host's `Edit` | Opens the form that renames the host, or that re-points it at another endpoint. |
 | Pulldown | The selected host's `Remove` | Removes the host from the configuration. |
-| Pulldown | **×** (in the header strip) | **Hides** the pulldown, and the tray brings it back. On a desktop with **no tray** it **ends the GUI** instead — a hidden pulldown with no tray is an application you can no longer reach. |
-| Pulldown | **Esc** | The same as ×. |
-| Pulldown | **A click away** | The same as ×. On **macOS** the pulldown watches the **mouse**, so a click that lands anywhere else closes it; on **Windows and Linux** it watches the **keyboard focus**. |
-| Pulldown | The header strip | **Drags** the pulldown. It has no window frame, so it has no title bar to drag. |
+| Pulldown | **Esc** | **Hides** the pulldown, and the tray brings it back. On a desktop with **no tray** it **ends the GUI** instead — a hidden pulldown with no tray is an application you can no longer reach. |
+| Pulldown | **A click away** | The same as Esc. On **macOS** the pulldown watches the **mouse**, so a click that lands anywhere else closes it; on **Windows and Linux** it watches the **keyboard focus**. |
+| Pulldown | The header strip | **Drags** the pulldown. It has no window frame, so it has no title bar to drag. There is **no `×`**: Esc, the tray's click and a click away already dismiss the pulldown. |
 
 The host's own actions are **the pulldown's affordances**, aimed at the
 *selected* host. They are not on every row: a button on every row crowds the
@@ -367,6 +369,16 @@ A dropdown has a shape, and this one draws its own.
   under the operator's pointer. A control that moves is a control that cannot
   be used to come back. See [The scroll box stopped short of the
   bottom](#the-scroll-box-stopped-short-of-the-bottom).
+- The **height also follows the `EggPool` plane**, because the plane is
+  **pinned below the scrolling box** and is shown in every view. The panel is
+  exactly as tall as the plane it shows, and a plane with nothing to say takes
+  no room at all — a configuration with no `EggPool` entry carries none. See
+  [The `EggPool` plane was behind the detail view, and the `×` did
+  nothing](#the-eggpool-plane-was-behind-the-detail-view-and-the-x-did-nothing).
+- The header strip carries the **fleet summary** and the **drag area**, and
+  **no `×`**: the tray's click, `Esc` and a click away already dismiss the
+  pulldown, and a fourth control that does the same thing is a target the
+  operator can miss.
 - The pulldown opens in the **trailing corner of the work area** — the
   platform's convention — and the operator's own placement is **remembered
   across restarts** in `<config>.gui-state` beside the configuration. The read
@@ -504,12 +516,16 @@ DRIVES
 
 ### How the pulldown is dismissed
 
-**`Esc`, the tray's click, the pulldown's own × control, and a click away.**
+**`Esc`, the tray's click, and a click away.**
 
 A pulldown that stays up when the operator clicks the desktop behind it is not
-a pulldown — it is a second window that will not go away. Every one of the four
-goes through the **same** path, so every one of them leaves the same thing
-behind: the fleet view, and no half-typed form.
+a pulldown — it is a second window that will not go away. Every one of the
+three goes through the **same** path, so every one of them leaves the same
+thing behind: the fleet view, and no half-typed form.
+
+There is **no `×`**. A fourth control that dismisses the pulldown the way
+three others already do is a target the operator can miss, and it says nothing
+the footer does not already say.
 
 `Esc` reaches the pulldown because its own focus scope handles the key, and the
 key reaches it even when a text field has the focus.
@@ -593,9 +609,9 @@ The limits that are left are worth stating plainly:
   not out of the click itself, which is why the menu bar's exclusion is a
   **band** and not a line.
 
-On a desktop with **no tray**, every dismissal — `Esc`, the ×, and the click
-away — ends the GUI instead, because a hidden pulldown with no tray is an
-application the operator can no longer reach.
+On a desktop with **no tray**, every dismissal — `Esc`, the tray's click, and
+the click away — ends the GUI instead, because a hidden pulldown with no tray
+is an application the operator can no longer reach.
 
 ### Host management
 
@@ -844,6 +860,44 @@ The lesson is worth writing down, because it is not a Slint quirk so much as
 a habit: **an invisible pane is still a pane to a layout.** `visible: false`
 hides it; it does not unmake it. Anything that is in the tree only so that
 its fields can be named has to say so in its **size** as well.
+
+### The `EggPool` plane was behind the detail view, and the `×` did nothing
+
+Two things were in the way of the panel being what it says it is.
+
+**The `×` in the upper right served no function.** The tray's click, `Esc` and
+a click away all dismiss the pulldown, and the `×` did the same thing a third
+time, in a corner, as a target the operator can miss. It is gone. The header
+strip now carries the fleet summary and the drag area, and nothing else.
+
+**The `EggPool` plane was behind the detail view.** The footer's link was
+shown only in the detail, and the plane's numbers were one of the selected
+host's groups — so a fleet that was not opened in the detail carried no
+`EggPool` at all, and the operator had to know that the plane lived in the
+detail to find it.
+
+The plane is a plane of its own: it describes the service, and not a host.
+So it is now **pinned below the scrolling box**, shown in **every** view, and
+never scrolled out of reach. The link that opens and closes it is in the
+footer in every view too, and the plane is **open from the first frame** — the
+GUI publishes the `EggPool` intent when it attaches, so the daemon is already
+sending the plane the panel shows.
+
+Two things came with it:
+
+- **The panel is exactly as tall as the plane it shows.** The plane's height
+  is Rust's, and the Rust side owns the height of the whole panel — a Slint
+  layout cannot report its preferred size to a `.slint` file.
+- **A plane with nothing to say takes no room at all.** A configuration with
+  no `EggPool` entry has no plane, and the panel must not carry a gap where
+  one would have been. That is the same rule the forms follow, and for the
+  same reason: an invisible pane is still a pane to a layout.
+
+Measured on macOS 15 (arm64) against a seven-host fleet and a live `EggPool`:
+the pulldown is **412×536** with the plane and **412×446** without it, and it
+is **412×446** in both views — so opening the detail still does not move
+anything under the pointer. With a configuration that has no `EggPool` entry,
+the panel is **412×446** and the plane is not there at all.
 
 ### Redraws
 

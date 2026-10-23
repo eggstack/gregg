@@ -210,8 +210,10 @@ thing that ends the GUI, and it never ends the client daemon.
 monitor window is gone. A borderless, always-on-top panel carries every pane —
 the fleet summary, the host list, the selected host's metrics, drives,
 interfaces, cron, records and `EggPool` — plus the forms that add, remove,
-rename and re-point hosts. It is dismissed with `Esc`, the tray's click, its
-own close control **or a click away**. The click away is **two signals on two
+rename and re-point hosts. It is dismissed with `Esc`, the tray's click **or a
+click away** — and by nothing else: there is no `×`, because a fourth control
+that dismisses the pulldown the way three others already do is a target the
+operator can miss. The click away is **two signals on two
 platforms**: **macOS watches the mouse** — AppKit's global event monitor
 reports the clicks dispatched to *other* applications, which is exactly a click
 that landed elsewhere — and **Windows and Linux watch the keyboard focus**,
@@ -311,6 +313,16 @@ The two views scroll in **one** box, so the panel's height does not change
 when the operator opens the detail, and the footer's control that brings the
 fleet back never moves under the pointer. The pulldown is **412 points**
 wide: it is a dropdown, and most of what it carries is vertical.
+
+The `EggPool` plane is **pinned below that box**, and it is always shown: it
+describes the service and not a host, so it is not one of the selected host's
+groups and it is not behind the detail view either. The footer carries the
+link that opens and closes it in **every** view, and the GUI publishes the
+`EggPool` intent when it attaches, so the daemon is already sending the plane
+the panel shows. A plane with nothing to say takes **no room at all** — a
+configuration with no `EggPool` entry has none, and the panel carries no gap
+where one would have been. The same rule the forms follow, for the same
+reason.
 
 **The GUI may write the configuration file, and only through the CLI's own
 code** (Plan 191). The panel's add, remove and rename go through

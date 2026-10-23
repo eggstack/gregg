@@ -13,8 +13,12 @@
 //! There is **one** surface: a tray pulldown. It opens from the native tray
 //! menu, it is borderless and always on top, and it carries every pane the
 //! old monitor window carried — the fleet summary, the host list, the
-//! selected host's metrics, drives, interfaces, cron, records and
-//! `EggPool` — plus the forms that add, remove and edit hosts.
+//! selected host's metrics, drives, interfaces, cron and records — plus the
+//! `EggPool` plane and the forms that add, remove and edit hosts.
+//!
+//! The `EggPool` plane is **always on screen**: it is pinned below the
+//! scrolling box, so it is shown in every view and never scrolls out of
+//! reach.
 //!
 //! # How it is put together
 //!
@@ -107,7 +111,7 @@ fn empty_fleet_host() -> FleetHost {
     }
 }
 
-/// The `EggPool` plane, as a group of the detail.
+/// The `EggPool` plane, as a group of the panel.
 ///
 /// The plane's four periodized measures are the values, and the service's own
 /// health and last failure are the facts about them: a summary without the
@@ -174,8 +178,8 @@ enum ViewMode {
     /// The fleet: one row per host, with its bars.
     #[default]
     Fleet,
-    /// The selected host's detail: its metrics, its drives, its interfaces,
-    /// its scheduler and the `EggPool` plane.
+    /// The selected host's detail: its metrics, its drives, its interfaces
+    /// and its scheduler.
     Detail,
     /// The form that adds a host.
     AddHost,
@@ -207,7 +211,6 @@ impl ViewMode {
 /// It lives behind a mutex rather than a `RefCell` because the bridge's
 /// notification callback captures it and runs on the bridge's thread, even
 /// though the state itself is only ever *read* on the UI thread.
-#[derive(Default)]
 struct UiState {
     /// The last document the daemon published.
     snapshot: Option<Box<gregg::clientd::snapshot::FrontendSnapshot>>,
@@ -217,7 +220,10 @@ struct UiState {
     selection: Selection,
     /// The connection state.
     connection: ConnectionState,
-    /// Whether the `EggPool` pane is open.
+    /// Whether the `EggPool` plane is open.
+    ///
+    /// It is **open by default**: the plane is always shown, and the
+    /// operator's link turns it off and on again.
     eggpool_visible: bool,
     /// The health the tray icon is currently showing, so it is only redrawn
     /// when the health actually changes.
@@ -255,6 +261,32 @@ struct UiState {
     /// than asked for at the moment it is needed: a dismissal must not
     /// freeze the pulldown while the session bus is asked.
     tray_support: platform::TraySupport,
+}
+
+impl Default for UiState {
+    /// The GUI's own starting state.
+    ///
+    /// The `EggPool` plane is **open**: the plane is always shown, and it is
+    /// shown from the first frame. A derived `Default` would leave it closed,
+    /// which would make "always shown" true only after a click.
+    fn default() -> Self {
+        Self {
+            snapshot: None,
+            generation: 0,
+            selection: Selection::default(),
+            connection: ConnectionState::default(),
+            eggpool_visible: true,
+            tray_health: None,
+            panel_visible: false,
+            panel_offset: None,
+            panel_position: None,
+            view_mode: ViewMode::default(),
+            form: HostForm::default(),
+            panel_message: String::new(),
+            panel_message_is_error: false,
+            tray_support: platform::TraySupport::default(),
+        }
+    }
 }
 
 impl UiState {
@@ -524,6 +556,17 @@ fn main() {
 
     let bridge = Arc::new(Bridge::spawn(options.config.clone(), daemon, notify));
     let _ = bridge_slot.set(Arc::clone(&bridge));
+
+    // The `EggPool` plane is **always shown**, so the GUI always asks for it:
+    // the intent is what the daemon *transmits*, and a plane nobody is shown
+    // is a plane the operator cannot read. The daemon fetches it on its own
+    // period, and a configuration with no `EggPool` entry has nothing to
+    // fetch.
+    bridge.set_eggpool_intent(Some(EggpoolDesired {
+        active: true,
+        period: gregg::eggpool::EggpoolPeriod::Hour,
+        refresh: false,
+    }));
 
     // Everything the pulldown's own callbacks need, in one place: the panel
     // is built on demand, so its wiring cannot be registered at start-up.
@@ -1032,8 +1075,8 @@ fn dismiss_pulldown_if_visible(
 /// hidden pulldown with no tray is an application the operator can no
 /// longer reach.
 ///
-/// Every dismissal goes through here — `Esc`, the panel's own close
-/// control, and the click away — so they all leave the same thing behind.
+/// Every dismissal goes through here — `Esc`, the tray's click and the click
+/// away — so they all leave the same thing behind.
 fn dismiss_pulldown(panel: &Pulldown, state: &Arc<Mutex<UiState>>) {
     let Ok(mut guard) = state.lock() else {
         return;
@@ -1218,21 +1261,65 @@ fn toggle_pulldown(panel: &Pulldown, state: &Arc<Mutex<UiState>>) {
 
 /// The groups of detail for the selected host.
 ///
-/// The numbers behind the shares, the drives, the interfaces, and — when the
-/// operator asked for it — the `EggPool` plane.
+/// The numbers behind the shares, the drives and the interfaces.
+///
+/// The `EggPool` plane is **not** one of them: it describes the service and
+/// not a host, so it is pinned outside the detail and shown in every view.
 fn detail_groups(state: &UiState, model: &GuiViewModel) -> Vec<model::DetailSection> {
-    let mut groups: Vec<model::DetailSection> = state
+    state
         .snapshot
         .as_ref()
         .zip(model.selected_id.as_deref())
         .map(|(snapshot, selected)| model::detail_sections(snapshot, selected))
-        .unwrap_or_default();
-    if state.eggpool_visible {
-        if let Some(eggpool) = model.eggpool.as_ref() {
-            groups.push(eggpool_section(eggpool));
-        }
+        .unwrap_or_default()
+}
+
+/// The `EggPool` plane the panel is showing, if any.
+///
+/// The plane is a plane of its own and not one of the selected host's
+/// groups: it describes the service, and not a host, so it is shown in
+/// **every** view and it is not behind the detail.
+///
+/// It is `None` when the operator has closed it, and when the daemon has no
+/// plane to describe — a configuration with no `EggPool` entry has none, and
+/// a panel with nothing to say must not carry a gap where the plane would
+/// have been.
+fn eggpool_plane(
+    state: &UiState,
+    eggpool: Option<&model::EggpoolView>,
+) -> Option<model::DetailSection> {
+    if !state.eggpool_visible {
+        return None;
     }
-    groups
+    eggpool.map(eggpool_section)
+}
+
+/// One group, as the panel draws it.
+fn detail_section(group: &model::DetailSection) -> DetailSection {
+    let rows: Vec<ValueRow> = group
+        .rows
+        .iter()
+        .map(|row| ValueRow {
+            label: row.label.clone().into(),
+            value: row.value.clone().into(),
+        })
+        .collect();
+    DetailSection {
+        heading: group.heading.clone().into(),
+        rows: slint::ModelRc::from(rows.as_slice()),
+    }
+}
+
+/// A group with nothing in it.
+///
+/// It is what the panel carries when there is no plane to show, and it draws
+/// nothing: an empty heading and no rows.
+fn empty_detail_section() -> DetailSection {
+    let rows: Vec<ValueRow> = Vec::new();
+    DetailSection {
+        heading: String::new().into(),
+        rows: slint::ModelRc::from(rows.as_slice()),
+    }
 }
 
 /// The content, for the height calculation, from the state alone.
@@ -1264,6 +1351,8 @@ fn content_for(state: &UiState, panel: &Pulldown, model: &GuiViewModel) -> place
         message: !panel.get_panel_message().is_empty(),
         warning: !panel.get_tray_warning().is_empty(),
         form: !state.view_mode.is_panel(),
+        eggpool_rows: eggpool_plane(state, model.eggpool.as_ref())
+            .map_or(0, |group| group.rows.len()),
     }
 }
 
@@ -1569,27 +1658,23 @@ fn render_panel(state: &mut UiState, panel: Option<&slint::Weak<Pulldown>>) {
         .unwrap_or_else(empty_fleet_host);
     panel.set_detail_host(detail_host);
 
-    // The groups of detail: the numbers behind the shares, the drives, the
-    // interfaces and — when the operator asked for it — the `EggPool` plane.
+    // The groups of detail: the numbers behind the shares, the drives and the
+    // interfaces.
     let groups = detail_groups(state, &model);
-    let sections: Vec<DetailSection> = groups
-        .iter()
-        .map(|section| {
-            let rows: Vec<ValueRow> = section
-                .rows
-                .iter()
-                .map(|row| ValueRow {
-                    label: row.label.clone().into(),
-                    value: row.value.clone().into(),
-                })
-                .collect();
-            DetailSection {
-                heading: section.heading.clone().into(),
-                rows: slint::ModelRc::from(rows.as_slice()),
-            }
-        })
-        .collect();
+    let sections: Vec<DetailSection> = groups.iter().map(detail_section).collect();
     panel.set_detail_sections(slint::ModelRc::from(sections.as_slice()));
+
+    // The `EggPool` plane. It is pinned below the scrolling box and it is
+    // shown in **every** view, so it is pushed on its own and not as one of
+    // the detail's groups.
+    let plane = eggpool_plane(state, model.eggpool.as_ref());
+    let plane_rows = plane.as_ref().map_or(0, |group| group.rows.len());
+    panel.set_eggpool_section(
+        plane
+            .as_ref()
+            .map_or_else(empty_detail_section, detail_section),
+    );
+    panel.set_eggpool_height(placement::eggpool_plane_height(plane_rows));
 
     let jobs: Vec<JobRow> = model
         .cron
@@ -2132,6 +2217,86 @@ mod tests {
         assert!(
             SLINT.contains("visible: root.mode == PanelMode.EditHost;"),
             "the form's pane is shown while a host is being edited"
+        );
+    }
+
+    /// The pulldown has no close control.
+    ///
+    /// The `×` in the upper right served no function: the tray's click, `Esc`
+    /// and a click away all dismiss the pulldown, and a fourth control that
+    /// does the same thing is a target the operator can miss. The `Esc` key
+    /// still dismisses it.
+    #[test]
+    fn the_pulldown_has_no_close_control() {
+        assert!(!SLINT.contains('×'), "the `×` in the upper right is gone");
+        assert!(
+            !SLINT.contains("close-touch"),
+            "the close control's touch area is gone"
+        );
+        assert!(
+            SLINT.contains("root.close-requested()"),
+            "`Esc` still dismisses the pulldown"
+        );
+    }
+
+    /// The `EggPool` plane is shown in **every** view.
+    ///
+    /// It is a plane of its own and not one of the selected host's groups, so
+    /// it is pinned below the scrolling box: it is not behind the detail view
+    /// and it never scrolls out of reach. The footer link that opens and
+    /// closes it is in every view too, and the plane is open from the first
+    /// frame.
+    #[test]
+    fn the_eggpool_is_shown_in_every_view() {
+        assert!(
+            SLINT.contains("in property <DetailSection> eggpool-section"),
+            "the panel carries the `EggPool` plane on its own"
+        );
+        assert!(
+            SLINT.contains("height: root.eggpool-height;"),
+            "the plane is pinned: the panel is as tall as the plane it shows"
+        );
+        assert!(
+            !SLINT.contains("visible: root.mode == PanelMode.Detail;"),
+            "the `EggPool` link is not hidden behind the detail view"
+        );
+        assert!(
+            UiState::default().eggpool_visible,
+            "the `EggPool` plane is open from the first frame"
+        );
+    }
+
+    /// The plane is the operator's service, and the operator turns it off.
+    ///
+    /// It is shown while it is open, and it is gone when the operator closes
+    /// it. A configuration with no `EggPool` entry has no plane at all, and a
+    /// panel with no plane carries no gap where one would have been.
+    #[test]
+    fn the_eggpool_plane_is_a_plane_of_its_own() {
+        let eggpool = model::EggpoolView {
+            period: gregg::eggpool::EggpoolPeriod::Hour,
+            values: vec![("tokens".to_owned(), "1 234".to_owned())],
+            health: "ok".to_owned(),
+            ready: true,
+            error: None,
+        };
+        let mut state = UiState::default();
+        let plane = eggpool_plane(&state, Some(&eggpool)).expect("the plane is shown");
+        assert_eq!(plane.heading, "EGGPOOL");
+        assert_eq!(
+            plane.rows.len(),
+            2,
+            "the value and the service's own health"
+        );
+        state.eggpool_visible = false;
+        assert!(
+            eggpool_plane(&state, Some(&eggpool)).is_none(),
+            "the operator closed the plane"
+        );
+        state.eggpool_visible = true;
+        assert!(
+            eggpool_plane(&state, None).is_none(),
+            "a configuration with no `EggPool` entry has no plane"
         );
     }
 

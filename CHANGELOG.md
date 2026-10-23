@@ -11,8 +11,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 - **The desktop frontend's pulldown closes when the operator clicks away.** A
   menu closes when the operator clicks somewhere else, and the pulldown now
-  does too: it is dismissed by `Esc`, the tray's click, its own × control
-  **and a click away**.
+  does too: it is dismissed by `Esc`, the tray's click **and a click away**.
 
   The click away is **two signals on two platforms**, because another
   application's mouse is not watchable everywhere. On **macOS** the pulldown
@@ -165,8 +164,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   surface** — a borderless, always-on-top panel that opens from the native tray
   menu and carries the fleet summary, the host list, the selected host's
   metrics, drives and interfaces, its scheduler jobs and retained records, and
-  the `EggPool` plane. The panel is dismissed with `Esc`, the tray's click, its
-  own close control **or a click away**: on macOS the pulldown watches the
+  the `EggPool` plane. The panel is dismissed with `Esc`, the tray's click **or a click away**:
+  on macOS the pulldown watches the
   mouse and on Windows and Linux it watches the keyboard focus (see the entry
   above). The panel is anchored to the
   trailing edge of the display, on the side where the desktop's own shell
@@ -406,6 +405,30 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   Printable Unicode, including wide CJK, is left intact.
 
 ### Fixed
+
+- **The desktop frontend's pulldown has no `×`, and the `EggPool` plane is
+  always shown.** The `×` in the upper right served no function: the tray's
+  click, `Esc` and a click away all dismiss the pulldown, and a fourth
+  control that does the same thing is a target the operator can miss. It is
+  gone, and `Esc` still dismisses.
+
+  The `EggPool` plane was **behind the detail view**: the footer's link was
+  shown only there, and the plane's own numbers were one of the selected
+  host's groups, so a fleet that was not opened in the detail carried no
+  `EggPool` at all. The plane is a plane of its own — it describes the
+  service and not a host — so it is now **pinned below the scrolling box**,
+  shown in **every** view, and never scrolled out of reach. The link that
+  opens and closes it is in the footer in every view too, and the plane is
+  **open from the first frame**: the GUI publishes the `EggPool` intent when
+  it attaches, so the daemon is already sending the plane the panel shows.
+
+  The panel is exactly as tall as the plane it shows, and a plane with
+  nothing to say takes **no room at all** — a configuration with no
+  `EggPool` entry has none, and the panel carries no gap where one would
+  have been. Measured on macOS 15 (arm64) against a seven-host fleet and a
+  live `EggPool`: the pulldown is **412×536** with the plane and **412×446**
+  without it, and it is **412×446** in both views, so switching between the
+  fleet and the detail still does not move anything under the pointer.
 
 - **The desktop frontend's scroll box stopped short of the bottom, the detail
   view was too short to read, and the pulldown was too wide.** The fleet's

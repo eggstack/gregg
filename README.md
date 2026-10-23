@@ -244,7 +244,9 @@ percentage; and the **detail**, which the pulldown's own footer opens. The
 detail is the selected host's **own block, drawn by the same component the
 fleet view draws every host with** — so there is exactly one bar per used share
 in the panel — and, under it, one condensed list of groups: the numbers behind
-the shares, each drive's own facts, and each interface's. The panel also
+the shares, each drive's own facts, and each interface's. The **`EggPool`
+plane** is a plane of its own and is **pinned below the scrolling box**, so it
+is shown in **every** view and never scrolls out of reach. The panel also
 carries `Reload`, `About` and `Quit`, and can **add, remove, rename and
 re-point** the hosts in the config file. Dismissing the panel hides it and
 leaves the tray running; quitting the GUI never stops the client daemon.
@@ -276,7 +278,9 @@ translucent material with a hairline edge, a soft shadow and a pointer toward
 the tray item — and it **wastes no vertical space**: there is no band of dead
 space between the title and the first host, because a Slint layout counts an
 empty row as a row. And it **behaves** like a dropdown too: `Esc`, the tray's
-click, its own × control **and a click away** dismiss it. The click away is
+click **and a click away** dismiss it — and there is no `×`, because a fourth
+control that dismisses the panel the way three others already do is a target
+the operator can miss. The click away is
 watched differently on each desktop, because another application's mouse is not
 watchable everywhere: on **macOS** the pulldown watches the **mouse**, through
 AppKit's global event monitor, so it closes only when a click really lands

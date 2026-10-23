@@ -1487,9 +1487,11 @@ a click anywhere else                  -> a click away
 - When the **view changes**, the pulldown **takes the focus back**: a form that
   goes away takes the focus with it, and the pulldown must not mistake that for
   a click away.
-- Every dismissal — `Esc`, the ×, the tray's click and the click away — now
+- Every dismissal — `Esc`, the tray's click and the click away — now
   goes through **one** function, so they leave the same thing behind: the
-  fleet view, and no half-typed form.
+  fleet view, and no half-typed form. (The pulldown's own `×` was a fourth
+  dismissal control and was **removed** later; see the section on the `×` and
+  the `EggPool` plane.)
 - The **focus** rule is kept where the mouse cannot be watched: **Windows and
   Linux** use it, and macOS uses the mouse.
 
@@ -1634,6 +1636,95 @@ workspace is not a member of the root workspace and no root job compiles it.
 
 The release binary is **11,979,552 bytes** — **+16 bytes** on the build before
 this work, because a narrower panel is the same code drawing fewer pixels.
+
+### The `×` served no function, and the `EggPool` plane was behind the detail view (2026-10-23)
+
+The next report was about two things in the pulldown's chrome: the **`×` in
+the upper right**, which "serves no function", and the **`EggPool` plane**,
+which "should always be shown".
+
+**What the `×` was.** A fourth dismissal control. The tray's click, `Esc` and
+a click away already dismiss the pulldown, and the `×` did the same thing in a
+corner, as a target the operator can miss. It is gone: the header strip now
+carries the fleet summary and the drag area and nothing else.
+
+**Where the `EggPool` plane was.** Behind the detail view, in two ways. The
+footer's link was shown only in the detail
+(`visible: root.mode == PanelMode.Detail;`), and the plane's numbers were one
+of the **selected host's groups** — so a fleet that was not opened in the
+detail carried no `EggPool` at all, and the operator had to know that the
+plane lived in the detail to find it.
+
+**What changed.** The plane is a plane of its own: it describes the service,
+and not a host. So it is now **pinned below the scrolling box** — outside the
+`if` that gates the two views, and outside the box they share — and it is
+shown in **every** view. The link that opens and closes it is in the footer in
+every view too, and the plane is **open from the first frame**: the GUI
+publishes the `EggPool` intent when it attaches, so the daemon is already
+sending the plane the panel shows.
+
+Two things came with it, and both are the rules the forms already followed:
+
+- **The panel is exactly as tall as the plane it shows.** The plane's height
+  is Rust's (`GROUP_HEADING + rows × GROUP_ROW`), and the Rust side owns the
+  height of the whole panel — Slint 1.18 cannot report a layout's preferred
+  size to a `.slint` file.
+- **A plane with nothing to say takes no room at all.** A configuration with
+  no `EggPool` entry has no plane, and the panel carries no gap where one
+  would have been.
+
+**What was measured, after.** On macOS 15 (arm64), against the real
+seven-host fleet and a live `EggPool` (a stand-in service answering
+`/api/stats/summary` and `/api/status`):
+
+| | measured |
+| --- | --- |
+| the panel's size, seven hosts with the plane | **412 × 536** |
+| the panel's size, seven hosts without the plane | **412 × 446** |
+| the panel's size, fleet view → detail view | **412 × 536 → 412 × 536** |
+| the plane's height | **90 points** — a 15-point heading and five 15-point rows |
+| the `×` | **gone** — the header strip shows only `7 online` |
+| the `EggPool` link | in the footer in **both** views, at the same place |
+
+The plane is **on screen without scrolling** in the fleet view, which is the
+point of pinning it. Measured from the screenshot, in the panel's own
+coordinates:
+
+```text
+the fleet's last row ends at          y = 385
+the scrolling box ends at              y = 396
+the EGGPOOL heading is at              y = 399
+the plane's last row ends at           y = 482
+```
+
+And in the detail view, whose content is far taller than the box:
+
+```text
+the last DRIVES row ends at            y = 395   ← clipped at the box's edge
+the EGGPOOL heading is at              y = 399
+```
+
+so the detail scrolls inside the box and the plane does not move.
+
+**The toggle still works, and it is exact.** Clicking the footer's `EggPool`
+link took the panel from **412 × 536** to **412 × 446** — the plane's ninety
+points — and clicking it again took it back to **412 × 536**.
+
+**A configuration with no `EggPool` entry is unchanged.** The real
+seven-host configuration has no `EggPool` entry, and the panel is **412 ×
+446** there, with the plane **not there at all** and no gap where it would
+have been: the same height as before this work.
+
+**The dismissals still work.** `Esc` dismissed the pulldown, and the tray's
+click brought it back, at the same geometry.
+
+**The suite is 182 passed / 0 failed** (177 before this work, plus five new
+tests: `the_pulldown_has_no_close_control`, `the_eggpool_is_shown_in_every_view`,
+`the_eggpool_plane_is_a_plane_of_its_own`, `the_panel_is_taller_by_the_eggpool_plane`
+and `a_plane_with_nothing_to_say_takes_no_room`).
+
+The release binary is **11,979,552 bytes** — **+0 bytes** on the build before
+this work.
 
 ### What the GUI costs, and what it polls (2026-10-23)
 

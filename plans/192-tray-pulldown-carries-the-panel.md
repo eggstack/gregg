@@ -296,8 +296,10 @@ the GUI is **not shippable** for Windows or Linux.
 >   component, and the aggregate lives at the top.
 > - When the **view changes** the pulldown **takes the focus back**, because a form that goes away
 >   takes the focus with it, and the pulldown must not mistake that for a click away.
-> - Every dismissal — `Esc`, the ×, the tray's click and the click away — goes through **one**
+> - Every dismissal — `Esc`, the tray's click and the click away — goes through **one**
 >   function now, so they leave the same thing behind: the fleet view, and no half-typed form.
+>   (The pulldown's own `×` was a fourth dismissal control and was **removed** by the tenth
+>   amendment.)
 > - The **geometry** of the click away — inside the pulldown, in the menu bar, or elsewhere — is one
 >   **pure** function, so it is unit-tested on every platform, including the ones that do not use
 >   the mouse watch.
@@ -377,6 +379,54 @@ the GUI is **not shippable** for Windows or Linux.
 > it. The GUI workspace's own suite is **177 passed / 0 failed**, its clippy is clean under
 > `-D warnings`, its formatting is clean, and its release binary is **11,979,552 bytes** —
 > **+16 bytes**, because a narrower panel is the same code drawing fewer pixels.
+
+> **Amendment, 2026-10-23 (tenth) — the `×` is gone, and the `EggPool` plane is always shown.**
+> The direction this plan set is unchanged. This amendment takes two things out of the pulldown's
+> chrome that did not earn their place, and it moves the `EggPool` plane out from behind the
+> detail view.
+>
+> **The `×` served no function.** It was a fourth dismissal control: the tray's click, `Esc` and a
+> click away already dismiss the pulldown, and the `×` did the same thing in a corner, as a target
+> the operator can miss. The header strip now carries the fleet summary and the drag area and
+> nothing else. `Esc` still dismisses.
+>
+> **The `EggPool` plane was behind the detail view, in two ways.** The footer's link was shown only
+> in the detail (`visible: root.mode == PanelMode.Detail;`), and the plane's numbers were one of
+> the **selected host's groups**. So a fleet that was not opened in the detail carried no
+> `EggPool` at all, and the operator had to know that the plane lived in the detail to find it.
+>
+> **Why the plane is not a group.** It describes the **service**, and not a host. The detail's
+> groups are the selected host's own facts — the numbers behind its shares, its drives, its
+> interfaces — and the plane is none of those. Putting it among them was the mistake: it made
+> the service's plane depend on which host happened to be selected.
+>
+> **What changed.**
+>
+> - The plane is **pinned below the scrolling box** — outside the `if` that gates the two views,
+>   and outside the box they share — so it is shown in **every** view and never scrolls out of
+>   reach. The link that opens and closes it is in the footer in every view too.
+> - The plane is **open from the first frame**: the GUI publishes the `EggPool` intent when it
+>   attaches, so the daemon is already sending the plane the panel shows. The intent governs what
+>   the daemon *transmits*, never what it *fetches*, and a configuration with no `EggPool` entry
+>   has nothing to fetch.
+> - The panel is **exactly as tall as the plane it shows**, and a plane with nothing to say takes
+>   **no room at all** — the same rule the forms follow, and for the same reason: a Slint layout
+>   lays out the invisible items as if they were visible.
+>
+> **Measured, natively on macOS 15 (arm64), against the real seven-host fleet and a live
+> `EggPool`.** The panel is **412 × 536** with the plane and **412 × 446** without it, and it is
+> **412 × 536** in **both** views — so opening the detail still moves nothing under the pointer.
+> The plane's own ninety points are measured in the panel's coordinates: the fleet's last row ends
+> at **y = 385**, the scrolling box ends at **y = 396**, the `EGGPOOL` heading is at **y = 399**
+> and the plane's last row ends at **y = 482**. In the detail view the last `DRIVES` row ends at
+> **y = 395** — clipped at the box's edge — and the heading is still at **y = 399**, so the detail
+> scrolls inside the box and the plane does not move. A configuration with **no** `EggPool` entry
+> is **412 × 446** with no plane and no gap, exactly as before this work.
+>
+> The GUI workspace's own suite is **182 passed / 0 failed** (five new tests: the two that hold the
+> chrome and the plane's presence, the one that holds the plane's own rule, and the two that hold
+> the height), its clippy is clean under `-D warnings`, its formatting is clean, and its release
+> binary is **11,979,552 bytes** — **+0 bytes** on the build before this work.
 
 ## Objective
 
@@ -467,9 +517,10 @@ is accepted as the `SystemTrayIcon`'s single `Menu` child in this workspace.
   which means the pulldown must carry `Quit`, `About` and `Reload` itself.
 - **Click-away dismissal was not available** when this plan was written, on the stated ground that
   Slint 1.18.1 exposes no focus-lost event. That ground was wrong, and the dismissal now ships:
-  see the eighth amendment. The pulldown is dismissed by `Esc`, by the tray's click, by its own
-  close control **and by a click away**, and the limits of that last one are stated rather than
-  papered over.
+  see the eighth amendment. The pulldown is dismissed by `Esc`, by the tray's click **and by a
+  click away**, and the limits of that last one are stated rather than
+  papered over. (Its own `×` was a fourth control that did the same thing and was **removed**
+  by the tenth amendment.)
 - On **Linux the `Activate` gesture is decided by the desktop environment** or its shell
   extension, so on some desktops the primary click may be claimed by the host. Which gesture
   opens the pulldown has to be observed in a real session, and the plan records which.

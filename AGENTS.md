@@ -67,7 +67,9 @@ the host list, the selected host's metrics, drives, interfaces, cron, records
 and the EggPool plane, plus the forms that add, remove and edit hosts. The
 lists scroll with **bounded** heights: a large fleet must not push the metrics,
 cron and EggPool panes — or the buttons — out of the panel. It is dismissed by
-`Esc`, the tray's click, its own Close control **and a click away**. The click
+`Esc`, the tray's click **and a click away** — and by nothing else, because a
+fourth control that does the same thing is a target the operator can miss. The
+click
 away is **two signals on two platforms**, because another application's mouse
 is not watchable everywhere: **macOS watches the mouse** — AppKit's global
 event monitor reports the clicks that are dispatched to *other* applications,
@@ -140,6 +142,17 @@ panel had room for. `visible: false` hides a pane; it does not unmake it.
 The pulldown is a **dropdown** and most of what it carries is vertical, so it
 is **412 points** wide: a bar takes the whole row less the percentage, and a
 panel wider than the row is mostly empty.
+
+**The `EggPool` plane is pinned, and it is always shown.** It describes the
+service and not a host, so it is **not** one of the selected host's groups and
+it is **not** behind the detail view: it is pinned **below** the scrolling
+box, in every view, and it never scrolls out of reach. The footer's link that
+opens and closes it is in every view too, and the plane is **open from the
+first frame** — the GUI publishes the `EggPool` intent when it attaches, so
+the daemon is already sending the plane the panel shows. A plane with nothing
+to say takes **no room at all**: a configuration with no `EggPool` entry has
+none, and the panel must not carry a gap where one would have been — the same
+rule the forms follow, and for the same reason.
 
 **A hidden pulldown does not rebuild the view, and the window is not built
 until it is opened.** The daemon publishes a document every few seconds and

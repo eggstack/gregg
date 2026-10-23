@@ -142,6 +142,11 @@ That fixes the interaction shape:
   work area so it never opens off-screen;
 - the panel is dismissed by `Esc`, by the tray action again (a toggle), and by
   its own close control. It keeps its last position and size.
+  > **Amended by Plan 192's tenth amendment (2026-10-23).** The close control is
+  > **gone**: it was a fourth dismissal control that did what `Esc`, the tray's
+  > click and a click away already do. The click away itself ships too — see
+  > Plan 192's eighth amendment, which withdrew this plan's "named limitation"
+  > below.
 
 **Named limitation, not a solved problem:** Slint 1.18 exposes no focus-lost
 event, so the panel **cannot dismiss itself when the operator clicks
