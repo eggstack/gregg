@@ -156,6 +156,9 @@ the GUI is **not shippable** for Windows or Linux.
 > still opens the pulldown, the pulldown still carries the content, there is still no launcher
 > entry, and the protocol is still untouched. The whole change is inside
 > `#[cfg(target_os = "macos")]`.
+>
+> CI run **`39922180617`** on `d0cd31c` is **green on all ten jobs**, including the three `GUI`
+> legs — the only authority for this workspace's Windows and Linux behaviour.
 
 ## Objective
 
@@ -799,4 +802,8 @@ leg of the GUI CI job drives the macOS tray, so this behaviour is **not**
 covered by CI; it is covered by the native exercise above. The Windows and
 Linux legs are authority for those platforms, and the whole change is inside
 macOS's own conditional.
+
+CI run **`39922180617`** on `d0cd31c` is **green on all ten jobs**, including
+the three `GUI` legs — the only authority for this workspace's Windows and
+Linux behaviour.
 

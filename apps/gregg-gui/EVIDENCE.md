@@ -1022,6 +1022,22 @@ whole change is inside `#[cfg(target_os = "macos")]`. No macOS leg of the GUI
 CI job exercises the tray at all, so this behaviour is **not** covered by CI;
 it is covered by the native exercise above.
 
+**The CI run that covers this work** is **`39922180617`**, against `d0cd31c`,
+and it is **green on all ten jobs**: the core `Linux`, `macOS (macos-15)`,
+`macOS (macos-15-intel)`, `Windows`, `Scripts`, `MSRV` and `FreeBSD` jobs, and
+the three `GUI` legs (`macos-15`, `windows-2022`, `ubuntu-latest`). The `GUI`
+legs are the only authority for this workspace's Windows and Linux behaviour,
+because the workspace is not a member of the root workspace and no root job
+compiles it.
+
+The GUI workspace's own suite is **153 passed / 0 failed** and its clippy is
+clean under `-D warnings`. The root workspace's `cargo test -p gregg --lib`
+does not pass on this macOS host, and did not before this work either: the run
+fails **13 to 17** tests depending on the run, in the `eggpool` worker races,
+the `clientd::ipc` temp-directory path and the timing-sensitive
+`scheduler::fleet_scaling_*` tests, and the **set varies from run to run**.
+Nothing under `crates/gregg/src/` was changed by this work at all.
+
 ### The native exercises, on CI run `39811582623`
 
 The GUI workspace is not a member of the root workspace, so no root job
