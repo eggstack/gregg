@@ -1086,6 +1086,21 @@ Windows runner is session 0 with no `explorer.exe`, and the Linux leg drives
 the SNI protocol rather than a desktop shell. That is the interactive
 acceptance, and it is still outstanding.
 
+**One flake was found and fixed.** The `GUI (ubuntu-latest)` leg failed once
+on run `39924998544` with *"the GUI never reported where it put the
+pulldown"*, and the GUI's whole output was `gregg-gui: tray=available`. The
+Linux exercise read the GUI's transcript **once** and looked for the
+placement line, and the line had not arrived yet: the pulldown's native
+window is created on the event loop's own terms, so the line comes when it
+comes. The re-run of the same commit passed, and the two runs before it
+passed — and the code the leg exercises was byte-identical in all of them, so
+this was the harness's timing and not the GUI's.
+
+The Linux exercise now **waits** for the placement line, within the budget it
+already has — which is what the **Windows** exercise already did, so the two
+now behave the same way.
+
+
 
 
 ## The fixture

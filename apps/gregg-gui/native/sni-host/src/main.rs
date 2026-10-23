@@ -346,6 +346,55 @@ fn find_placement(transcript: &Transcript) -> Option<Placement> {
     lines.iter().find_map(|line| parse_placement(line))
 }
 
+/// Waits for the GUI to report where it put the pulldown.
+///
+/// The GUI prints that line once the pulldown's **native** window exists, and
+/// the native window is created on the event loop's own terms — so the line
+/// arrives whenever it arrives. The exercise therefore **waits** for it,
+/// within the budget it already has, instead of reading the transcript once
+/// and hoping the line was in it: a check that depends on the machine being
+/// idle is a check that fails at random.
+///
+/// This is what the Windows exercise already does — it waits for the line,
+/// bounded by its timeout — so the two exercises now behave the same way.
+///
+/// The transcript is the whole of the GUI's output, so it is still what a
+/// failure quotes.
+fn wait_for_placement(
+    receiver: &Receiver<String>,
+    transcript: &Transcript,
+    deadline: Instant,
+) -> Result<Placement, String> {
+    let never = || {
+        format!(
+            "the GUI never reported where it put the pulldown; its output was:\n{}",
+            transcript_text(transcript)
+        )
+    };
+    loop {
+        if let Some(placement) = find_placement(transcript) {
+            return Ok(placement);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(never());
+        }
+        match receiver.recv_timeout(remaining) {
+            // The line is in the transcript by the time the channel hands it
+            // over, so the next turn finds it.
+            Ok(_) => {}
+            Err(RecvTimeoutError::Timeout) => return Err(never()),
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(format!(
+                    "the GUI exited before reporting where it put the pulldown; \
+                     its output was:\n{}",
+                    transcript_text(transcript)
+                ));
+            }
+        }
+    }
+}
+
 /// Reads one of the GUI's output streams line by line.
 fn pipe_lines<R: Read + Send + 'static>(
     stream: R,
@@ -780,12 +829,7 @@ async fn run_with_host(args: &Args) -> Result<(), String> {
     // The GUI reports where it put the pulldown and where it was allowed to
     // put it, so the exercise can check that the pulldown is inside the work
     // area — which is the thing that is easy to get wrong and hard to see.
-    let placement = find_placement(&transcript).ok_or_else(|| {
-        format!(
-            "the GUI never reported where it put the pulldown; its output was:\n{}",
-            transcript_text(&transcript)
-        )
-    })?;
+    let placement = wait_for_placement(&receiver, &transcript, deadline)?;
     if !placement.is_inside() {
         return Err(format!(
             "the pulldown is not inside the work area it reported: {placement:?}"

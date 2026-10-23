@@ -803,6 +803,16 @@ covered by CI; it is covered by the native exercise above. The Windows and
 Linux legs are authority for those platforms, and the whole change is inside
 macOS's own conditional.
 
+**One flake was found and fixed on the way.** The `GUI (ubuntu-latest)` leg
+failed once with *"the GUI never reported where it put the pulldown"*: the
+Linux exercise read the GUI's transcript **once** and looked for the placement
+line, and the line had not arrived yet — the pulldown's native window is
+created on the event loop's own terms, so the line comes when it comes. The
+re-run of the same commit passed, and the two runs before it passed, with
+byte-identical code, so this was the harness's timing and not the GUI's. The
+Linux exercise now **waits** for the line, within the budget it already has,
+which is what the Windows exercise already did.
+
 CI run **`39922180617`** on `d0cd31c` is **green on all ten jobs**, including
 the three `GUI` legs — the only authority for this workspace's Windows and
 Linux behaviour.
