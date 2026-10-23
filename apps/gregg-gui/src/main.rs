@@ -2001,6 +2001,10 @@ mod tests {
     /// back.
     #[test]
     fn a_drag_remembers_a_relative_placement() {
+        // The anchor is the platform's: the top on macOS and Linux, the
+        // bottom on Windows. The assertions are about the trailing edge,
+        // which is the right edge everywhere.
+        let anchor = placement::Anchor::for_platform();
         let area = placement::WorkArea::new(0.0, 0.0, 1920.0, 1080.0);
         // The panel was asked for at the trailing corner.
         let mut state = UiState {
@@ -2011,18 +2015,23 @@ mod tests {
         let (x, y) = state.drag_panel((1360.0, 0.0), (-200.0, 0.0), (560.0, 520.0), Some(&area));
 
         assert_eq!((x, y), (1160.0, 0.0), "the panel moved by the drag");
+        let offset = state.panel_offset.expect("a placement");
         assert_eq!(
-            state.panel_offset,
-            Some(placement::Offset { x: 200.0, y: 0.0 }),
+            offset.x, 200.0,
             "the placement is the gap at the trailing edge, not a place"
         );
-        // The same placement, on a display of another size, is the same gap
-        // from that display's trailing corner.
-        let wider = placement::WorkArea::new(0.0, 0.0, 3840.0, 1080.0);
-        let offset = state.panel_offset.expect("an offset");
         assert_eq!(
-            wider.place(offset, (560.0, 520.0), placement::Anchor::for_platform()),
-            (3080.0, 0.0),
+            area.place(offset, (560.0, 520.0), anchor),
+            (1160.0, 0.0),
+            "the offset describes the position the drag produced"
+        );
+        // The same placement, on a display of another size, is the same gap
+        // from *that* display's trailing corner.
+        let wider = placement::WorkArea::new(0.0, 0.0, 3840.0, 1080.0);
+        let (wider_x, _) = wider.place(offset, (560.0, 520.0), anchor);
+        assert_eq!(
+            wider_x + 560.0,
+            wider.right() - 200.0,
             "the gap is measured from the display it is opened on"
         );
     }
@@ -2031,10 +2040,14 @@ mod tests {
     /// shift cannot walk into the memory.
     #[test]
     fn a_drag_does_not_carry_the_space_s_shift_into_the_placement() {
+        let anchor = placement::Anchor::for_platform();
         let area = placement::WorkArea::new(0.0, 0.0, 1920.0, 1080.0);
-        let mut state = UiState::default();
+        let mut state = UiState {
+            panel_position: Some((1360.0, 0.0)),
+            ..UiState::default()
+        };
         // The window is drawn 26 points lower than it was asked to be, which
-        // is what another application's full-screen space does.
+        // is what another application's full-screen space does on macOS.
         let (x, y) = state.drag_panel((1360.0, 0.0), (0.0, 40.0), (560.0, 520.0), Some(&area));
 
         assert_eq!(
@@ -2044,7 +2057,12 @@ mod tests {
         );
         assert_eq!(
             state.panel_offset,
-            Some(placement::Offset { x: 0.0, y: 40.0 }),
+            Some(area.offset_of((1360.0, 40.0), (560.0, 520.0), anchor)),
+            "the remembered placement describes the request"
+        );
+        assert_ne!(
+            state.panel_offset,
+            Some(area.offset_of((1360.0, 66.0), (560.0, 520.0), anchor)),
             "the space's own shift is not in the remembered placement"
         );
     }

@@ -1171,8 +1171,16 @@ This was exercised **natively on macOS only**; the Windows and Linux legs are
 authority in the GUI CI job, and the change is in the platform-neutral
 placement code, so both legs run it.
 
-The GUI workspace's own suite is **158 passed / 0 failed** (153 before this
-work, plus five new tests) and its clippy is clean under `-D warnings`.
+The GUI workspace's own suite is **160 passed / 0 failed** (153 before this
+work, plus seven new tests) and its clippy is clean under `-D warnings`.
+
+One test in that suite failed on **one of eleven** local runs:
+`evidence::the_eggpool_view_converges_one_daemon_owned_worker`, whose
+assertion is that the **daemon** fetched the `EggPool` window the GUI asked
+for. It drives the daemon's own EggPool worker, and the core's `eggpool`
+tests fail **13 tests on this host right now** — three runs in a row — so the
+condition is the daemon's and not this line's. The commit it is recorded
+against was green on all ten CI jobs.
 
 ### The native exercises, on CI run `39811582623`
 
