@@ -154,6 +154,22 @@ The GUI prints one machine-readable line — `pulldown=placed x=… y=… width=
 height=… area=…` — so the native exercises assert the **position**, not only
 that a window exists.
 
+**What the pulldown remembers is an offset, not a position.** The anchor is
+computed from the work area of the display the window is on, so it is already
+display-aware — but a remembered **position** was allowed to win over it, and
+a position names a place on *one* display: a pulldown placed on a 1512-point
+laptop display opened on a 3840×1080 one landed 2382 points from the tray, on
+screen and the right size and nowhere near the icon that opened it. The file
+therefore holds the **gap at the trailing edge** and the **gap at the edge the
+pulldown hangs from**, measured against the display it was placed on, and an
+older file's `position=` key is **not read** — reading it would reproduce the
+very defect the offset exists to fix. The offset is measured against the
+position the GUI **asked for**, never against the position the window reports
+back: in another application's full-screen space macOS draws the window 26
+points lower than it was asked to be, and a placement measured from the
+window's own report would carry that shift into the memory, so the pulldown
+would open a little lower every time and never come back.
+
 **The pulldown must reach another application's full screen — macOS.** A
 full-screen application owns a **space** of its own, and a window that is not
 in that space is not on the screen at all: the click reaches the tray, the

@@ -160,6 +160,39 @@ the GUI is **not shippable** for Windows or Linux.
 > CI run **`39927427831`** on `22e1bce` is **green on all ten jobs**, including the three `GUI`
 > legs — the only authority for this workspace's Windows and Linux behaviour. The implementation
 > itself, `d0cd31c`, was green on all ten jobs on run **`39922180617`**.
+>
+> **Amendment, 2026-10-23 (sixth) — the remembered placement is an offset, not a position.**
+> The direction this plan set — *the pulldown reads as a dropdown* — is unchanged and is still the
+> goal. What changed is **where the pulldown opens on a display that is not the one it was placed
+> on**: it now opens against the trailing corner of the display it is on, whatever that display's
+> size.
+>
+> - The pulldown's placement was remembered as an **absolute position in logical pixels**
+>   (`position=844,65`), and a remembered position won over the anchor. The anchor itself was never
+>   wrong — it is computed from the work area of the display the window is on, so it accounts for
+>   that display's size and scale — but a position names a place on *one* display. A pulldown
+>   placed on a 1512-point laptop display and opened on a 3840×1080 one landed **2382 points from
+>   the tray**: on screen, the right size, and nowhere near the icon whose click opened it.
+> - What is remembered is now an **offset** — the gap at the trailing edge and the gap at the edge
+>   the pulldown hangs from — measured against the display it was placed on (`offset=12.5,0.0`). An
+>   offset means the same thing on every display, at every scale, on either side of a resolution
+>   change, and the offset is measured to the panel's *edges*, so the pulldown grows away from the
+>   corner it hangs from.
+> - The file's older `position=` key is **not read**: a place on the display it was measured on
+>   cannot be carried to a display it was never measured against, and reading it would reproduce the
+>   very defect the offset exists to fix. A file that says only `position=` is read as no placement
+>   at all, so the one-time cost of the change is that an operator who had dragged the pulldown on
+>   another display finds it back at the corner.
+> - The offset is measured against the position the GUI **asked for**, never against the position
+>   the window reports back: in another application's full-screen space macOS draws the window 26
+>   points lower than it was asked to be, and a placement measured from the window's own report
+>   would carry that shift into the memory, so the pulldown would open a little lower every time
+>   and never come back.
+>
+> The amendment changes **where the pulldown opens on a different display**, not its *behaviour*:
+> the tray's click still opens the pulldown, the pulldown still carries the content, there is still
+> no launcher entry, and the protocol is still untouched. The change is in the platform-neutral
+> placement code, so all three targets carry it.
 
 ## Objective
 
@@ -490,6 +523,11 @@ The state file is written when the operator **moves or resizes** the pulldown �
 corner grip both raise `geometry-changed` — and not on the first placement, which is derived from
 the content and the work area and so has nothing to remember. A corrupt or out-of-range file
 falls back to the default; `state.rs` has 13 unit tests over that path.
+
+> **Superseded by the sixth amendment.** This is the record of the run as it was measured, and the
+> `position=` key it shows is what the file held then. The placement is now remembered as an
+> **offset** against the display's anchor corner, the same file format's `offset=` key, because an
+> absolute position names a place on *one* display — see the amendment at the top of this plan.
 
 ### The dropdown's shape
 

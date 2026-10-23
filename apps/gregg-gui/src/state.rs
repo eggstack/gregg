@@ -22,13 +22,34 @@
 //! Two optional numbers, in a deliberately dull format:
 //!
 //! ```text
-//! position=1234.5,678.9
+//! offset=12.5,0.0
 //! size=420.0,512.0
 //! ```
 //!
 //! It is not a format this GUI needs a parser library for, and it is not a
 //! format anything else reads: the file is the GUI's own, and a GUI that
 //! cannot parse it says so by ignoring it.
+//!
+//! # The placement is an offset, not a position
+//!
+//! The `offset` is how far the pulldown sat from the **anchor corner of the
+//! display it was on** — the gap at the trailing edge and the gap at the
+//! edge the pulldown hangs from. It is not a position, and the difference is
+//! the whole point: a position names a place on one display, and a pulldown
+//! that remembers one and opens it on a *different* display opens in the
+//! wrong place — on screen, the right size, and nowhere near the tray whose
+//! click opened it. An offset means the same thing on every display.
+//!
+//! # What an older file says
+//!
+//! An older file held `position=1234.5,678.9`: an absolute place on whichever
+//! display was in use when it was written. That key is **not read**. The
+//! display it was measured on may be a display that is not there any more,
+//! and a position cannot be carried to a display it was never measured
+//! against — reading it would reproduce the very defect the offset exists to
+//! fix. A file that says only `position=` is therefore read as no placement
+//! at all, and the pulldown opens against the corner, which is where a
+//! pulldown belongs.
 //!
 //! # What is *not* in it
 //!
@@ -41,6 +62,8 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::placement::Offset;
+
 /// The most the state file may be read as.
 ///
 /// The file holds two numbers and a key each. A megabyte of it is not a
@@ -50,8 +73,8 @@ const MAX_STATE_BYTES: u64 = 4096;
 
 /// The largest coordinate the state file may claim.
 ///
-/// A coordinate beyond this is not a place a display is, so it is not a
-/// position the operator chose either.
+/// A coordinate beyond this is not a place a display is, so it is not an
+/// offset the operator chose either.
 const MAX_COORDINATE: f32 = 1_000_000.0;
 
 /// The smallest size the state file may claim, in logical pixels.
@@ -68,8 +91,8 @@ const MAX_SIZE: f32 = 100_000.0;
 /// The pulldown's geometry, as the operator left it.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PanelGeometry {
-    /// The pulldown's position, in logical pixels.
-    pub position: Option<(f32, f32)>,
+    /// The pulldown's placement, relative to the display's anchor corner.
+    pub offset: Option<Offset>,
     /// The pulldown's size, in logical pixels.
     pub size: Option<(f32, f32)>,
 }
@@ -78,7 +101,7 @@ impl PanelGeometry {
     /// Whether there is anything worth writing.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.position.is_none() && self.size.is_none()
+        self.offset.is_none() && self.size.is_none()
     }
 }
 
@@ -127,8 +150,8 @@ pub fn load(path: &Path) -> PanelGeometry {
 /// file and a crash never leaves one.
 pub fn store(path: &Path, geometry: PanelGeometry) -> io::Result<()> {
     let mut text = String::new();
-    if let Some((x, y)) = geometry.position {
-        text.push_str(&format!("position={x},{y}\n"));
+    if let Some(offset) = geometry.offset {
+        text.push_str(&format!("offset={},{}\n", offset.x, offset.y));
     }
     if let Some((width, height)) = geometry.size {
         text.push_str(&format!("size={width},{height}\n"));
@@ -148,10 +171,17 @@ fn parse(text: &str) -> PanelGeometry {
             continue;
         };
         match key.trim() {
-            "position" => geometry.position = parse_pair(value, MAX_COORDINATE),
+            "offset" => {
+                geometry.offset = parse_pair(value, MAX_COORDINATE).map(|(x, y)| Offset { x, y });
+            }
             "size" => geometry.size = parse_pair(value, MAX_SIZE),
             // A key this version does not know is ignored, so a file written
             // by a later version is still read for what it does mean.
+            //
+            // `position` is one of those keys: it is an absolute place on
+            // the display it was measured on, and it is not read, because a
+            // place on one display is not a place on another. See the
+            // module's notes.
             _ => {}
         }
     }
@@ -261,7 +291,10 @@ mod tests {
         let dir = temp_dir("round-trip");
         let path = dir.join("config.toml.gui-state");
         let geometry = PanelGeometry {
-            position: Some((1234.5, 678.25)),
+            offset: Some(Offset {
+                x: 1234.5,
+                y: 678.25,
+            }),
             size: Some((420.0, 512.0)),
         };
         store(&path, geometry).expect("the geometry is written");
@@ -275,13 +308,17 @@ mod tests {
         store(
             &path,
             PanelGeometry {
-                position: Some((10.0, 20.0)),
+                offset: Some(Offset { x: 10.0, y: 20.0 }),
                 size: None,
             },
         )
         .expect("the geometry is written");
         let geometry = load(&path);
-        assert_eq!(geometry.position, Some((10.0, 20.0)));
+        assert_eq!(
+            geometry.offset,
+            Some(Offset { x: 10.0, y: 20.0 }),
+            "the placement is still there"
+        );
         assert_eq!(geometry.size, None);
     }
 
@@ -289,9 +326,9 @@ mod tests {
     fn a_malformed_file_is_ignored_rather_than_trusted() {
         let dir = temp_dir("malformed");
         let path = dir.join("config.toml.gui-state");
-        fs::write(&path, "position=not-a-number,12\nsize=1,2\n").expect("the file is written");
+        fs::write(&path, "offset=not-a-number,12\nsize=1,2\n").expect("the file is written");
         let geometry = load(&path);
-        assert_eq!(geometry.position, None, "a bad position is not a position");
+        assert_eq!(geometry.offset, None, "a bad offset is not an offset");
         assert_eq!(
             geometry.size,
             Some((1.0, 2.0)),
@@ -300,11 +337,31 @@ mod tests {
     }
 
     #[test]
-    fn a_position_outside_any_display_is_ignored() {
+    fn an_offset_outside_any_display_is_ignored() {
         let dir = temp_dir("out-of-range");
         let path = dir.join("config.toml.gui-state");
-        fs::write(&path, "position=99999999,0\n").expect("the file is written");
-        assert_eq!(load(&path).position, None);
+        fs::write(&path, "offset=99999999,0\n").expect("the file is written");
+        assert_eq!(load(&path).offset, None);
+    }
+
+    #[test]
+    fn an_older_absolute_position_is_not_read() {
+        // An older file held a place on the display it was written on. That
+        // place means nothing on another display, and reading it is how the
+        // pulldown came to open in the middle of the desk.
+        let dir = temp_dir("old-position");
+        let path = dir.join("config.toml.gui-state");
+        fs::write(&path, "position=844,65\nsize=606,478\n").expect("the file is written");
+        let geometry = load(&path);
+        assert_eq!(
+            geometry.offset, None,
+            "an absolute position is not a placement that can be carried"
+        );
+        assert_eq!(
+            geometry.size,
+            Some((606.0, 478.0)),
+            "the size is still a size, and it still reads"
+        );
     }
 
     #[test]
@@ -321,7 +378,7 @@ mod tests {
         let path = dir.join("config.toml.gui-state");
         let mut text = String::new();
         while text.len() < MAX_STATE_BYTES as usize + 16 {
-            text.push_str("position=1,2\n");
+            text.push_str("offset=1,2\n");
         }
         fs::write(&path, text).expect("the file is written");
         assert_eq!(
@@ -335,16 +392,16 @@ mod tests {
     fn an_unknown_key_is_ignored() {
         let dir = temp_dir("unknown-key");
         let path = dir.join("config.toml.gui-state");
-        fs::write(&path, "colour=green\nposition=5,6\n").expect("the file is written");
-        assert_eq!(load(&path).position, Some((5.0, 6.0)));
+        fs::write(&path, "colour=green\noffset=5,6\n").expect("the file is written");
+        assert_eq!(load(&path).offset, Some(Offset { x: 5.0, y: 6.0 }));
     }
 
     #[test]
     fn a_comment_is_ignored() {
         let dir = temp_dir("comment");
         let path = dir.join("config.toml.gui-state");
-        fs::write(&path, "# gregg-gui\nposition=5,6\n").expect("the file is written");
-        assert_eq!(load(&path).position, Some((5.0, 6.0)));
+        fs::write(&path, "# gregg-gui\noffset=5,6\n").expect("the file is written");
+        assert_eq!(load(&path).offset, Some(Offset { x: 5.0, y: 6.0 }));
     }
 
     #[test]
@@ -354,7 +411,7 @@ mod tests {
         store(
             &path,
             PanelGeometry {
-                position: Some((1.0, 2.0)),
+                offset: Some(Offset { x: 1.0, y: 2.0 }),
                 size: Some((3.0, 4.0)),
             },
         )
@@ -373,15 +430,15 @@ mod tests {
         let dir = temp_dir("replace");
         let path = dir.join("config.toml.gui-state");
         store(&path, PanelGeometry::default()).expect("the first write");
-        fs::write(&path, "position=7,8\n").expect("the file is written");
+        fs::write(&path, "offset=7,8\n").expect("the file is written");
         store(
             &path,
             PanelGeometry {
-                position: Some((1.0, 2.0)),
+                offset: Some(Offset { x: 1.0, y: 2.0 }),
                 size: None,
             },
         )
         .expect("the second write");
-        assert_eq!(load(&path).position, Some((1.0, 2.0)));
+        assert_eq!(load(&path).offset, Some(Offset { x: 1.0, y: 2.0 }));
     }
 }

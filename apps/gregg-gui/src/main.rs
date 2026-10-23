@@ -224,7 +224,22 @@ struct UiState {
     tray_health: Option<TrayHealth>,
     /// Whether the panel is on screen.
     panel_visible: bool,
-    /// Where the operator last put the panel, in logical pixels.
+    /// Where the operator last put the panel, relative to the display's
+    /// anchor corner.
+    ///
+    /// This is what is remembered across restarts, and it is *relative*
+    /// because a place on one display is not a place on another: a pulldown
+    /// that remembers an absolute position opens in the wrong place — on
+    /// screen, the right size, and nowhere near the tray — as soon as the
+    /// operator moves to a display of another size.
+    panel_offset: Option<placement::Offset>,
+    /// Where the GUI asked for the panel to be, in logical pixels.
+    ///
+    /// This is the position the GUI *requested*, never the one the window
+    /// reports back. In another application's full-screen space the window
+    /// is drawn lower than it was asked to be, and a placement that carried
+    /// that shift would walk the pulldown down the screen a little further
+    /// every time it was opened.
     panel_position: Option<(f32, f32)>,
     /// How big the operator last made the panel, in logical pixels.
     panel_size: Option<(f32, f32)>,
@@ -423,13 +438,15 @@ fn main() {
     tray.set_native_menu(platform::native_tray_menu());
 
     // Where the operator left the pulldown is remembered across restarts: it
-    // is read from a small file beside the configuration.
+    // is read from a small file beside the configuration. What is remembered
+    // is the placement *relative to the display's anchor corner*, so it still
+    // means the same thing on a display of another size.
     let geometry_path = state::path_for(&options.config);
     let geometry = state::load(&geometry_path);
 
     let state: Arc<Mutex<UiState>> = Arc::new(Mutex::new(UiState {
         connection: ConnectionState::Connecting,
-        panel_position: geometry.position,
+        panel_offset: geometry.offset,
         panel_size: geometry.size,
         ..UiState::default()
     }));
@@ -870,13 +887,30 @@ fn create_panel(ctx: &PanelContext) -> Pulldown {
         let Some(panel) = callback_panel.upgrade() else {
             return;
         };
-        let current = panel.window().position();
         let scale = panel.window().scale_factor().max(0.01);
-        // The position is read back in physical pixels and kept in logical
-        // ones, so the panel does not drift on a scaled display.
-        let x = current.x as f32 / scale + dx;
-        let y = current.y as f32 / scale + dy;
+        let current = panel.window().size();
+        let size = (current.width as f32 / scale, current.height as f32 / scale);
+        // The base is where the GUI *asked* for the window to be, not where
+        // the window says it is. In another application's full-screen space
+        // the window is drawn lower than it was asked to be, and reading that
+        // back would make the pulldown walk down the screen a little further
+        // on every drag.
+        let base = state.panel_position.or_else(|| {
+            let position = panel.window().position();
+            Some((position.x as f32 / scale, position.y as f32 / scale))
+        });
+        let Some(base) = base else {
+            return;
+        };
+        let (x, y) = (base.0 + dx, base.1 + dy);
         state.panel_position = Some((x, y));
+        // The placement is remembered relative to the display's own corner,
+        // so it still means the same thing on a display of another size.
+        let area = placement::work_area(panel.window());
+        if let Some(area) = area.as_ref() {
+            state.panel_offset =
+                Some(area.offset_of((x, y), size, placement::Anchor::for_platform()));
+        }
         panel
             .window()
             .set_position(slint::LogicalPosition::new(x, y));
@@ -896,6 +930,15 @@ fn create_panel(ctx: &PanelContext) -> Pulldown {
         let width = (current.width as f32 / scale + dx).max(placement::MIN_PANEL_SIZE.0);
         let height = (current.height as f32 / scale + dy).max(placement::MIN_PANEL_SIZE.1);
         state.panel_size = Some((width, height));
+        // The corner moved, so the panel's own corner did not: the size
+        // changed and the position stayed where it was. The offset is
+        // measured again for the new size, so the placement that is
+        // remembered is the placement that is on screen.
+        let area = placement::work_area(panel.window());
+        if let (Some(area), Some(position)) = (area.as_ref(), state.panel_position) {
+            state.panel_offset =
+                Some(area.offset_of(position, (width, height), placement::Anchor::for_platform()));
+        }
         panel
             .window()
             .set_size(slint::LogicalSize::new(width, height));
@@ -911,7 +954,7 @@ fn create_panel(ctx: &PanelContext) -> Pulldown {
             return;
         };
         let geometry = state::PanelGeometry {
-            position: state.panel_position,
+            offset: state.panel_offset,
             size: state.panel_size,
         };
         if geometry.is_empty() {
@@ -1004,12 +1047,20 @@ fn place_pulldown(panel: &Pulldown, state: &Arc<Mutex<UiState>>, attempts_left: 
     );
     let size = placement::panel_size(guard.panel_size, content, area.as_ref());
     panel.window().set_size(size);
-    if let Some(position) = placement::open_position(
-        guard.panel_position,
-        (size.width, size.height),
-        area.as_ref(),
-    ) {
+    if let Some(position) =
+        placement::open_position(guard.panel_offset, (size.width, size.height), area.as_ref())
+    {
         guard.panel_position = Some((position.x, position.y));
+        // The placement is measured against the display it was placed on, so
+        // that what is remembered is what the operator sees — and not a place
+        // that only made sense on the display it was measured on.
+        if let Some(area) = area.as_ref() {
+            guard.panel_offset = Some(area.offset_of(
+                (position.x, position.y),
+                (size.width, size.height),
+                placement::Anchor::for_platform(),
+            ));
+        }
         panel.window().set_position(position);
         if let Some(area) = area.as_ref() {
             // The placement, in one machine-readable line.
@@ -1538,6 +1589,16 @@ fn resize_panel(state: &mut UiState, panel: &Pulldown, content: &placement::Cont
         area.as_ref(),
     );
     panel.window().set_size(size);
+    // The size changed and the position did not, so the placement is
+    // measured again for the new size: what is remembered is then always
+    // the placement that is on screen.
+    if let (Some(area), Some(position)) = (area.as_ref(), state.panel_position) {
+        state.panel_offset = Some(area.offset_of(
+            position,
+            (size.width, size.height),
+            placement::Anchor::for_platform(),
+        ));
+    }
 }
 
 /// The connection state, in one line.

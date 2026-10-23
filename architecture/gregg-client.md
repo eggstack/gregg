@@ -532,6 +532,24 @@ cannot drift. The GUI prints one machine-readable line —
 `pulldown=placed x=… y=… width=… height=… area=…` — so the native exercises
 assert the **position**, not only that a window exists.
 
+**The persisted placement is an offset, not a position.** The anchor is
+computed from the work area of the display the window is on, so it is already
+aware of the display's size and scale — but a remembered **position** was
+allowed to win over it, and a position names a place on *one* display. A
+pulldown placed on a 1512-point laptop display and opened on a 3840×1080 one
+landed 2382 points from the tray: on screen, the right size, and nowhere near
+the icon whose click opened it. What is persisted is therefore the **gap at
+the trailing edge** and the **gap at the edge the panel hangs from**, measured
+against the display the panel was placed on, and the file's older `position=`
+key is **not read** — a place on the display it was measured on cannot be
+carried to a display it was never measured against, and reading it would
+reproduce the defect the offset exists to fix. The offset is measured against
+the position the GUI **asked for**, never against the position the window
+reports back: in another application's full-screen space macOS draws the
+window 26 points lower than it was asked to be, and a placement measured from
+the window's own report would carry that shift into the memory, so the panel
+would open a little lower every time and never come back.
+
 That "hide" is only safe when there **is** a tray to bring the window back. On
 Linux the tray needs a `StatusNotifierItem` host, and a plain GNOME session has
 none — Slint's `ksni` backend then fails to register, silently, and the GUI is

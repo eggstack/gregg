@@ -38,10 +38,25 @@
 //!
 //! The panel is borderless, so it has no title bar to drag. It carries its
 //! own: a strip across the top that moves the window, and a grip in the
-//! corner that resizes it. The operator's chosen position and size are
-//! remembered, and the position is re-clamped every time the panel opens, so
+//! corner that resizes it. The operator's chosen placement and size are
+//! remembered, and the placement is re-clamped every time the panel opens, so
 //! a display that changed underneath the GUI cannot leave the panel
 //! off-screen.
+//!
+//! # What is remembered is an offset, not a position
+//!
+//! A position is a place on *one* display. Remembering one and opening it on
+//! a *different* display puts the panel in the wrong place — and the wrong
+//! place is not obviously wrong: it is on screen, it is the right size, and
+//! it is nowhere near the tray whose click opened it. The panel that was
+//! placed on a laptop's 1512-point display and opened on a 3840-point one
+//! landed 2382 points from the tray, which is the middle of the desk.
+//!
+//! So what is remembered is an [`Offset`]: how far the panel sits from the
+//! **anchor corner of the display it is on**. An offset means the same thing
+//! on every display, at every scale, on either side of a resolution change,
+//! and it is re-clamped on every open so a display that shrank cannot leave
+//! the panel off-screen.
 //!
 //! # How big the panel is
 //!
@@ -276,6 +291,34 @@ pub fn content_height(content: &Content) -> f32 {
     height
 }
 
+/// Where the panel sits, relative to the display's anchor corner.
+///
+/// The offset is measured in logical pixels, and it is measured to the
+/// **edges** rather than to the panel's own corner:
+///
+/// - `x` is the gap between the panel's **trailing** edge and the work area's
+///   trailing edge. Zero means the panel's trailing edge is flush with the
+///   display's; a positive number means the panel sits that far inside it.
+/// - `y` is the gap between the panel's **anchor-side** edge and the work
+///   area's anchor-side edge: the panel's top edge against the work area's
+///   top on macOS and Linux, and its bottom edge against the work area's
+///   bottom on Windows.
+///
+/// The default offset is zero, and a zero offset *is* the anchor corner.
+///
+/// # Why an offset and not a position
+///
+/// A position names a place on one display; an offset names a place
+/// *relative to the display's own corner*, so it survives a change of
+/// display, of resolution and of scale. See the module's own notes.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Offset {
+    /// The gap at the trailing edge, in logical pixels.
+    pub x: f32,
+    /// The gap at the anchor edge, in logical pixels.
+    pub y: f32,
+}
+
 /// The part of the display the panel may use.
 ///
 /// The coordinates are **logical** pixels, in the same space as Slint's
@@ -358,13 +401,41 @@ impl WorkArea {
     /// The corner this anchor hangs from.
     #[must_use]
     pub fn anchor_position(&self, anchor: Anchor, size: (f32, f32)) -> (f32, f32) {
+        self.place(Offset::default(), size, anchor)
+    }
+
+    /// Where a panel with this offset goes.
+    ///
+    /// The offset is measured to the panel's edges, so the panel's trailing
+    /// edge stays where the offset says and the panel's anchor-side edge
+    /// stays where the offset says. That is what makes the panel grow *away*
+    /// from the corner when its content gets taller.
+    #[must_use]
+    pub fn place(&self, offset: Offset, size: (f32, f32), anchor: Anchor) -> (f32, f32) {
         let (width, height) = size;
-        let x = self.right() - width;
+        let x = self.right() - offset.x - width;
         let y = match anchor {
-            Anchor::TopRight => self.top,
-            Anchor::BottomRight => self.bottom() - height,
+            Anchor::TopRight => self.top + offset.y,
+            Anchor::BottomRight => self.bottom() - offset.y - height,
         };
         (x, y)
+    }
+
+    /// The offset a panel at this position has.
+    ///
+    /// This is the inverse of [`WorkArea::place`]: placing an offset and
+    /// measuring it back gives the same position, for either anchor.
+    #[must_use]
+    pub fn offset_of(&self, position: (f32, f32), size: (f32, f32), anchor: Anchor) -> Offset {
+        let (x, y) = position;
+        let (width, height) = size;
+        Offset {
+            x: self.right() - (x + width),
+            y: match anchor {
+                Anchor::TopRight => y - self.top,
+                Anchor::BottomRight => self.bottom() - (y + height),
+            },
+        }
     }
 }
 
@@ -483,21 +554,23 @@ fn inset(area: WorkArea, anchor: Anchor) -> WorkArea {
 
 /// Where the panel should open.
 ///
-/// A remembered position wins, because the operator may have moved the panel
+/// A remembered offset wins, because the operator may have moved the panel
 /// and a pulldown that jumps back to a corner every time is worse than one
-/// that stays where it was put. The remembered position is still clamped, so
-/// a display that changed underneath the GUI cannot leave the panel
-/// off-screen.
+/// that stays where it was put. The offset is relative to the display's own
+/// anchor corner, so it means the same thing on every display; the result is
+/// still clamped, so a display that changed underneath the GUI cannot leave
+/// the panel off-screen.
 #[must_use]
 pub fn open_position(
-    remembered: Option<(f32, f32)>,
+    remembered: Option<Offset>,
     size: (f32, f32),
     area: Option<&WorkArea>,
 ) -> Option<LogicalPosition> {
     let area = area?;
+    let anchor = Anchor::for_platform();
     let desired = match remembered {
-        Some(position) => position,
-        None => area.anchor_position(Anchor::for_platform(), size),
+        Some(offset) => area.place(offset, size, anchor),
+        None => area.anchor_position(anchor, size),
     };
     let (x, y) = area.clamp(desired, size);
     Some(LogicalPosition::new(x, y))
@@ -592,23 +665,41 @@ mod tests {
     }
 
     #[test]
-    fn a_remembered_position_wins_over_the_anchor() {
+    fn a_remembered_offset_wins_over_the_anchor() {
         let area = area();
-        let position =
-            open_position(Some((10.0, 20.0)), (560.0, 520.0), Some(&area)).expect("a position");
-        assert_eq!((position.x, position.y), (10.0, 20.0));
+        let position = open_position(
+            Some(Offset { x: 10.0, y: 20.0 }),
+            (560.0, 520.0),
+            Some(&area),
+        )
+        .expect("a position");
+        assert_eq!(
+            (position.x, position.y),
+            area.place(
+                Offset { x: 10.0, y: 20.0 },
+                (560.0, 520.0),
+                Anchor::for_platform()
+            )
+        );
     }
 
     #[test]
-    fn a_remembered_position_is_still_clamped() {
+    fn a_remembered_offset_is_still_clamped() {
         let area = area();
-        let position =
-            open_position(Some((5000.0, 5000.0)), (560.0, 520.0), Some(&area)).expect("a position");
+        let position = open_position(
+            Some(Offset {
+                x: 5000.0,
+                y: 5000.0,
+            }),
+            (560.0, 520.0),
+            Some(&area),
+        )
+        .expect("a position");
         assert!(area.holds((position.x, position.y), (560.0, 520.0)));
     }
 
     #[test]
-    fn without_a_remembered_position_the_anchor_is_used() {
+    fn without_a_remembered_offset_the_anchor_is_used() {
         let area = area();
         let position = open_position(None, (560.0, 520.0), Some(&area)).expect("a position");
         let expected = area.anchor_position(Anchor::for_platform(), (560.0, 520.0));
@@ -618,6 +709,67 @@ mod tests {
     #[test]
     fn without_a_work_area_there_is_no_position_to_claim() {
         assert!(open_position(None, (560.0, 520.0), None).is_none());
+    }
+
+    #[test]
+    fn an_offset_is_measured_back_to_the_position_it_came_from() {
+        // The two are inverses, for either anchor: the offset describes the
+        // placement, and the placement describes the offset, and neither
+        // loses anything on the way round.
+        let area = area();
+        for anchor in [Anchor::TopRight, Anchor::BottomRight] {
+            for position in [(0.0, 0.0), (100.0, 250.0), (1360.0, 560.0)] {
+                let offset = area.offset_of(position, (560.0, 520.0), anchor);
+                assert_eq!(
+                    area.place(offset, (560.0, 520.0), anchor),
+                    position,
+                    "the round trip is exact"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_same_offset_means_the_same_thing_on_a_wider_display() {
+        // This is the whole point of the offset: a placement remembered on a
+        // small display opens against the corner of a large one, and not
+        // against the middle of it.
+        let small = WorkArea::new(0.0, 0.0, 1512.0, 982.0);
+        let large = WorkArea::new(0.0, 0.0, 3840.0, 1080.0);
+        let offset = Offset::default();
+
+        let (small_x, _) = small.place(offset, (606.0, 478.0), Anchor::TopRight);
+        let (large_x, _) = large.place(offset, (606.0, 478.0), Anchor::TopRight);
+        assert_eq!(
+            small_x, 906.0,
+            "the panel is against the small display's corner"
+        );
+        assert_eq!(large_x, 3234.0, "and against the large one's");
+        assert_ne!(
+            small_x, large_x,
+            "an absolute position would have put it in the middle of the large display"
+        );
+    }
+
+    #[test]
+    fn the_trailing_edge_stays_put_when_the_panel_gets_wider() {
+        // The offset is measured to the trailing edge, so a panel that grows
+        // wider grows away from the corner and keeps its place against it.
+        let area = area();
+        let offset = area.offset_of((1360.0, 0.0), (560.0, 520.0), Anchor::TopRight);
+        let (x, _) = area.place(offset, (660.0, 520.0), Anchor::TopRight);
+        assert_eq!(x + 660.0, 1360.0 + 560.0, "the trailing edge did not move");
+    }
+
+    #[test]
+    fn the_anchor_edge_stays_put_when_the_panel_gets_taller() {
+        // The same, the other way: the panel grows away from the edge it
+        // hangs from, so a taller fleet does not walk the pulldown down the
+        // screen.
+        let area = area();
+        let offset = area.offset_of((1360.0, 0.0), (560.0, 520.0), Anchor::TopRight);
+        let (_, y) = area.place(offset, (560.0, 720.0), Anchor::TopRight);
+        assert_eq!(y, 0.0, "the top edge did not move");
     }
 
     #[test]

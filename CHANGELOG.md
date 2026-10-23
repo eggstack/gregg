@@ -362,6 +362,46 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The desktop frontend's pulldown opened in the middle of the desk.** The
+  tray's click opened the pulldown, and it opened **far to the left of the
+  tray** — on a display where the tray was at the far right. The anchor was
+  never wrong: it is computed from the work area of the display the window is
+  on, so it accounts for that display's size and scale. What was wrong was that
+  a **remembered position** was allowed to win over it, and a position names a
+  place on *one* display.
+
+  The placement was remembered as absolute logical pixels, and it had been
+  measured on a **1512-point** laptop display, where the pulldown's trailing
+  corner is at `906`. The operator then moved to a **3840×1080** display,
+  whose trailing corner is at `3226` — and the pulldown opened at `844`,
+  which is 2382 points from the tray: on screen, the right size, and nowhere
+  near the icon whose click opened it. The error did not look like an error,
+  which is what made it worth fixing.
+
+  What is remembered is now an **offset** — the gap at the trailing edge and
+  the gap at the edge the pulldown hangs from — measured against the display
+  it was placed on:
+
+  ```text
+  offset=12.5,0.0
+  ```
+
+  An offset means the same thing on every display, at every scale, on either
+  side of a resolution change. The file's older `position=` key is **not
+  read**: a place on the display it was measured on cannot be carried to a
+  display it was never measured against, and reading it would reproduce the
+  very defect the offset exists to fix. A file that says only `position=` is
+  read as no placement at all, so the one-time cost of the fix is that an
+  operator who had dragged the pulldown on another display finds it back at
+  the corner.
+
+  The offset is measured against the position the GUI **asked for**, never
+  against the position the window reports back. In another application's
+  full-screen space macOS draws the window 26 points lower than it was asked
+  to be, and a placement measured from the window's own report would carry
+  that shift into the memory: the pulldown would open a little lower every
+  time and never come back.
+
 - **The desktop frontend's tray click did nothing over another application's
   full screen (macOS).** This was not new: since the pulldown existed, clicking
   the tray icon while another application was in full screen built the pulldown

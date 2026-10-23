@@ -40,7 +40,8 @@ Plans 188, 189, 191 and 192 are implemented. What exists:
 - a pulldown that is **sized to its content** and **placed by the platform's
   convention**: it opens in the trailing corner of the work area, and the
   operator's own placement is **remembered across restarts** in a small state
-  file beside the configuration;
+  file beside the configuration — **relative to the display's own corner**, so
+  it still means the same thing on a display of another size;
 - a pulldown that **reaches another application's full screen** on macOS: the
   GUI is a **menu-bar-only** application, and its window is told to join every
   space and to sit at the level a native status item's own menu is drawn at,
@@ -125,7 +126,9 @@ Plan 192 also closed two defects that reproducing the complaint exposed:
   `UiState`, in memory, and the GUI wrote no state file — so the claim that
   the panel "remembers where the operator put it" was true for one session and
   false across a restart. The geometry now lives in `<config>.gui-state`
-  beside the configuration, and the read is bounded and validated.
+  beside the configuration, and the read is bounded and validated. The
+  placement it holds is an **offset against the display's corner**, so it
+  survives a change of display as well as a restart.
 
 See `plans/192-tray-pulldown-carries-the-panel.md`.
 
@@ -345,11 +348,28 @@ A dropdown has a shape, and this one draws its own.
   is bounded and validated: a file that is missing, too large or malformed
   means the operator has not left a placement yet, and the pulldown opens
   where the convention says.
+- **What is remembered is an offset, not a position.** The file holds the gap
+  between the pulldown's **trailing edge** and the work area's trailing edge,
+  and the gap between the pulldown's **anchor-side edge** and the work area's
+  anchor-side edge — `offset=12.5,0.0` means twelve and a half points in from
+  the trailing edge, flush with the top. A *position* would name a place on
+  one display, and a pulldown that remembered one and opened it on another
+  display would open in the wrong place: on screen, the right size, and
+  nowhere near the tray whose click opened it. That is not hypothetical — it
+  is what this GUI did, and it is what [The pulldown opened in the middle of
+  the desk](#the-pulldown-opened-in-the-middle-of-the-desk) is about. An
+  **older file's `position=` key is not read**: a place on the display it was
+  measured on cannot be carried to a display it was never measured against.
+- The offset is measured to the panel's **edges**, so the pulldown grows
+  *away* from the corner it hangs from: a taller fleet does not walk it down
+  the screen, and a wider panel does not push it off the trailing edge.
 - On **macOS** the default placement opens a little clear of the menu bar
   rather than flush under it: AppKit places a window whose content is
   requested flush with the work area's top edge **26 px lower**. A placement
   the operator chose is honoured **exactly**, so this affects the first open
-  only.
+  only. The remembered offset is measured against the position the GUI
+  **asked for**, never against the position the window reports back, so the
+  space's own shift cannot walk into the memory.
 
 ### The fleet's blocks
 
@@ -569,6 +589,56 @@ the operator brings it back by moving the pointer to the top of the screen
 (unless "Automatically hide and show the menu bar in full screen" is set to
 Never). That is true of every menu-bar extra, and nothing in this GUI can
 change it.
+
+### The pulldown opened in the middle of the desk
+
+The tray's click opened the pulldown, and it opened **in the wrong place** —
+far to the left of the tray, in the middle of the desk, on a display where the
+tray was at the far right.
+
+The cause was the **remembered placement**. The pulldown's position was
+remembered as an **absolute position in logical pixels**, and a remembered
+position was allowed to win over the anchor:
+
+```text
+position=844,65
+```
+
+That `844` was measured on a **1512-point** laptop display, where the pulldown's
+trailing corner is at `906`. The operator then moved to a **3840×1080**
+display, whose trailing corner is at `3226` — and the pulldown opened at
+`844`, which is 2382 points from the tray: on screen, the right size, and
+nowhere near the icon whose click opened it. The error was not obvious as an
+error, which is exactly what made it worth fixing.
+
+The anchor itself was never wrong: it is computed from the work area of the
+display the window is on, and it accounts for the display's size and its scale
+factor. What was wrong was that a **position** was allowed to override it.
+
+The fix makes the remembered placement an **offset** — the gap at the trailing
+edge and the gap at the edge the pulldown hangs from — measured against the
+display the pulldown was actually placed on:
+
+```text
+offset=12.5,0.0
+```
+
+An offset means the same thing on every display, at every scale, on either side
+of a resolution change. The old `position=` key is **not read**: a place on the
+display it was measured on cannot be carried to a display it was never
+measured against, and reading it would reproduce the very defect this fixes. A
+file that says only `position=` is read as no placement at all, and the
+pulldown opens against the corner — so the one-time cost of the fix is that an
+operator who had dragged the pulldown on another display finds it back at the
+corner.
+
+The offset is measured against the position the GUI **asked for**, never
+against the position the window reports back. In another application's
+full-screen space macOS draws the window 26 points lower than it was asked to
+be, and a placement measured from the window's own report would carry that
+shift into the memory: the pulldown would open a little lower every time, and
+never come back. The drag's base is the requested position, so the shift
+stays where macOS put it.
 
 ### Redraws
 
@@ -1171,7 +1241,10 @@ apps/gregg-gui/
 - **`state.rs` owns where the operator left the pulldown.** The geometry is
   written to `<config>.gui-state` beside the configuration, and the read is
   bounded and validated: a file that is missing, too large or malformed means
-  the operator has not left a placement yet.
+  the operator has not left a placement yet. What it writes is an **offset**
+  against the display's anchor corner — not an absolute position — so a
+  placement survives a change of display (see [The pulldown opened in the
+  middle of the desk](#the-pulldown-opened-in-the-middle-of-the-desk)).
 
 ## Slint 1.18 notes worth knowing
 

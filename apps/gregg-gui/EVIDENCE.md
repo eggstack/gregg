@@ -1039,6 +1039,141 @@ the `clientd::ipc` temp-directory path and the timing-sensitive
 `scheduler::fleet_scaling_*` tests, and the **set varies from run to run**.
 Nothing under `crates/gregg/src/` was changed by this work at all.
 
+### The pulldown opened in the middle of the desk (2026-10-23)
+
+The full-screen defect above was fixed, and the operator reported the next one
+in the same breath: the pulldown now works over a full-screen window, but
+**it appears far to the left of where it should be**. The question asked was
+whether the GUI hardcodes a pixel or a percentage for its placement, or
+accounts for the display's size. The answer is: **the anchor accounted for the
+display and the remembered placement did not**, and the remembered placement
+won.
+
+**The machine.** The active display is **3840×1080**, at the origin, the main
+display, not built in:
+
+```text
+display 2 origin 0 0 size 3840 x 1080 pixels 3840 x 1080 builtin false main true
+```
+
+The **1512×982** built-in laptop display is **not online** — the machine is
+closed. So the pulldown was placed on the laptop display and the operator moved
+to the external one.
+
+**The measurement.** The state file held an **absolute position**:
+
+```text
+position=844,65
+size=606,478
+```
+
+`844` is where the pulldown's trailing corner sits on the **1512-point**
+laptop display (`1512 − 606 = 906`, and 844 is 62 points in from it). The
+3840-point display's trailing corner is at `3226` (`8 + 3824 − 606`). The
+pulldown opened at **844** — **2382 points from the tray**: on screen, the
+right size, and nowhere near the icon whose click opened it.
+
+**The anchor was never wrong.** `placement::work_area()` divides the monitor's
+**physical** bounds by the window's scale factor, so the work area it computes
+is in logical pixels and is aware of the display's size and scale. What was
+wrong was `open_position`: a **remembered position won over the anchor**, and
+the remembered position had been measured on a display that was no longer
+there.
+
+**Reproduced natively, before the fix** — the same binary, the same file, the
+3840-point display:
+
+```text
+gregg-gui: pulldown=placed x=844 y=65 width=606 height=478 area=8,36,3824x1036
+60184  layer=101  onscreen=true  gregg-gui  Gregg  844,65 606x478
+```
+
+The work area was correctly the **3840×1080** display — `area=8,36,3824x1036`
+— and the anchor for it is `x = 8 + 3824 − 606 = 3226`. The panel was placed
+at **844** anyway, because that was what the file said.
+
+**What was changed.** The remembered placement is now an **offset** against the
+display's anchor corner — `placement::Offset`, measured to the panel's
+**edges** — and the file holds `offset=…` instead of `position=…`:
+
+- `placement::place(offset, size, anchor)` and `placement::offset_of(position,
+  size, anchor)` are inverses, for either anchor, and a test asserts the round
+  trip is exact;
+- `open_position` places the remembered **offset** and clamps the result;
+- `state::PanelGeometry` holds an `offset`, and the file's older `position=`
+  key is **not read** — reading it would reproduce the very defect the offset
+  exists to fix, because a place on the display it was measured on cannot be
+  carried to a display it was never measured against;
+- the drag's base is the position the GUI **asked for**
+  (`UiState::panel_position`), never the position the window reports back.
+
+**Verified natively, after the fix** — the same file, unchanged, on the same
+display:
+
+```text
+gregg-gui: pulldown=placed x=3226 y=36 width=606 height=478 area=8,36,3824x1036
+61034  layer=101  onscreen=true  gregg-gui  Gregg  3226,36 606x478
+```
+
+The pulldown now opens against the **trailing corner of the display it is on**.
+The screenshot of the panel at that position shows the fleet — seven hosts
+online, each with its five used shares — hanging off the right-hand edge,
+which is where the tray is.
+
+**The drag, and what it remembers.** The pulldown's header strip was dragged
+200 points to the left with a synthesized mouse drag:
+
+```text
+before:  3226,36 606x478
+after:   3026,36 606x478
+file:    offset=200,0
+```
+
+The file holds the **gap at the trailing edge** (`200`) and the **gap at the
+anchor edge** (`0`), not the absolute place. A second drag, and then a
+restart:
+
+```text
+drag:    3026,36 -> 2826,36
+file:    offset=400,0
+restart: gregg-gui: pulldown=placed x=3026 y=36 width=606 height=478 area=8,36,3824x1036
+```
+
+The restart restored the same **relative** place — 400 points in from the
+trailing edge of *this* display — and not the corner and not the stale
+`844`.
+
+**In a full-screen space.** The same drag was exercised with TextEdit in full
+screen (`0,0 3840x1080`), with the pulldown drawn over it at the pop-up-menu
+level:
+
+```text
+61195  layer=0    onscreen=true  TextEdit  Untitled 2  0,0 3840x1080
+61485  layer=101  onscreen=true  gregg-gui  Gregg      2626,36 606x478
+```
+
+The drag moved the pulldown 200 points to the left and the file recorded
+`offset=799.96094,-0.67578125` — the trailing gap and **an anchor gap of
+essentially zero**. The fractions are the window server's own rounding of the
+frame; the *vertical* offset stays at zero even where macOS draws the window
+lower than it was asked to be, because the offset is measured against the
+requested position and never against the window's own report. On the laptop's
+full-screen space that shift is 29 points, and the pre-fix file carried it:
+`position=844,65` — the `65` is the full-screen value, the `36` is the
+desktop one.
+
+**What was not done, and what is not covered by CI.** The display **change**
+itself was not reproduced natively: the laptop display is offline and the
+machine has one display attached, so "the same placement on a different
+display" is proved by the **unit test** — `the_same_offset_means_the_same_thing_on_a_wider_display`
+— and by the measurement above, not by a native run on two displays at once.
+This was exercised **natively on macOS only**; the Windows and Linux legs are
+authority in the GUI CI job, and the change is in the platform-neutral
+placement code, so both legs run it.
+
+The GUI workspace's own suite is **158 passed / 0 failed** (153 before this
+work, plus five new tests) and its clippy is clean under `-D warnings`.
+
 ### The native exercises, on CI run `39811582623`
 
 The GUI workspace is not a member of the root workspace, so no root job
