@@ -1624,6 +1624,17 @@ gregg-gui: the pulldown was dismissed: the operator clicked away
 tests: `a_hidden_form_takes_no_room`, `the_fleet_and_the_detail_share_one_box`
 and `the_detail_does_not_resize_the_panel`).
 
+**The CI run that covers this work is green.** Run **`40029395421`** against
+`f7c3fb7` is **green on all ten jobs** — the core `Linux`, `macOS (macos-15)`,
+`macOS (macos-15-intel)`, `Windows`, `Scripts (shellcheck + pytest)`,
+`MSRV (Rust 1.89)` and `FreeBSD (gregg-host native)` jobs, and the three `GUI`
+legs (`macos-15`, `windows-2022`, `ubuntu-latest`). The `GUI` legs are the only
+authority for this workspace's Windows and Linux behaviour, because the
+workspace is not a member of the root workspace and no root job compiles it.
+
+The release binary is **11,979,552 bytes** — **+16 bytes** on the build before
+this work, because a narrower panel is the same code drawing fewer pixels.
+
 ### What the GUI costs, and what it polls (2026-10-23)
 
 The same session asked two questions that are worth answering with numbers

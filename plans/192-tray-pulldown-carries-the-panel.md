@@ -370,6 +370,13 @@ the GUI is **not shippable** for Windows or Linux.
 > The Rust side follows: `placement::box_height()` is the one number the `.slint` is given, the
 > detail's own height estimate is gone with the detail's own row counts, and two tests hold the
 > shape — `a_hidden_form_takes_no_room` and `the_fleet_and_the_detail_share_one_box`.
+>
+> The run that covers this work, **`40029395421`** against `f7c3fb7`, is **green on all ten jobs**,
+> including the three `GUI` legs — the only authority for this workspace's Windows and Linux
+> behaviour, because the workspace is not a member of the root workspace and no root job compiles
+> it. The GUI workspace's own suite is **177 passed / 0 failed**, its clippy is clean under
+> `-D warnings`, its formatting is clean, and its release binary is **11,979,552 bytes** —
+> **+16 bytes**, because a narrower panel is the same code drawing fewer pixels.
 
 ## Objective
 

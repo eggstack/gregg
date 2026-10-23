@@ -1276,8 +1276,9 @@ makes the difference attributable.
 | The GUI after Plan 191 (the tray pulldown, with host management) | 11,896,608 bytes (11.3 MiB) |
 | The GUI with the fleet view as a table of blocks (the previous build) | 12,012,560 bytes (11.5 MiB) |
 | The GUI with the compact fleet view and the detail view as the fleet's own block | 11,962,992 bytes (11.4 MiB) |
-| **The GUI now** (the same, and the pulldown closes when the operator clicks away) | **11,979,536 bytes** (11.4 MiB) |
-| **Difference** (before Plan 191 → now) | **+1,176,176 bytes (+10.9%)** |
+| The GUI with the pulldown closing when the operator clicks away | 11,979,536 bytes (11.4 MiB) |
+| **The GUI now** (the same, and the scroll box reaches the bottom) | **11,979,552 bytes** (11.4 MiB) |
+| **Difference** (before Plan 191 → now) | **+1,176,192 bytes (+10.9%)** |
 | The same GUI calling `gregg::cli::dispatch` (the rejected alternative) | 14,761,600 bytes |
 
 So the pulldown and the host-management forms cost about **1.02 MiB** more
@@ -1296,6 +1297,10 @@ an Objective-C block, which the monitor's handler is — was **already in this
 workspace's graph** through `objc2`, so naming it directly compiles nothing
 new (the lockfile still holds the same 604 packages). The watch itself is safe
 AppKit API: no event tap and no accessibility permission.
+
+The **layout fix costs +16 bytes**: the hidden panes declare a zero height,
+the two views share one box, and the pulldown is narrower. A narrower panel is
+not smaller code — it is the same code drawing fewer pixels.
 
 The detail view's rewrite cost **−16,496 bytes (−0.1%)**: the host's block is
 drawn by the *one* `HostBlock` component now, so the detail view's own metric
