@@ -241,8 +241,6 @@ struct UiState {
     /// that shift would walk the pulldown down the screen a little further
     /// every time it was opened.
     panel_position: Option<(f32, f32)>,
-    /// How big the operator last made the panel, in logical pixels.
-    panel_size: Option<(f32, f32)>,
     /// What the panel is showing.
     view_mode: ViewMode,
     /// The host-management form's state.
@@ -477,7 +475,6 @@ fn main() {
     let state: Arc<Mutex<UiState>> = Arc::new(Mutex::new(UiState {
         connection: ConnectionState::Connecting,
         panel_offset: geometry.offset,
-        panel_size: geometry.size,
         ..UiState::default()
     }));
 
@@ -939,37 +936,9 @@ fn create_panel(ctx: &PanelContext) -> Pulldown {
             .set_position(slint::LogicalPosition::new(x, y));
     });
 
-    let callback_state = Arc::clone(&state);
-    let callback_panel = panel.as_weak();
-    panel.on_resized(move |dx, dy| {
-        let Ok(mut state) = callback_state.lock() else {
-            return;
-        };
-        let Some(panel) = callback_panel.upgrade() else {
-            return;
-        };
-        let current = panel.window().size();
-        let scale = panel.window().scale_factor().max(0.01);
-        let width = (current.width as f32 / scale + dx).max(placement::MIN_PANEL_SIZE.0);
-        let height = (current.height as f32 / scale + dy).max(placement::MIN_PANEL_SIZE.1);
-        state.panel_size = Some((width, height));
-        // The corner moved, so the panel's own corner did not: the size
-        // changed and the position stayed where it was. The offset is
-        // measured again for the new size, so the placement that is
-        // remembered is the placement that is on screen.
-        let area = placement::work_area(panel.window());
-        if let (Some(area), Some(position)) = (area.as_ref(), state.panel_position) {
-            state.panel_offset =
-                Some(area.offset_of(position, (width, height), placement::Anchor::for_platform()));
-        }
-        panel
-            .window()
-            .set_size(slint::LogicalSize::new(width, height));
-    });
-
     // The placement is remembered across restarts: the operator's position
-    // and size are written to a small file beside the configuration, and read
-    // back at startup.
+    // is written to a small file beside the configuration, and read back at
+    // startup.
     let callback_state = Arc::clone(&state);
     let callback_path = geometry_path.clone();
     panel.on_geometry_changed(move || {
@@ -978,7 +947,6 @@ fn create_panel(ctx: &PanelContext) -> Pulldown {
         };
         let geometry = state::PanelGeometry {
             offset: state.panel_offset,
-            size: state.panel_size,
         };
         if geometry.is_empty() {
             return;
@@ -1068,7 +1036,7 @@ fn place_pulldown(panel: &Pulldown, state: &Arc<Mutex<UiState>>, attempts_left: 
         placement::metrics::DEFAULT_WIDTH,
         placement::content_height(&content_from_state(&guard, panel)),
     );
-    let size = placement::panel_size(guard.panel_size, content, area.as_ref());
+    let size = placement::panel_size(content, area.as_ref());
     panel.window().set_size(size);
     if let Some(position) =
         placement::open_position(guard.panel_offset, (size.width, size.height), area.as_ref())
@@ -1596,15 +1564,15 @@ fn update_tray(state: &mut UiState, tray: &TrayIcon) {
 /// Give the pulldown the size its content calls for.
 ///
 /// The pulldown is as tall as what it shows, and it is as wide as the fleet
-/// table needs. The operator's own size wins, though: a placement they chose
-/// is not something a new host may overrule.
+/// table needs. There is no grip in its corner, so its size is never the
+/// operator's to choose — it follows the content, and it follows it again
+/// every time the content changes.
 fn resize_panel(state: &mut UiState, panel: &Pulldown, content: &placement::Content) {
     if !state.panel_visible {
         return;
     }
     let area = placement::work_area(panel.window());
     let size = placement::panel_size(
-        state.panel_size,
         (
             placement::metrics::DEFAULT_WIDTH,
             placement::content_height(content),

@@ -506,15 +506,26 @@ elsewhere, and the panel is always-on-top, so it stays over whatever is
 behind it. That limit is stated in the user documentation rather than papered
 over.
 
-The panel is placed on the display it opens on, and it keeps the position and
-size the operator gave it. Slint 1.18 exposes no tray-icon position and no
-pointer position, and `winit` 0.30 knows a monitor's bounds but not its work
-area, so the panel is anchored to the **trailing edge of the display, on the
-side where the desktop's own shell lives** — the top on macOS and Linux, the
-bottom on Windows — and clamped so it is always fully on the display. The
-operator can drag the panel by its header strip and resize it by the grip in
-its corner, which is what a borderless panel needs and what a window frame
-would otherwise have provided.
+The panel is placed on the display it opens on, and it keeps the position the
+operator gave it. Slint 1.18 exposes no tray-icon position and no pointer
+position, and `winit` 0.30 knows a monitor's bounds but not its work area, so
+the panel is anchored to the **trailing edge of the display, on the side where
+the desktop's own shell lives** — the top on macOS and Linux, the bottom on
+Windows — and clamped so it is always fully on the display. The operator can
+drag the panel by its header strip, and **its size is its content's size**:
+there is no grip in its corner, because a size the operator could set once and
+never change again goes stale the moment the fleet changes.
+
+**The pulldown does not spend a line of vertical space on nothing.** A Slint
+layout adds its spacing between **every** cell, and a cell that is empty still
+takes part in the layout — so the body's three notice rows (the attachment's
+state, the last action's message, the tray's warning), all empty on a healthy
+fleet, used to take eighteen points of dead space between the title and the
+first host. They are **one cell** now, it takes **no room at all** when it is
+empty, the body's own spacing is **zero**, and each group carries the gap that
+follows it. The title line says **`7 online`** and names the hosts that are not
+answering **only when there are any**; it used to carry three counts and a list
+of names that was elided away on any fleet of any size.
 
 Two placement facts are load-bearing and were **defects** before Plan 192 fixed
 them. Slint's `with_winit_window` "will only succeed when the event loop is

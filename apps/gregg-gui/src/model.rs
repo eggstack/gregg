@@ -53,13 +53,6 @@ pub const MAX_NAME_CHARS: usize = 40;
 /// The longest a single displayed endpoint may be.
 pub const MAX_ENDPOINT_CHARS: usize = 40;
 
-/// The most hosts the tray summary will name.
-///
-/// The summary is one line, and it is the tray's hover text as well as the
-/// pulldown's header: a line that named every host in a large fleet would be
-/// unreadable in both. The full list is in the pulldown.
-pub const MAX_TRAY_HOSTS: usize = 5;
-
 /// How the GUI is connected to the client daemon.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum ConnectionState {
@@ -1284,10 +1277,9 @@ fn eggpool_view(snapshot: &EggpoolSnapshotDto) -> EggpoolView {
 /// The one-line fleet summary the tray shows.
 /// The two facts the tray shows: the fleet's counts and the summary line.
 ///
-/// They are the counts and the first few names, and computing them costs
-/// nothing: a GUI that is not on screen does not need every host's every
-/// measurement formatted, and the daemon publishes a document every few
-/// seconds.
+/// They are the counts and the one line, and computing them costs nothing: a
+/// GUI that is not on screen does not need every host's every measurement
+/// formatted, and the daemon publishes a document every few seconds.
 ///
 /// The summary is built here and not in [`project`], so that the tray's line
 /// and the pulldown's header cannot say different things about the same
@@ -1295,34 +1287,30 @@ fn eggpool_view(snapshot: &EggpoolSnapshotDto) -> EggpoolView {
 #[must_use]
 pub fn tray_facts(snapshot: &FrontendSnapshot) -> (FleetCounts, String) {
     let counts = FleetCounts::from_systems(&snapshot.systems);
-    let names: Vec<String> = snapshot
-        .systems
-        .iter()
-        .map(|system| truncate(&display_name(system), MAX_NAME_CHARS))
-        .collect();
-    let summary = tray_summary(&counts, &names, snapshot.systems.len());
+    let summary = tray_summary(&counts);
     (counts, summary)
 }
 
 /// The one-line summary of the fleet, for the tray and the pulldown's header.
-fn tray_summary(counts: &FleetCounts, names: &[String], total: usize) -> String {
-    let mut summary = format!(
-        "{} online, {} pending, {} offline",
-        counts.online, counts.pending, counts.offline
-    );
+///
+/// It says how many hosts are online, and it mentions the hosts that are not
+/// **only when there are any**. A healthy fleet says `7 online` and nothing
+/// else: a line that always carries three counts and a list of names is a
+/// line that is mostly noise, and the names were never readable anyway —
+/// they were elided away on a fleet of any size.
+///
+/// A host that is pending or offline is still named in the count, because a
+/// host that is not answering is the one fact the operator has to see.
+fn tray_summary(counts: &FleetCounts) -> String {
     if counts.total == 0 {
-        summary.push_str(" — no systems configured");
-        return summary;
+        return "no systems configured".to_owned();
     }
-    let shown: Vec<&str> = names
-        .iter()
-        .take(MAX_TRAY_HOSTS)
-        .map(|name| name.as_str())
-        .collect();
-    summary.push_str(" — ");
-    summary.push_str(&shown.join(", "));
-    if total > MAX_TRAY_HOSTS {
-        summary.push_str(&format!(" (+{} more)", total - MAX_TRAY_HOSTS));
+    let mut summary = format!("{} online", counts.online);
+    if counts.pending > 0 {
+        summary.push_str(&format!(", {} pending", counts.pending));
+    }
+    if counts.offline > 0 {
+        summary.push_str(&format!(", {} offline", counts.offline));
     }
     summary
 }
@@ -2126,7 +2114,10 @@ mod tests {
     }
 
     #[test]
-    fn the_tray_summary_counts_every_state_and_bounds_the_names() {
+    fn a_healthy_fleet_says_only_how_many_hosts_are_online() {
+        // The summary is the pulldown's title line. A line that always
+        // carried three counts and a list of names was mostly noise, and the
+        // names were elided away on a fleet of any size.
         let systems: Vec<SystemSnapshotDto> = (0..8)
             .map(|index| {
                 let mut system = online(index);
@@ -2143,16 +2134,43 @@ mod tests {
             },
             1_000,
         );
-        assert!(
-            model.tray_summary.contains("8 online"),
-            "{}",
-            model.tray_summary
+        assert_eq!(model.tray_summary, "8 online");
+    }
+
+    #[test]
+    fn a_fleet_with_a_host_that_is_not_answering_says_so() {
+        // A host that is pending or offline is the one fact the operator has
+        // to see, so the count names it — and only it.
+        let mut offline = online(0);
+        offline.reachability = Reachability::Offline;
+        offline.offline_reason = Some(OfflineReason::with_detail(OfflineKind::Http, "HTTP 503"));
+        let model = project(
+            &snapshot_of(vec![online(1), offline]),
+            &Selection::default(),
+            &ConnectionState::Connected {
+                protocol_version: 1,
+                daemon_id: "abc".to_owned(),
+            },
+            1_000,
         );
-        assert!(
-            model.tray_summary.contains("(+3 more)"),
-            "{}",
-            model.tray_summary
+        assert_eq!(model.tray_summary, "1 online, 1 offline");
+    }
+
+    #[test]
+    fn a_pending_host_is_named_in_the_summary_only_when_there_is_one() {
+        let mut pending = online(0);
+        pending.reachability = Reachability::Pending;
+        pending.latest = None;
+        let model = project(
+            &snapshot_of(vec![online(1), pending]),
+            &Selection::default(),
+            &ConnectionState::Connected {
+                protocol_version: 1,
+                daemon_id: "abc".to_owned(),
+            },
+            1_000,
         );
+        assert_eq!(model.tray_summary, "1 online, 1 pending");
     }
 
     #[test]

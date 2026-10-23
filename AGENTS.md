@@ -141,18 +141,30 @@ first open is **deferred into the event loop**, because Slint's
 `with_winit_window` "will only succeed when the event loop is active", so
 `placement::work_area()` returns `None` before the loop runs: an open that is
 not deferred is never positioned, never clamped to the work area, and its size
-is never clamped either. The position and size are written to a small state
-file beside the config — `<config>.gui-state`, mirroring the `<config>.lock`
+is never clamped either. The **position** is written to a small state file
+beside the config — `<config>.gui-state`, mirroring the `<config>.lock`
 convention — read **bounded** (4 KiB) and validated, and written atomically; a
 corrupt or out-of-range file falls back to the default rather than failing the
-GUI. **Rust owns the pulldown's size**, because Slint 1.18 cannot expose a
-layout's preferred size to a `.slint` file: the height comes from the model's
-row counts through `placement::metrics`, and a test asserts those numbers
-against the `.slint` literals so the two cannot drift. The detail area is a
-scroll view, so a wrong estimate yields a scrollbar, never clipped content.
-The GUI prints one machine-readable line — `pulldown=placed x=… y=… width=…
-height=… area=…` — so the native exercises assert the **position**, not only
-that a window exists.
+GUI. The **size** is not in that file: the pulldown's size is its content's
+size, and there is no grip in its corner — a size the operator could set once
+and never change again goes stale the moment the fleet changes. **Rust owns the
+pulldown's size**, because Slint 1.18 cannot expose a layout's preferred size
+to a `.slint` file: the height comes from the model's row counts through
+`placement::metrics`, and a test asserts those numbers against the `.slint`
+literals so the two cannot drift. The detail area is a scroll view, so a wrong
+estimate yields a scrollbar, never clipped content. The GUI prints one
+machine-readable line — `pulldown=placed x=… y=… width=… height=… area=…` — so
+the native exercises assert the **position**, not only that a window exists.
+
+**The pulldown spends no vertical space on nothing.** A Slint layout adds its
+spacing between **every** cell, and a cell that is empty still takes part in
+the layout — so the body's three notice rows, all empty on a healthy fleet,
+used to take eighteen points of dead space between the title and the first
+host. The notices are **one cell** now, it takes **no room at all** when it is
+empty, the body's own spacing is **zero**, and each group carries the gap that
+follows it. The title line says **`7 online`** and names the hosts that are not
+answering **only when there are any** — it used to carry three counts and a
+list of names that was elided away on any fleet of any size.
 
 **What the pulldown remembers is an offset, not a position.** The anchor is
 computed from the work area of the display the window is on, so it is already

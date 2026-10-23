@@ -451,12 +451,16 @@ opened at the remembered geometry rather than at the corner:
 gregg-gui: pulldown=placed x=2300 y=220 width=500 height=600 area=8,36,3824x1036
 ```
 
-The state file is written when the operator **moves or resizes** the pulldown —
-the drag and the corner grip both raise `geometry-changed` — and not on the
+The state file is written when the operator **moves** the pulldown — the drag
+raises `geometry-changed` — and not on the
 first placement, which is derived from the content and the work area and so has
 nothing to remember. `src/state.rs` reads it bounded (4 KiB) and validated and
 writes it atomically, and falls back to the default on a corrupt or
 out-of-range file; 13 unit tests cover that path.
+
+> **Superseded.** The corner grip is gone — see *"The panel had a band of dead
+> space above the fleet"* below — so the state file holds a **placement and
+> nothing else**, and the size is the content's size.
 
 **What was measured about the dropdown's shape:** the card's corners are rounded
 (a 12 px radius), the three shadow layers are visible around it, the pointer is
@@ -1209,6 +1213,115 @@ Windows. `fd11201` states what is true on every platform instead, and the
 anchor was checked the only way it can be without a Windows host: the
 `Anchor::for_platform()` branch was flipped to the Windows one locally and
 the suite was run, and both tests pass under it.
+
+### The panel had a band of dead space above the fleet (2026-10-23)
+
+The placement defect above is fixed. The next report was about the panel's
+**shape**: there was a **large gap between the fleet's title line and the first
+host**, and the title line itself said far too much.
+
+**The gap was dead space, and the cause was the layout.** A Slint layout adds
+its spacing between **every** cell, and a cell that is empty still takes part
+in the layout. The body's first three cells were the attachment's state, the
+last action's message and the tray's warning — all empty on a healthy fleet —
+and each of them still took a six-point gap. Eighteen points of nothing, on
+every panel, every time.
+
+**Measured, before.** The panel was captured off the screen by its window id,
+so the numbers are the panel's own pixels:
+
+```text
+title line's ink          rows 45..56
+first host's name         rows 101..113
+gap                       45 points
+panel height              478
+```
+
+**Measured, after.** The same fleet, the same display, the same capture:
+
+```text
+title line's ink          rows 41..50
+first host's name         rows 69..81
+gap                       19 points
+panel height              446
+```
+
+```text
+gregg-gui: pulldown=placed x=3226 y=36 width=606 height=446 area=8,36,3824x1036
+61870  layer=101  onscreen=true  gregg-gui  Gregg  3226,62 606x446
+```
+
+The panel's height is **446** and the height the Rust computes for that fleet
+is **446** as well — the `.slint` file's own layout and the computed height
+agree exactly, with no slack at the bottom and no band at the top.
+
+**What changed.**
+
+- The three notices are **one cell** now, and it takes **no room at all** when
+  it is empty. It carries its own gaps: two notices are six points apart, and
+  the gap that follows them is there only when there is something to separate.
+- The body's own layout spacing is **zero**, and each group carries the gap
+  that follows it. The attribution is the body's **last** group in every view,
+  so the gap above it is the only gap it needs.
+- The title strip is **28 points** high rather than 36, and the body's top
+  padding is **six** rather than twelve. The space between the title and the
+  first host is a *gap*, not a margin, and a margin the size of the side
+  padding reads as an empty band.
+- The footer's links sit **six points off the card's bottom edge**, so a row of
+  links does not read as cropped: the visible gap below them went from **six
+  points to twelve** (the ink of the links ends at row 438 and the card's
+  hairline is at row 450; before, the ink ended at 476 and the hairline was at
+  482).
+
+**The title line says only what matters.** It used to read:
+
+```text
+7 online, 0 pending, 0 offline — Deadpool, MacbookPro, Raspi 10, Plex, Le Potato20 (+2 mo…
+```
+
+which is elided away on any fleet of any size — the host names were never
+readable. It now reads:
+
+```text
+7 online
+```
+
+and names the hosts that are **not** answering **only when there are any**:
+`7 online, 1 offline`, `7 online, 1 pending`. A fleet with no hosts at all
+says `no systems configured`, which is a different statement from `0 online`
+among some.
+
+**The corner square is gone.** There was a hairline square in the bottom-right
+corner: the **resize grip**. It looked like a button, it did nothing anybody
+could see, and the size it controlled was a size the operator could set once
+and never change again — so the pulldown's size is now its content's size,
+always, and the remembered size is gone with it. The file beside the
+configuration now holds a placement and nothing else:
+
+```text
+offset=0,0
+```
+
+An older file's `size=` key is ignored, like its `position=` key: the size
+follows the content now.
+
+**Verified natively, on the other views too.** The detail view, the About block
+and the add-host form were each opened on the running panel and captured. The
+detail view is 424 points tall with the attribution hidden and 486 with it
+shown — the difference is the attribution's 56 points plus the 6-point gap that
+now follows it — and the form is 380 with it shown. The attribution sits
+*below* the form now, which is where it belongs: it is the last thing in the
+panel in every view.
+
+**What was not done.** This was exercised **natively on macOS only**, on the
+3840×1080 display; the Windows and Linux legs are the authority for those
+platforms, and they run in the GUI CI job. The change is in the platform-neutral
+`.slint` file and the placement module, so both legs compile and test it, but
+nobody has *looked* at the panel on either of them.
+
+The GUI workspace's own suite is **166 passed / 0 failed** (160 before this
+work, plus six new tests), its clippy is clean under `-D warnings`, and its
+formatting is clean.
 
 ### The native exercises, on CI run `39811582623`
 

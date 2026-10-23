@@ -680,10 +680,7 @@ export component Pulldown inherits Window {
     /// The header strip was dragged, by this much.
     callback dragged(length, length);
 
-    /// The corner grip was dragged, by this much.
-    callback resized(length, length);
-
-    /// The operator finished moving or resizing the pulldown.
+    /// The operator finished moving the pulldown.
     ///
     /// It is the signal to remember the placement: the drag itself only moves
     /// the window, and a drag that is still in flight is not a placement the
@@ -708,6 +705,27 @@ export component Pulldown inherits Window {
 
     /// The padding inside the card.
     private property <length> pane-padding: 12px;
+
+    /// The padding above the body's content.
+    ///
+    /// It is smaller than the padding on the sides: the header strip already
+    /// sits above the content, and the space between the fleet's title and
+    /// its first host is a *gap*, not a margin. A margin the size of the
+    /// side padding reads as an empty band.
+    private property <length> pane-padding-top: 6px;
+
+    /// The padding below the body's content.
+    private property <length> pane-padding-bottom: 12px;
+
+    /// The gap between the body's groups.
+    ///
+    /// The body's own layout spacing is zero, because a layout adds its
+    /// spacing between **every** cell and a cell that is empty still takes
+    /// part in the layout: three empty notice rows would push the fleet down
+    /// by eighteen pixels and say nothing at all. Each group carries the gap
+    /// that follows it instead, so the gap is there only when there is
+    /// something on both sides of it.
+    private property <length> body-gap: 6px;
 
     /// The room the shadow takes around the card.
     private property <length> margin: 14px;
@@ -756,6 +774,43 @@ export component Pulldown inherits Window {
 
     /// The height the attribution text takes when it is shown.
     private property <length> about-height: 56px;
+
+    /// Whether the attachment's state is shown.
+    private property <bool> has-status: root.status-text != "";
+
+    /// Whether the last action's message is shown.
+    private property <bool> has-message: root.panel-message != "";
+
+    /// Whether the tray's warning is shown.
+    private property <bool> has-warning: root.tray-warning != "";
+
+    /// Whether any notice is shown at all.
+    private property <bool> has-notice: root.has-status || root.has-message || root.has-warning;
+
+    /// The height of each notice.
+    private property <length> status-height: root.status-text == "" ? 0px : 18px;
+    private property <length> message-height: root.panel-message == "" ? 0px : 30px;
+    private property <length> warning-height: root.tray-warning == "" ? 0px : 18px;
+
+    /// Each notice's slot: the line itself, and the gap above it when
+    /// another notice is there.
+    ///
+    /// A notice carries its own gap so that two notices are six pixels apart
+    /// and one notice is not six pixels below the header.
+    private property <length> message-slot: root.message-height + (root.has-status ? root.body-gap : 0px);
+    private property <length> warning-slot: root.warning-height + (root.has-message ? root.body-gap : 0px);
+
+    /// Where each notice's text sits.
+    private property <length> message-y: root.status-height + (root.has-status ? root.body-gap : 0px);
+    private property <length> warning-y: root.status-height + root.message-slot + (root.has-message ? root.body-gap : 0px);
+
+    /// The notices' whole height: their slots, and the gap that follows
+    /// them.
+    ///
+    /// The gap is *inside* this height on purpose: it is what separates the
+    /// notices from the fleet below them, and it is only there when there
+    /// are notices to separate.
+    private property <length> notices-height: root.status-height + root.message-slot + root.warning-slot + (root.has-notice ? root.body-gap : 0px);
 
     /// Where the pointer toward the tray item sits.
     ///
@@ -846,8 +901,12 @@ export component Pulldown inherits Window {
                 // The pulldown has no window chrome, so the header strip is
                 // the pulldown's own title bar: it carries the summary, it
                 // drags the pulldown, and it holds the close control.
+                //
+                // It is as short as it can be while still being a drag
+                // target: the strip's height is a line of dead space above
+                // and below the title on every panel that is open.
                 Rectangle {
-                    height: 36px;
+                    height: 28px;
                     // The card's own background shows through: a square
                     // rectangle over a rounded card would cover the card's
                     // rounded corners.
@@ -912,18 +971,35 @@ export component Pulldown inherits Window {
 
                 // --------------------------------------------------- the body
                 VerticalLayout {
-                    padding: root.pane-padding;
-                    spacing: 6px;
+                    padding: 0px;
+                    padding-top: root.pane-padding-top;
+                    padding-bottom: root.pane-padding-bottom;
+                    padding-left: root.pane-padding;
+                    padding-right: root.pane-padding;
+                    // The spacing is zero on purpose: a layout adds its
+                    // spacing between every cell, and a cell that is empty
+                    // still takes part in the layout. Three empty notice
+                    // rows would push the fleet down by eighteen pixels and
+                    // say nothing. Each group carries the gap that follows
+                    // it instead — see `body-gap`.
+                    spacing: 0px;
                     vertical-stretch: 1;
 
-                    // The attachment's state. It takes no room at all when
-                    // the attachment is healthy, because a hidden element
-                    // still takes part in the layout.
+                    // The notices: the attachment's state, the last action's
+                    // message and the tray's warning.
+                    //
+                    // They are ONE cell and they carry their own gaps, so
+                    // that three empty notices take no room at all.
                     Rectangle {
-                        height: root.status-text == "" ? 0px : 18px;
-                        visible: root.status-text != "";
+                        height: root.notices-height;
+                        visible: root.notices-height > 0px;
 
                         Text {
+                            x: 0px;
+                            y: 0px;
+                            width: root.pane-width;
+                            height: root.status-height;
+                            visible: root.has-status;
                             text: root.status-text;
                             font-size: 11px;
                             color: Palette.foreground;
@@ -931,16 +1007,13 @@ export component Pulldown inherits Window {
                             overflow: elide;
                             vertical-alignment: center;
                         }
-                    }
-
-                    // What the last action said. It is in the body rather than
-                    // in a form, so the outcome of a removal is visible in the
-                    // fleet view too.
-                    Rectangle {
-                        height: root.panel-message == "" ? 0px : 30px;
-                        visible: root.panel-message != "";
 
                         Text {
+                            x: 0px;
+                            y: root.message-y;
+                            width: root.pane-width;
+                            height: root.message-height;
+                            visible: root.has-message;
                             text: root.panel-message;
                             font-size: 11px;
                             font-weight: root.panel-message-is-error ? 700 : 400;
@@ -948,16 +1021,13 @@ export component Pulldown inherits Window {
                             wrap: word-wrap;
                             overflow: elide;
                         }
-                    }
-
-                    // The tray warning. It takes no room at all unless the
-                    // desktop really has no tray, because a hidden element still
-                    // takes part in the layout.
-                    Rectangle {
-                        height: root.tray-warning == "" ? 0px : 18px;
-                        visible: root.tray-warning != "";
 
                         Text {
+                            x: 0px;
+                            y: root.warning-y;
+                            width: root.pane-width;
+                            height: root.warning-height;
+                            visible: root.has-warning;
                             text: root.tray-warning;
                             font-size: 11px;
                             color: Palette.foreground;
@@ -1120,29 +1190,6 @@ export component Pulldown inherits Window {
                                     }
                                 }
                             }
-                        }
-                    }
-
-                    // The attribution and about block. It is empty — and
-                    // therefore invisible — until the operator asks for it,
-                    // and it is outside the detail so that it is readable
-                    // from the fleet view too.
-                    //
-                    // It is wrapped in a rectangle with an explicit height for
-                    // the same reason the status line and the message are: a
-                    // `Text` takes a line of its own even when it is empty,
-                    // and a line nobody asked for is a line the height
-                    // calculation does not know about.
-                    Rectangle {
-                        height: root.about-text == "" ? 0px : root.about-height;
-                        visible: root.about-text != "";
-
-                        Text {
-                            text: root.about-text;
-                            font-size: 11px;
-                            color: Palette.foreground;
-                            wrap: word-wrap;
-                            overflow: elide;
                         }
                     }
 
@@ -1314,6 +1361,38 @@ export component Pulldown inherits Window {
                             }
                         }
                     }
+
+                    // The attribution and about block. It is empty — and
+                    // therefore invisible — until the operator asks for it,
+                    // and it is outside the detail so that it is readable
+                    // from the fleet view too.
+                    //
+                    // It is the body's LAST group, so that the gap above it
+                    // is the only gap it needs: it is the last thing in the
+                    // panel in every view, and a gap that follows nothing is
+                    // a gap that is in the way of nothing.
+                    //
+                    // It is wrapped in a rectangle with an explicit height for
+                    // the same reason the notices are: a `Text` takes a line
+                    // of its own even when it is empty, and a line nobody
+                    // asked for is a line the height calculation does not
+                    // know about.
+                    Rectangle {
+                        height: root.about-text == "" ? 0px : root.about-height + root.body-gap;
+                        visible: root.about-text != "";
+
+                        Text {
+                            x: 0px;
+                            y: root.body-gap;
+                            width: root.pane-width;
+                            height: root.about-height;
+                            text: root.about-text;
+                            font-size: 11px;
+                            color: Palette.foreground;
+                            wrap: word-wrap;
+                            overflow: elide;
+                        }
+                    }
                 }
 
                 // --------------------------------------------------- the footer
@@ -1321,13 +1400,18 @@ export component Pulldown inherits Window {
                 // they are menu entries, and a dropdown's entries are quiet.
                 // On macOS the native tray menu is detached, so `Quit` is
                 // here or nowhere.
+                //
+                // The strip is a little taller than the links it holds, so
+                // that they are not flush against the card's bottom edge:
+                // a row of links that touches the edge reads as cropped.
                 Rectangle {
-                    height: 18px;
+                    height: 24px;
                     background: #00000000;
 
                     HorizontalLayout {
                         padding-left: 12px;
                         padding-right: 6px;
+                        padding-bottom: 6px;
                         spacing: 4px;
                         alignment: start;
 
@@ -1456,28 +1540,6 @@ export component Pulldown inherits Window {
             fit: ImageFit.fill;
             commands: "M 1 0 L 11 0 L 6 5 Z";
             fill: Palette.background.with-alpha(0.94);
-        }
-
-        // The resize grip, in the corner. The pulldown has no window frame,
-        // so there is nothing else to resize it with.
-        Rectangle {
-            x: root.width - 2 * root.margin - 14px;
-            y: root.height - 2 * root.margin - 14px;
-            width: 14px;
-            height: 14px;
-            border-width: 1px;
-            border-color: root.hairline;
-
-            TouchArea {
-                moved => {
-                    root.resized(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
-                }
-                pointer-event(event) => {
-                    if (event.kind == PointerEventKind.up) {
-                        root.geometry-changed();
-                    }
-                }
-            }
         }
 
         key-pressed(event) => {

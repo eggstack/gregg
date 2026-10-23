@@ -161,6 +161,38 @@ the GUI is **not shippable** for Windows or Linux.
 > legs — the only authority for this workspace's Windows and Linux behaviour. The implementation
 > itself, `d0cd31c`, was green on all ten jobs on run **`39922180617`**.
 >
+> **Amendment, 2026-10-23 (seventh) — the pulldown spends no vertical space on nothing, and
+> its title says only what matters.**
+> The direction this plan set — *the pulldown reads as a dropdown* — is unchanged and is still the
+> goal. What changed is **how much room the pulldown spends on nothing**, and **what its title
+> line says**.
+>
+> - There was **forty-five points of dead space** between the fleet's title and the first host's
+>   block, and it was not margin. A Slint layout adds its spacing between **every** cell, and a
+>   cell that is empty still takes part in the layout: the body's first three cells — the
+>   attachment's state, the last action's message and the tray's warning — were all empty on a
+>   healthy fleet, and each still took a six-point gap. Eighteen points of nothing, on every panel.
+>   The notices are **one cell** now and it takes **no room at all** when it is empty, the body's
+>   own spacing is **zero**, every group carries the gap that follows it, and the title strip and
+>   the body's top padding are smaller. Measured on the same fleet: the gap went from **45 points
+>   to 19**, and the panel from **478 points tall to 446**.
+> - The title line said `7 online, 0 pending, 0 offline — Deadpool, MacbookPro, … (+2 mo…)`, which
+>   was elided away on any fleet of any size. It says **`7 online`** now, and names the hosts that
+>   are not answering **only when there are any**.
+> - The **corner grip is gone**: the hairline square in the bottom-right corner looked like a
+>   button and did nothing anybody could see, and the size it controlled was a size the operator
+>   could set once and never change again. The pulldown's size is its content's size, always, and
+>   the state file holds a placement and nothing else.
+>
+> The amendment changes the pulldown's **shape and its title**, not its *behaviour*: the tray's
+> click still opens the pulldown, the pulldown still carries the content, there is still no
+> launcher entry, and the protocol is still untouched. The change is in the platform-neutral
+> `.slint` file and the placement module, so all three targets carry it.
+>
+> The evidence is in `apps/gregg-gui/EVIDENCE.md`, in the section *"The panel had a band of dead
+> space above the fleet"*, with the before-and-after pixel measurements taken from the running
+> panel on the 3840×1080 display.
+
 > **Amendment, 2026-10-23 (sixth) — the remembered placement is an offset, not a position.**
 > The direction this plan set — *the pulldown reads as a dropdown* — is unchanged and is still the
 > goal. What changed is **where the pulldown opens on a display that is not the one it was placed

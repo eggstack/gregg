@@ -579,6 +579,10 @@ neither a smaller panel (24 → 23 MB) nor a GPU renderer is worth taking.
    desktop's shell lives, and clamped so it is always fully on the display. The operator can
    drag it by its header strip and resize it by the corner grip, and the position is
    remembered.
+   > **Superseded by Plan 192's seventh amendment.** The corner grip is gone: the pulldown's
+   > size is its content's size, always, and the state file holds a placement and nothing
+   > else. A size the operator could set once and never change again went stale the moment
+   > the fleet changed.
 3. **The GUI's Slint dependency gained the `unstable-winit-030` feature.** The
    `slint::winit_030` module is the only way to ask the display for its bounds, and Slint's
    stable API exposes no screen information at all. The winit backend was already in the

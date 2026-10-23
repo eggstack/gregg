@@ -85,21 +85,36 @@ pub mod metrics {
     pub const MARGIN: f32 = 14.0;
 
     /// The header strip's height.
-    pub const HEADER: f32 = 36.0;
+    pub const HEADER: f32 = 28.0;
 
     /// The footer's height.
-    pub const FOOTER: f32 = 18.0;
+    ///
+    /// It is the links' own height plus the padding that keeps them off the
+    /// card's bottom edge.
+    pub const FOOTER: f32 = 24.0;
 
     /// The padding inside the card, on each side.
     pub const PANE_PADDING: f32 = 12.0;
 
-    /// The gap between the body's children.
-    pub const BODY_SPACING: f32 = 6.0;
+    /// The padding above the body's content.
+    ///
+    /// It is smaller than the padding on the sides: the header strip is
+    /// already above the content, and the space between the title and the
+    /// first host is a gap, not a margin.
+    pub const PANE_PADDING_TOP: f32 = 6.0;
 
-    /// The gaps between the body's children in either view: the status line,
-    /// the message, the tray warning, the fleet or the detail, and the
-    /// attribution.
-    pub const BODY_GAPS: f32 = 4.0 * BODY_SPACING;
+    /// The padding below the body's content.
+    pub const PANE_PADDING_BOTTOM: f32 = 12.0;
+
+    /// The gap between the body's groups.
+    ///
+    /// The body's own layout spacing is zero, because a layout adds its
+    /// spacing between **every** cell and a cell that is empty still takes
+    /// part in the layout: three empty notice rows would push the fleet down
+    /// by eighteen pixels and say nothing at all. Each group carries the gap
+    /// that follows it instead, so the gap is there only when there is
+    /// something on both sides of it.
+    pub const BODY_SPACING: f32 = 6.0;
 
     /// The gap inside the fleet or the detail: between the table's headings
     /// and its rows, or between the selected host's actions and its panes.
@@ -161,12 +176,18 @@ pub mod metrics {
     /// The form's height.
     pub const FORM_HEIGHT: f32 = 220.0;
 
+    /// The width the pane's content gets, in logical pixels.
+    ///
+    /// It is the fleet table's rows: the label column, the bar and the share
+    /// column, with the room the vertical scrollbar takes out of them. The
+    /// table is measured, not guessed, so the width follows it.
+    pub const PANE_CONTENT_WIDTH: f32 = 554.0;
+
     /// The pulldown's width.
     ///
-    /// It is the fleet table's width plus the card's own chrome: the shadow's
-    /// margin, the pane's padding and the room the scrollbar takes. The
-    /// table's columns are measured, not guessed, so the width follows them.
-    pub const DEFAULT_WIDTH: f32 = 606.0;
+    /// It is the pane's content width plus the card's own chrome: the pane's
+    /// padding on each side and the shadow's margin.
+    pub const DEFAULT_WIDTH: f32 = PANE_CONTENT_WIDTH + 2.0 * PANE_PADDING + 2.0 * MARGIN;
 
     /// The shortest the detail below the host list may be.
     pub const MIN_DETAIL: f32 = 120.0;
@@ -252,6 +273,43 @@ fn detail_height(content: &Content) -> f32 {
     height.clamp(metrics::MIN_DETAIL, metrics::MAX_DETAIL)
 }
 
+/// The height of the notices above the content.
+///
+/// The notices are the attachment's state, the last action's message and the
+/// tray's warning. They are one group in the body's layout, and they carry
+/// their own gaps: the gap between two notices, and the gap that separates
+/// them from the content below.
+///
+/// A fleet that is healthy has no notices at all, and then the group takes
+/// **no room**: a group that is empty but still takes its gap is a band of
+/// dead space between the title and the fleet.
+#[must_use]
+pub fn notices_height(content: &Content) -> f32 {
+    let mut height = 0.0;
+    if content.status {
+        height += metrics::STATUS_LINE;
+    }
+    if content.message {
+        height += metrics::MESSAGE_LINE;
+        // The gap above the message, when there is a status line above it.
+        if content.status {
+            height += metrics::BODY_SPACING;
+        }
+    }
+    if content.warning {
+        height += metrics::TRAY_WARNING_LINE;
+        // The gap above the warning, when there is a message above it.
+        if content.message {
+            height += metrics::BODY_SPACING;
+        }
+    }
+    // The gap that separates the notices from the content below them.
+    if content.status || content.message || content.warning {
+        height += metrics::BODY_SPACING;
+    }
+    height
+}
+
 /// The pulldown's height, for the content it is carrying.
 ///
 /// The pulldown is a dropdown: it is as tall as what it shows, up to the
@@ -261,21 +319,13 @@ pub fn content_height(content: &Content) -> f32 {
     let mut height = 2.0 * metrics::MARGIN
         + metrics::HEADER
         + metrics::FOOTER
-        + 2.0 * metrics::PANE_PADDING
-        + metrics::BODY_GAPS;
-    if content.status {
-        height += metrics::STATUS_LINE;
-    }
-    if content.message {
-        height += metrics::MESSAGE_LINE;
-    }
-    if content.warning {
-        height += metrics::TRAY_WARNING_LINE;
-    }
-    // The attribution is outside the fleet and the detail, so it is readable
-    // from either of them.
+        + metrics::PANE_PADDING_TOP
+        + metrics::PANE_PADDING_BOTTOM;
+    height += notices_height(content);
     if content.about {
-        height += metrics::ABOUT_LINES * metrics::ABOUT_LINE;
+        // The attribution is outside the fleet and the detail, so it is
+        // readable from either of them, and it carries the gap above it.
+        height += metrics::ABOUT_LINES * metrics::ABOUT_LINE + metrics::BODY_SPACING;
     }
     if content.form {
         height += metrics::FORM_HEIGHT;
@@ -578,20 +628,17 @@ pub fn open_position(
 
 /// The panel's size, clamped so it fits the work area and never collapses.
 ///
-/// A remembered size wins: it is the size the operator chose, and a
-/// pulldown that forgets it is a pulldown that fights the operator. The
-/// content's size is what the pulldown takes when the operator has never
-/// resized it.
+/// The size is the **content's** size: a pulldown is a dropdown, and a
+/// dropdown is as big as what it carries. There is no grip in its corner to
+/// drag, so there is no size of the operator's to remember — and a size that
+/// was remembered and could not be changed again is a size that goes stale
+/// the moment the fleet changes.
 ///
 /// The width has a floor: the fleet table needs its own width, and a panel
 /// narrower than that would clip the columns rather than lay them out.
 #[must_use]
-pub fn panel_size(
-    remembered: Option<(f32, f32)>,
-    content: (f32, f32),
-    area: Option<&WorkArea>,
-) -> LogicalSize {
-    let (mut width, mut height) = remembered.unwrap_or(content);
+pub fn panel_size(content: (f32, f32), area: Option<&WorkArea>) -> LogicalSize {
+    let (mut width, mut height) = content;
     width = width.max(metrics::DEFAULT_WIDTH);
     if let Some(area) = area {
         width = width.min(area.width).max(MIN_PANEL_SIZE.0.min(area.width));
@@ -810,7 +857,7 @@ mod tests {
 
     #[test]
     fn the_panel_never_collapses() {
-        let size = panel_size(Some((10.0, 10.0)), (420.0, 300.0), None);
+        let size = panel_size((10.0, 10.0), None);
         assert!(size.width >= MIN_PANEL_SIZE.0);
         assert!(size.height >= MIN_PANEL_SIZE.1);
     }
@@ -818,28 +865,25 @@ mod tests {
     #[test]
     fn the_panel_is_never_bigger_than_the_work_area() {
         let area = WorkArea::new(0.0, 0.0, 400.0, 300.0);
-        let size = panel_size(Some((2000.0, 2000.0)), (420.0, 300.0), Some(&area));
+        let size = panel_size((2000.0, 2000.0), Some(&area));
         assert!(size.width <= 400.0);
         assert!(size.height <= 300.0);
-    }
-
-    #[test]
-    fn a_remembered_size_wins_over_the_content() {
-        let size = panel_size(Some((700.0, 400.0)), (420.0, 300.0), None);
-        assert_eq!((size.width, size.height), (700.0, 400.0));
     }
 
     #[test]
     fn the_panel_is_never_narrower_than_the_fleet_table() {
         // The fleet table's columns have to fit: a pulldown narrower than
         // the table would clip the columns rather than lay them out.
-        let size = panel_size(Some((320.0, 400.0)), (420.0, 300.0), None);
+        let size = panel_size((320.0, 400.0), None);
         assert_eq!(size.width, metrics::DEFAULT_WIDTH);
     }
 
     #[test]
-    fn the_content_size_is_used_when_the_operator_never_resized() {
-        let size = panel_size(None, (700.0, 300.0), None);
+    fn the_content_decides_the_size() {
+        // There is no grip in the corner, so the size is the content's size
+        // and nothing else: a pulldown that remembered a size it could not
+        // change again would go stale the moment the fleet changed.
+        let size = panel_size((700.0, 300.0), None);
         assert_eq!((size.width, size.height), (700.0, 300.0));
     }
 
@@ -898,6 +942,63 @@ mod tests {
         assert_eq!(
             a_fleet, the_bound,
             "a fleet past the host list's bound does not make the pulldown taller"
+        );
+    }
+
+    /// A healthy fleet has no notices, and no notices take no room.
+    #[test]
+    fn no_notices_take_no_room() {
+        assert_eq!(notices_height(&Content::default()), 0.0);
+        let healthy = content_height(&Content {
+            hosts: 4,
+            online_hosts: 4,
+            ..Content::default()
+        });
+        let with_a_notice = content_height(&Content {
+            hosts: 4,
+            online_hosts: 4,
+            status: true,
+            ..Content::default()
+        });
+        assert_eq!(
+            with_a_notice - healthy,
+            metrics::STATUS_LINE + metrics::BODY_SPACING,
+            "the notice is a line and the gap that follows it"
+        );
+    }
+
+    /// Two notices are a gap apart, and the gap is only there when both are.
+    #[test]
+    fn two_notices_are_a_gap_apart() {
+        let one = notices_height(&Content {
+            status: true,
+            ..Content::default()
+        });
+        let two = notices_height(&Content {
+            status: true,
+            message: true,
+            ..Content::default()
+        });
+        assert_eq!(
+            two - one,
+            metrics::MESSAGE_LINE + metrics::BODY_SPACING,
+            "the message is a line and the gap above it"
+        );
+    }
+
+    /// The fleet's title and its first host are close together.
+    ///
+    /// The gap between them is the header strip's own padding and the body's
+    /// top padding, and nothing else: the panel used to carry a band of dead
+    /// space there, and it was the first thing anyone noticed.
+    #[test]
+    fn the_title_and_the_first_host_are_close_together() {
+        // The header strip's height and the body's top padding are the whole
+        // of it.
+        let gap = metrics::HEADER - 16.0 + metrics::PANE_PADDING_TOP;
+        assert!(
+            gap <= 24.0,
+            "the gap between the title and the first host is {gap} pixels"
         );
     }
 
@@ -1038,9 +1139,13 @@ mod tests {
         for (what, expected) in [
             ("the margin", "margin: 14px"),
             ("the padding", "pane-padding: 12px"),
+            ("the padding at the top", "pane-padding-top: 6px"),
+            ("the padding at the bottom", "pane-padding-bottom: 12px"),
+            ("the gap between the body's groups", "body-gap: 6px"),
             ("the spacing", "spacing: 6px"),
-            ("the header", "height: 36px"),
-            ("the footer", "height: 18px"),
+            ("the header", "height: 28px"),
+            ("the footer", "height: 24px"),
+            ("the footer's bottom padding", "padding-bottom: 6px"),
             ("the host's header line", "header-height: 16px"),
             ("the gap between two hosts", "host-block-gap: 6px"),
             ("the fleet's row", "row-height: 13px"),
@@ -1062,9 +1167,11 @@ mod tests {
         }
         assert_eq!(metrics::MARGIN, 14.0);
         assert_eq!(metrics::PANE_PADDING, 12.0);
+        assert_eq!(metrics::PANE_PADDING_TOP, 6.0);
+        assert_eq!(metrics::PANE_PADDING_BOTTOM, 12.0);
         assert_eq!(metrics::BODY_SPACING, 6.0);
-        assert_eq!(metrics::HEADER, 36.0);
-        assert_eq!(metrics::FOOTER, 18.0);
+        assert_eq!(metrics::HEADER, 28.0);
+        assert_eq!(metrics::FOOTER, 24.0);
         assert_eq!(metrics::HOST_HEADER, 16.0);
         assert_eq!(metrics::FLEET_ROW, 13.0);
         assert_eq!(metrics::HOST_BLOCK, 81.0);
@@ -1077,5 +1184,48 @@ mod tests {
         assert_eq!(metrics::MESSAGE_LINE, 30.0);
         assert_eq!(metrics::TRAY_WARNING_LINE, 18.0);
         assert_eq!(metrics::FORM_HEIGHT, 220.0);
+        assert_eq!(metrics::DEFAULT_WIDTH, 606.0);
+    }
+
+    /// The body's layout spacing is zero, and it has to stay zero.
+    ///
+    /// A layout adds its spacing between **every** cell, and a cell that is
+    /// empty still takes part in the layout. The body's notices are one cell
+    /// that is empty most of the time, so any spacing in the body's layout
+    /// is a band of dead space between the title and the fleet — the band the
+    /// panel used to have, and the one this removes.
+    #[test]
+    fn the_body_adds_no_spacing_of_its_own() {
+        let slint = include_str!("ui/main.slint");
+        let body = slint
+            .split("// --------------------------------------------------- the body")
+            .nth(1)
+            .and_then(|rest| rest.split("if root.mode == PanelMode.Fleet").next())
+            .expect("the `.slint` file has a body");
+        assert!(
+            body.contains("spacing: 0px"),
+            "the body's own spacing is zero, and every group carries its own gap"
+        );
+    }
+
+    /// The corner grip is gone.
+    ///
+    /// It was a hairline square in the corner that looked like a button and
+    /// did nothing anybody could see, and the size it controlled was a size
+    /// nobody could change again once the fleet changed.
+    #[test]
+    fn there_is_no_grip_in_the_corner() {
+        let slint = include_str!("ui/main.slint");
+        assert!(
+            !slint.contains("resized"),
+            "the grip is gone, and so is the callback it owned"
+        );
+        // The card's own hairline is the only border left in the panel: a
+        // second one was the corner square.
+        assert_eq!(
+            slint.matches("border-width: 1px").count(),
+            1,
+            "the card's own edge is the only border the panel draws"
+        );
     }
 }

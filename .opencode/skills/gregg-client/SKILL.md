@@ -215,9 +215,10 @@ its own close control; there is **no click-away dismissal**, because Slint 1.18
 exposes no focus-lost event, and that limit is stated in the user
 documentation rather than papered over. It is anchored to the trailing edge of
 the display, on the side where the desktop's own shell lives, clamped so it can
-never open off the screen, and it keeps the placement and size the operator gave
-it — a borderless panel carries its own header strip to drag it and its own
-corner grip to resize it. The placement it keeps is **relative to the display's
+never open off the screen, and it keeps the placement the operator gave
+it — a borderless panel carries its own header strip to drag it, and its
+**size is its content's size**: there is no corner grip. The placement it keeps
+is **relative to the display's
 own corner**, not a place: see the third placement trap below. Its colours come
 from Slint's `Palette`, so it follows the desktop's scheme, and its buttons and
 text fields come from `std-widgets`, so they have the hover and pressed states a
@@ -236,8 +237,8 @@ window, because a native menu cannot host Slint widgets, and it is still
 anchored to the trailing corner, because Slint 1.18 does not expose the tray
 item's position.
 
-Three placement traps to know, all three real defects before they were closed.
-The first two were closed by Plan 192. Slint's `with_winit_window` "will only
+Four traps to know, all four real defects before they were closed. The first
+two were closed by Plan 192. Slint's `with_winit_window` "will only
 succeed when the event loop is active", so the **first open must be deferred
 into the event loop** or the panel is never positioned, never clamped to the
 work area, and its size is never clamped either. And the geometry is
@@ -247,7 +248,9 @@ and validated and written atomically, so it survives a restart and a corrupt
 file falls back to the default instead of failing the GUI. The size is
 computed by **Rust**, because Slint 1.18 cannot expose a layout's preferred
 size to a `.slint` file: `placement::metrics` holds the numbers and a test
-asserts them against the `.slint` literals so the two cannot drift.
+asserts them against the `.slint` literals so the two cannot drift. What the
+file holds is the **position** only: the pulldown's size is its content's
+size, and there is no grip in its corner.
 
 **A third placement trap, and the one that is easy to re-introduce: what the
 GUI remembers must be an OFFSET, not a position.** The anchor is computed from
@@ -266,6 +269,16 @@ macOS draws the window 26 points lower than it was asked to be, and a
 placement measured from the window's own report would carry that shift into
 the memory, so the panel would open a little lower every time and never come
 back. `UiState::drag_panel` is where that rule lives, and a test says so.
+
+**A fourth trap, and it is about space rather than place: a Slint layout adds
+its spacing between every cell, and an empty cell still takes part in the
+layout.** The pulldown's body used to start with three notice rows — the
+attachment's state, the last action's message, the tray's warning — all empty
+on a healthy fleet, and they took **eighteen points of dead space** between
+the title and the first host. They are one cell now, it takes **no room at
+all** when it is empty, the body's own spacing is **zero**, and every group
+carries the gap that follows it. The title line says **`7 online`** and names
+the hosts that are not answering **only when there are any**.
 
 **The GUI may write the configuration file, and only through the CLI's own
 code** (Plan 191). The panel's add, remove and rename go through

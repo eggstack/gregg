@@ -2,12 +2,15 @@
 //!
 //! # Why this exists
 //!
-//! The pulldown's position and its size are the operator's: they can drag it
-//! somewhere they like and drag its corner to a size they like. Slint keeps
-//! both in the component, and the component does not outlive the process — so
-//! without a file, the placement is forgotten on every restart, and a
-//! pulldown that jumps back to a corner every time is worse than one that
-//! stays where it was put.
+//! The pulldown's **position** is the operator's: they can drag it somewhere
+//! they like. Slint keeps that in the component, and the component does not
+//! outlive the process — so without a file, the placement is forgotten on
+//! every restart, and a pulldown that jumps back to a corner every time is
+//! worse than one that stays where it was put.
+//!
+//! The pulldown's **size** is not the operator's: it follows its content, as
+//! a dropdown's does, and there is no grip in the corner to drag. So the file
+//! holds a placement and nothing else.
 //!
 //! # Where the file is
 //!
@@ -19,11 +22,10 @@
 //!
 //! # What is in it
 //!
-//! Two optional numbers, in a deliberately dull format:
+//! One optional number, in a deliberately dull format:
 //!
 //! ```text
 //! offset=12.5,0.0
-//! size=420.0,512.0
 //! ```
 //!
 //! It is not a format this GUI needs a parser library for, and it is not a
@@ -51,11 +53,14 @@
 //! at all, and the pulldown opens against the corner, which is where a
 //! pulldown belongs.
 //!
+//! A `size=` key is ignored for the same kind of reason: the size follows the
+//! content now, and a remembered size is one that cannot be changed again.
+//!
 //! # What is *not* in it
 //!
 //! Nothing about the fleet, the configuration or the daemon. The file holds
-//! where the pulldown was left and how big it was, and it holds nothing
-//! else, so a stale file cannot contradict the truth about the fleet.
+//! where the pulldown was left and nothing else, so a stale file cannot
+//! contradict the truth about the fleet.
 
 use std::fs;
 use std::io::{self, Read, Write};
@@ -66,9 +71,9 @@ use crate::placement::Offset;
 
 /// The most the state file may be read as.
 ///
-/// The file holds two numbers and a key each. A megabyte of it is not a
-/// geometry this GUI wrote, and reading it would be a way to make the GUI do
-/// work it has no reason to do.
+/// The file holds one number and a key. A megabyte of it is not a geometry
+/// this GUI wrote, and reading it would be a way to make the GUI do work it
+/// has no reason to do.
 const MAX_STATE_BYTES: u64 = 4096;
 
 /// The largest coordinate the state file may claim.
@@ -77,31 +82,18 @@ const MAX_STATE_BYTES: u64 = 4096;
 /// offset the operator chose either.
 const MAX_COORDINATE: f32 = 1_000_000.0;
 
-/// The smallest size the state file may claim, in logical pixels.
-///
-/// A size of nothing is not a size the operator chose; the smallest the
-/// pulldown may be is larger than this.
-const MIN_SIZE: f32 = 1.0;
-
-/// The largest size the state file may claim, in logical pixels.
-///
-/// A pulldown is a dropdown on a display. It is not ten kilometres wide.
-const MAX_SIZE: f32 = 100_000.0;
-
 /// The pulldown's geometry, as the operator left it.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PanelGeometry {
     /// The pulldown's placement, relative to the display's anchor corner.
     pub offset: Option<Offset>,
-    /// The pulldown's size, in logical pixels.
-    pub size: Option<(f32, f32)>,
 }
 
 impl PanelGeometry {
     /// Whether there is anything worth writing.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.offset.is_none() && self.size.is_none()
+        self.offset.is_none()
     }
 }
 
@@ -153,9 +145,6 @@ pub fn store(path: &Path, geometry: PanelGeometry) -> io::Result<()> {
     if let Some(offset) = geometry.offset {
         text.push_str(&format!("offset={},{}\n", offset.x, offset.y));
     }
-    if let Some((width, height)) = geometry.size {
-        text.push_str(&format!("size={width},{height}\n"));
-    }
     write_atomic(path, text.as_bytes())
 }
 
@@ -170,19 +159,17 @@ fn parse(text: &str) -> PanelGeometry {
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
-        match key.trim() {
-            "offset" => {
-                geometry.offset = parse_pair(value, MAX_COORDINATE).map(|(x, y)| Offset { x, y });
-            }
-            "size" => geometry.size = parse_pair(value, MAX_SIZE),
-            // A key this version does not know is ignored, so a file written
-            // by a later version is still read for what it does mean.
-            //
-            // `position` is one of those keys: it is an absolute place on
-            // the display it was measured on, and it is not read, because a
-            // place on one display is not a place on another. See the
-            // module's notes.
-            _ => {}
+        // A key this version does not know is ignored, so a file written by a
+        // later version is still read for what it does mean.
+        //
+        // `position` is one of those keys: it is an absolute place on the
+        // display it was measured on, and it is not read, because a place on
+        // one display is not a place on another. See the module's notes.
+        //
+        // `size` is another: the pulldown's size follows its content now, and
+        // a remembered size is one the operator cannot change again.
+        if key.trim() == "offset" {
+            geometry.offset = parse_pair(value, MAX_COORDINATE).map(|(x, y)| Offset { x, y });
         }
     }
     geometry
@@ -197,9 +184,6 @@ fn parse_pair(value: &str, bound: f32) -> Option<(f32, f32)> {
         return None;
     }
     if x.abs() > bound || y.abs() > bound {
-        return None;
-    }
-    if bound == MAX_SIZE && (x < MIN_SIZE || y < MIN_SIZE) {
         return None;
     }
     Some((x, y))
@@ -295,7 +279,6 @@ mod tests {
                 x: 1234.5,
                 y: 678.25,
             }),
-            size: Some((420.0, 512.0)),
         };
         store(&path, geometry).expect("the geometry is written");
         assert_eq!(load(&path), geometry);
@@ -309,7 +292,6 @@ mod tests {
             &path,
             PanelGeometry {
                 offset: Some(Offset { x: 10.0, y: 20.0 }),
-                size: None,
             },
         )
         .expect("the geometry is written");
@@ -319,21 +301,15 @@ mod tests {
             Some(Offset { x: 10.0, y: 20.0 }),
             "the placement is still there"
         );
-        assert_eq!(geometry.size, None);
     }
 
     #[test]
     fn a_malformed_file_is_ignored_rather_than_trusted() {
         let dir = temp_dir("malformed");
         let path = dir.join("config.toml.gui-state");
-        fs::write(&path, "offset=not-a-number,12\nsize=1,2\n").expect("the file is written");
+        fs::write(&path, "offset=not-a-number,12\ncolour=green\n").expect("the file is written");
         let geometry = load(&path);
         assert_eq!(geometry.offset, None, "a bad offset is not an offset");
-        assert_eq!(
-            geometry.size,
-            Some((1.0, 2.0)),
-            "the rest of the file still reads"
-        );
     }
 
     #[test]
@@ -357,19 +333,16 @@ mod tests {
             geometry.offset, None,
             "an absolute position is not a placement that can be carried"
         );
-        assert_eq!(
-            geometry.size,
-            Some((606.0, 478.0)),
-            "the size is still a size, and it still reads"
-        );
     }
 
     #[test]
-    fn a_size_of_nothing_is_ignored() {
-        let dir = temp_dir("no-size");
+    fn an_older_size_is_not_read() {
+        // The size follows the content now, and a remembered size is one the
+        // operator cannot change again.
+        let dir = temp_dir("old-size");
         let path = dir.join("config.toml.gui-state");
-        fs::write(&path, "size=0,0\n").expect("the file is written");
-        assert_eq!(load(&path).size, None);
+        fs::write(&path, "size=606,478\n").expect("the file is written");
+        assert_eq!(load(&path), PanelGeometry::default());
     }
 
     #[test]
@@ -412,7 +385,6 @@ mod tests {
             &path,
             PanelGeometry {
                 offset: Some(Offset { x: 1.0, y: 2.0 }),
-                size: Some((3.0, 4.0)),
             },
         )
         .expect("the geometry is written");
@@ -435,7 +407,6 @@ mod tests {
             &path,
             PanelGeometry {
                 offset: Some(Offset { x: 1.0, y: 2.0 }),
-                size: None,
             },
         )
         .expect("the second write");

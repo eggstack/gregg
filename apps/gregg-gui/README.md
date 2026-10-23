@@ -42,6 +42,11 @@ Plans 188, 189, 191 and 192 are implemented. What exists:
   operator's own placement is **remembered across restarts** in a small state
   file beside the configuration — **relative to the display's own corner**, so
   it still means the same thing on a display of another size;
+- a pulldown that **does not waste a line of vertical space**: the title says
+  `7 online` and nothing else unless a host is not answering, and there is no
+  band of dead space between the title and the first host (see [The panel had a
+  band of dead space above the
+  fleet](#the-panel-had-a-band-of-dead-space-above-the-fleet));
 - a pulldown that **reaches another application's full screen** on macOS: the
   GUI is a **menu-bar-only** application, and its window is told to join every
   space and to sit at the level a native status item's own menu is drawn at,
@@ -128,7 +133,10 @@ Plan 192 also closed two defects that reproducing the complaint exposed:
   false across a restart. The geometry now lives in `<config>.gui-state`
   beside the configuration, and the read is bounded and validated. The
   placement it holds is an **offset against the display's corner**, so it
-  survives a change of display as well as a restart.
+  survives a change of display as well as a restart. (The *size* is not in the
+  file: the pulldown's size follows its content, and the corner grip that
+  could change it is gone — see [The panel had a band of dead space above the
+  fleet](#the-panel-had-a-band-of-dead-space-above-the-fleet).)
 
 See `plans/192-tray-pulldown-carries-the-panel.md`.
 
@@ -211,9 +219,13 @@ AppIndicator.
 - **The click opens the pulldown.** The pulldown is the surface: it carries
   the fleet, the metrics, the cron, the `EggPool` plane, the forms and the
   application's own actions.
-- The **hover text** carries a **bounded** fleet summary (the counts plus at
-  most a handful of host names), so the tray alone tells the operator what the
-  fleet is doing.
+- The **hover text** carries the fleet's **counts and nothing else**: `7 online`
+  for a healthy fleet, and `7 online, 1 offline` when a host is not answering. A
+  pending or offline host is named **only when there is one**, because that is
+  the fact the operator has to see. The counts used to be followed by a list of
+  host names, which was elided away on a fleet of any size — a line that is
+  mostly noise. The tray alone still tells the operator what the fleet is
+  doing.
 - The **native menu** is the *context* menu: a right-click reaches it, and it
   carries `Quit Gregg` and nothing else. On **macOS** it is **detached
   altogether** — AppKit attaches a menu to the status item and pops it on the
@@ -245,7 +257,7 @@ And when the pulldown has been placed, one line says where it went and where it
 was allowed to go:
 
 ```text
-gregg-gui: pulldown=placed x=3226 y=36 width=606 height=264 area=8,36,3824x1036
+gregg-gui: pulldown=placed x=3226 y=36 width=606 height=446 area=8,36,3824x1036
 ```
 
 That is what the native tray exercises assert on: they check the **position**,
@@ -293,7 +305,6 @@ outcomes, and the exact shape of the line a CI job asserts on.
 | Pulldown | **×** (in the header strip) | **Hides** the pulldown, and the tray brings it back. On a desktop with **no tray** it **ends the GUI** instead — a hidden pulldown with no tray is an application you can no longer reach. |
 | Pulldown | **Esc** | The same as ×. |
 | Pulldown | The header strip | **Drags** the pulldown. It has no window frame, so it has no title bar to drag. |
-| Pulldown | The grip in the bottom-right corner | **Resizes** it. |
 
 The host's own actions are **the pulldown's affordances**, aimed at the
 *selected* host. They are not on every row: a button on every row crowds the
@@ -318,8 +329,8 @@ A dropdown has a shape, and this one draws its own.
   `rgba(0, 0, 0, 0.098)` in the light one — the measured value of
   `NSColor.separatorColor`. Slint's own `Palette.border` is 45 % black in a
   single pixel in the light scheme, which is a hard dark line, not a
-  separator. The same hairline is used for the card's edge, the section
-  separators, the pointer's outline and the resize grip.
+  separator. The same hairline is used for the card's edge and the section
+  separators.
 - The card's **fill is a translucent material**: `Palette.background` at 94 %
   opacity, so a little of the desktop shows through, the way a macOS popover's
   vibrant material does. Slint cannot blur what is behind the window, so this
@@ -340,8 +351,10 @@ A dropdown has a shape, and this one draws its own.
   a layout's preferred size back to a `.slint` file. The **width** is the
   card's own chrome plus the width a fleet row needs — 606 px — because a
   bar takes the whole row and a pulldown narrower than the row would clip the
-  bar rather than lay it out. The operator may make it wider; it does not get
-  narrower than the row.
+  bar rather than lay it out. There is **no grip in the corner**: the size is
+  the content's size, and a size the operator could set but not change again
+  would go stale the moment the fleet changed. See [The panel had a band of
+  dead space above the fleet](#the-panel-had-a-band-of-dead-space-above-the-fleet).
 - The pulldown opens in the **trailing corner of the work area** — the
   platform's convention — and the operator's own placement is **remembered
   across restarts** in `<config>.gui-state` beside the configuration. The read
@@ -639,6 +652,55 @@ be, and a placement measured from the window's own report would carry that
 shift into the memory: the pulldown would open a little lower every time, and
 never come back. The drag's base is the requested position, so the shift
 stays where macOS put it.
+
+### The panel had a band of dead space above the fleet
+
+The pulldown's **title line** — the fleet's counts — sat above the first host's
+block with **forty-five points of nothing** between them, and that nothing was
+**not** margin. It was three empty rows and the layout's own spacing.
+
+A Slint layout adds its spacing between **every** cell, and a cell that is
+empty still takes part in the layout. The body's first three cells were the
+attachment's state, the last action's message and the tray's warning — all of
+them empty on a healthy fleet — and each of them still took a six-point gap.
+Eighteen points of dead space, on every panel, all the time.
+
+The fix is structural rather than cosmetic:
+
+- The three notices are **one cell**, and it takes **no room at all** when it
+  is empty. It carries its own gaps, so two notices are six points apart and
+  the gap that follows them is there only when there is something to separate.
+- The body's own layout spacing is **zero**, and every group carries the gap
+  that follows it. A gap that follows nothing is a gap in the way of nothing.
+- The title strip is **28 points** high rather than 36, and the body's top
+  padding is **six** rather than twelve: the space between the title and the
+  first host is a *gap*, not a margin, and a margin the size of the side
+  padding reads as an empty band.
+
+Measured on the same fleet, before and after: the gap between the title's ink
+and the first host's name went from **45 points to 19**, and the panel went
+from **478 points tall to 446** — thirty-two points of panel that carry
+nothing.
+
+Two more things went with it:
+
+- **The title says only what matters.** It read `7 online, 0 pending, 0
+  offline — Deadpool, MacbookPro, Raspi 10, Plex, Le Potato20 (+2 mo…)` and it
+  is elided away on any fleet of any size. It now reads **`7 online`**, and
+  names the hosts that are not answering **only when there are any**:
+  `7 online, 1 offline`. A pending host is still a pending host; it is named
+  when there is one.
+- **The corner square is gone.** There was a hairline square in the bottom-right
+  corner: the grip that resized the panel. It looked like a button and did
+  nothing anybody could see, and the size it controlled was a size the operator
+  could set once and never change again — so the pulldown's size is now its
+  content's size, always, and the remembered size is gone with the grip. The
+  file beside the configuration now holds a placement and nothing else.
+
+And one thing that was right and stayed right: the footer's links are **six
+points off the card's bottom edge** now, because a row of links flush against
+the edge reads as cropped. The visible gap below them went from six points to
+twelve.
 
 ### Redraws
 
@@ -1244,7 +1306,11 @@ apps/gregg-gui/
   the operator has not left a placement yet. What it writes is an **offset**
   against the display's anchor corner — not an absolute position — so a
   placement survives a change of display (see [The pulldown opened in the
-  middle of the desk](#the-pulldown-opened-in-the-middle-of-the-desk)).
+  middle of the desk](#the-pulldown-opened-in-the-middle-of-the-desk)). The
+  file holds **a placement and nothing else**: the pulldown's size follows its
+  content, and a remembered size is one the operator cannot change again (see
+  [The panel had a band of dead space above the
+  fleet](#the-panel-had-a-band-of-dead-space-above-the-fleet)).
 
 ## Slint 1.18 notes worth knowing
 

@@ -231,7 +231,9 @@ apps/gregg-gui/target/release/gregg-gui --config ~/.config/gregg/gregg.toml \
 ```
 
 The tray is the always-visible entry: a health-coloured icon whose tooltip
-carries the fleet summary, and whose **click opens the pulldown**. The pulldown
+carries the fleet's counts — `7 online` for a healthy fleet, and
+`7 online, 1 offline` when a host is not answering — and whose **click opens
+the pulldown**. The pulldown
 is a single borderless, always-on-top panel — there is no separate monitor
 window — with **two views**: the **fleet**, which gives every host a **block of
 its own** — a header line that names the host and carries the readings that are
@@ -261,11 +263,14 @@ the platform routes the tray's click to that callback instead of popping the
 menu. So the tray's **click opens the pulldown and the pulldown carries the
 content**, with no launcher entry. The pulldown is anchored to the trailing
 corner of the display, on the side where the desktop's own shell lives, and its
-placement and size are remembered across restarts — the placement **relative
+placement is remembered across restarts — the placement **relative
 to that display's own corner**, so it still means the same thing on a display
-of another size. It **looks** like a macOS dropdown too: a rounded card of
+of another size. Its **size** follows its content, always. It **looks** like a
+macOS dropdown too: a rounded card of
 translucent material with a hairline edge, a soft shadow and a pointer toward
-the tray item.
+the tray item — and it **wastes no vertical space**: there is no band of dead
+space between the title and the first host, because a Slint layout counts an
+empty row as a row.
 
 On a desktop with **no system tray** — a plain GNOME session has no
 `StatusNotifierItem` host — the tray cannot appear at all. The GUI notices,

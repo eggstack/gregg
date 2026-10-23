@@ -127,8 +127,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   the documentation rather than papered over. The panel is anchored to the
   trailing edge of the display, on the side where the desktop's own shell
   lives, clamped so it can never open off the screen, and it keeps the
-  position and size the operator gave it — a borderless panel carries its own
-  header strip to drag it and its own corner grip to resize it. Its colours
+  position the operator gave it — a borderless panel carries its own
+  header strip to drag it. Its **size** is its content's size: there is no
+  corner grip. Its colours
   come from Slint's `Palette` global, so it follows the desktop's colour
   scheme instead of a hard-coded monochrome, and its buttons and text fields
   come from `std-widgets`, so they have the hover and pressed states a popover
@@ -361,6 +362,38 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   Printable Unicode, including wide CJK, is left intact.
 
 ### Fixed
+
+- **The desktop frontend's pulldown had a band of dead space above the fleet,
+  and its title line said far too much.** The gap between the fleet's title and
+  the first host's block was **forty-five points of nothing**, and it was not
+  margin: a Slint layout adds its spacing between **every** cell, and a cell
+  that is empty still takes part in the layout. The body's first three cells
+  were the attachment's state, the last action's message and the tray's
+  warning — all empty on a healthy fleet — and each of them still took a
+  six-point gap. Eighteen points of dead space, on every panel, every time.
+
+  The notices are **one cell** now, and it takes **no room at all** when it is
+  empty; the body's own spacing is **zero**, and every group carries the gap
+  that follows it; the title strip is 28 points high rather than 36, and the
+  body's top padding is six rather than twelve. Measured on the same fleet,
+  the gap between the title's ink and the first host's name went from **45
+  points to 19**, and the panel from **478 points tall to 446**.
+
+  The title line itself used to read
+  `7 online, 0 pending, 0 offline — Deadpool, MacbookPro, … (+2 mo…)`, which
+  was elided away on any fleet of any size. It reads **`7 online`** now, and
+  names the hosts that are not answering **only when there are any**:
+  `7 online, 1 offline`. A pending host is still a pending host; it is named
+  when there is one.
+
+  The **corner square is gone** too. There was a hairline square in the
+  bottom-right corner — the grip that resized the panel — and it looked like a
+  button and did nothing anybody could see. The size it controlled was a size
+  the operator could set once and never change again, so the pulldown's size
+  is now its content's size, always, and the remembered size is gone with the
+  grip: the file beside the configuration holds a placement and nothing else.
+  The footer's links now sit six points off the card's bottom edge, so a row
+  of links does not read as cropped.
 
 - **The desktop frontend's pulldown opened in the middle of the desk.** The
   tray's click opened the pulldown, and it opened **far to the left of the
