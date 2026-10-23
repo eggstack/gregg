@@ -271,6 +271,14 @@ says so in the panel, and then **quits when you close the panel** instead of
 hiding it, because a hidden panel with no tray is an application you can no
 longer reach.
 
+On macOS the pulldown also **reaches another application's full screen**:
+it is a menu-bar-only application, and its window is told to join every space
+and to sit at the level a native status item's own menu is drawn at. So the
+tray's click opens the pulldown *over* the application you are looking at,
+with that application still in full screen behind it, and the GUI has no Dock
+icon of its own. The menu bar is still macOS's own business: it is hidden in
+full screen, and the pointer at the top of the screen brings it back.
+
 It is its own Cargo workspace with its own lockfile, because Slint 1.18 needs
 Rust 1.92 and the five core crates keep their Rust 1.89 MSRV. Nothing in the
 core workspace depends on it, it is not published to crates.io, and the

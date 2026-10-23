@@ -922,6 +922,106 @@ helper, whose own tests (`cargo test -p gregg --lib ui::text`, **26 passed**)
 are green; the GUI workspace's own suite is **150 passed / 0 failed** and its
 clippy is clean under `-D warnings`.
 
+### The tray's click did nothing over another application's full screen (2026-10-23)
+
+A defect that was **not new**: on macOS, clicking the tray icon while another
+application was in full screen did nothing at all. The operator's expectation —
+"a tray icon overlays on top natively" — is right, and it is what every native
+menu-bar extra does.
+
+**What macOS actually does, and why the click did nothing.** A full-screen
+application owns a **space** of its own, and the operator is looking at that
+space. A window that is not in that space is not on the screen at all. macOS
+keeps a **Dock** application's windows out of another application's space, and
+that is not a matter of level or collection behaviour: the right to reach
+another application's space is fixed when the window is created. The GUI was a
+Dock application (`winit` sets `NSApplicationActivationPolicyRegular` for an
+unbundled binary), so its pulldown could never be in that space.
+
+**Reproduced natively, before the fix.** TextEdit was put into full screen
+(`0,33 1512x949`, on screen), the menu bar was revealed by moving the pointer
+to the top of the screen, and the tray icon at `(940,16)` was clicked:
+
+```text
+gregg-gui: pulldown=placed x=844.28125 y=36 width=606 height=478 area=8,36,1496x938
+60184  layer=3    onscreen=false  gregg-gui  Gregg  844,65 606x478
+frontmost: MiniMax Code
+```
+
+The click **was** delivered — the pulldown was built and placed — but its
+window was `onscreen=false`: it was in the GUI's own space, on a Space the
+operator was not looking at. And the display had **left** the full-screen
+space altogether: the frontmost application was no longer TextEdit. So the
+operator clicked the tray icon and saw nothing, and the full-screen
+application was dropped out of full screen on the way.
+
+**What was changed.** Three native things, all in `src/platform.rs`:
+
+1. the application installs the **`Accessory`** activation policy — a
+   menu-bar-only application — before any window exists, through winit's
+   event-loop builder (`install_backend`), which is where the desktop makes
+   that decision itself;
+2. the pulldown's **native window** is told to join every space, including a
+   full-screen one (`CanJoinAllSpaces`, `FullScreenAuxiliary`, `Stationary`,
+   `IgnoresCycle`), to stay visible when the application is deactivated, and to
+   sit at **`NSPopUpMenuWindowLevel` (101)** — the level a native status item's
+   own menu is drawn at, because `always-on-top` only reaches the *floating*
+   level (3) and the floating level is below full-screen content
+   (`prepare_overlay`);
+3. the native window is found by its **title**, and that title is **owned by
+   the `.slint` file** — bound to a property the Rust side reads — so the two
+   cannot drift apart. A title that lived in two places would be a title that
+   could drift, and the overlay would silently stop working.
+
+**Verified natively, after the fix** — same machine, same full-screen
+TextEdit, same click:
+
+```text
+60145  layer=0    onscreen=true   TextEdit  fs-note.txt  0,33 1512x949
+60294  layer=101  onscreen=true   gregg-gui  Gregg       844,65 606x478
+frontmost: gregg-gui
+```
+
+TextEdit's window is still `1512x949` **on screen** — it is still in full
+screen — and the pulldown is on screen above it, at the pop-up-menu level. The
+screenshot `apps/gregg-gui/target/gui-evidence/pulldown-over-fullscreen.png`
+shows the pulldown floating over the full-screen document, with the document
+intact behind it and no menu bar in the way.
+
+The rest of the behaviour was checked on the same build:
+
+- the **ordinary desktop path** is unchanged — the pulldown opens on the
+  desktop, on screen, at `844,65 606x478`;
+- **`Esc` still dismisses it** (the window went `onscreen=false`) and the
+  tray's click brings it back;
+- **`--panel`** still opens the pulldown at start-up, on screen;
+- the **idle resident set is unchanged**: **35.1–36.2 MB** over sixty seconds
+  with the pulldown never opened, against the **35.8 MB** minimum measured
+  before this change. The accessory policy costs nothing.
+
+**Two visible consequences, both deliberate.** The GUI has **no Dock icon**
+now — an accessory application has none, and a tray-only GUI has no business
+having one. `lsappinfo` says so directly: `gregg-gui` is
+`"ApplicationType"="UIElement"`, where TextEdit is `"Foreground"`. And the
+**menu bar stays the other application's**: activating a menu-bar-only
+application does not take the menu bar away from the application the
+operator is using, so the full-screen application keeps its menus — exactly
+as a native menu-bar extra behaves.
+
+**What is macOS's own business and was not changed:** in full screen the
+menu bar is hidden, and the operator brings it back by moving the pointer to
+the top of the screen (unless "Automatically hide and show the menu bar in
+full screen" is set to Never). That is true of every menu-bar extra, and
+nothing in this GUI can change it. The tray icon itself is in the menu bar,
+so it is reachable only while the menu bar is showing.
+
+**What was not done:** this was exercised **natively on macOS only**, on the
+machine that has the real daemon and a seven-host fleet. The Windows and
+Linux legs are authority in the GUI CI job, and they are unaffected — the
+whole change is inside `#[cfg(target_os = "macos")]`. No macOS leg of the GUI
+CI job exercises the tray at all, so this behaviour is **not** covered by CI;
+it is covered by the native exercise above.
+
 ### The native exercises, on CI run `39811582623`
 
 The GUI workspace is not a member of the root workspace, so no root job

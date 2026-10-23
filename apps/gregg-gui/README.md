@@ -511,9 +511,58 @@ way a real one is launched — a login item, a launcher, an agent.
 Slint 1.18 exposes no activation API, so `src/platform.rs` calls
 `NSApplication activateIgnoringOtherApps:` through the `objc2`/`objc2-app-kit`
 bindings. Those crates are **macOS-only** and never enter the Linux or Windows
-builds, and only the `NSApplication` feature is enabled, so the whole of
-AppKit is not linked. On Windows and Linux the function is a no-op: there,
-showing a window the process owns is enough to bring it up.
+builds, and only the `NSApplication` and `NSWindow` features are enabled, so
+the whole of AppKit is not linked. On Windows and Linux the function is a
+no-op: there, showing a window the process owns is enough to bring it up.
+
+### Another application's full screen
+
+A full-screen application owns a **space** of its own, and that space is what
+the operator is looking at. A window that is not in that space is not on the
+screen at all: the click reaches the tray, the pulldown is built and placed,
+and the operator sees **nothing happen** — and the full-screen application is
+dropped out of its space on the way, which is worse than nothing.
+
+macOS keeps a **Dock** application's windows out of another application's
+space. Not at any window level, and not with any collection behaviour: the
+right to reach another application's space is fixed when the window is
+created, and a Dock application does not have it. A **menu-bar-only**
+application does. The GUI is one now: it installs the `Accessory` activation
+policy before any window exists, through winit's event-loop builder, which is
+where the desktop makes that decision itself.
+
+The native window is then told how to behave, through AppKit:
+
+| | |
+| --- | --- |
+| `collectionBehavior` | `CanJoinAllSpaces`, `FullScreenAuxiliary`, `Stationary`, `IgnoresCycle` |
+| `level` | `NSPopUpMenuWindowLevel` (101) — the level a native status item's own menu is drawn at |
+| `hidesOnDeactivate` | `false` — the pulldown stays up when the operator clicks away |
+
+`always-on-top` alone is not enough: winit maps it to the *floating* level
+(3), and the floating level is below full-screen content.
+
+The native window is found by its **title**, and that title is **owned by the
+`.slint` file** — bound to a property the Rust side reads — so the two cannot
+drift apart. The pulldown is the only window this application owns that
+carries a title at all; the status item's own windows are AppKit's, and they
+carry AppKit's titles.
+
+Two consequences worth stating:
+
+- **There is no Dock icon.** An accessory application has none, and a
+  tray-only GUI has no business having one: the pulldown carries `Reload`,
+  `About` and `Quit` itself, and the tray carries the rest.
+- **The menu bar stays the other application's.** Activating a menu-bar-only
+  application does not take the menu bar away from the application the
+  operator is using, so the full-screen application keeps its menus — which
+  is what a native menu-bar extra does.
+
+The menu bar itself is macOS's own business: in full screen it is hidden, and
+the operator brings it back by moving the pointer to the top of the screen
+(unless "Automatically hide and show the menu bar in full screen" is set to
+Never). That is true of every menu-bar extra, and nothing in this GUI can
+change it.
 
 ### Redraws
 
@@ -693,9 +742,11 @@ gregg-gui v0.1.0 (/Users/davidbowman/projects/gregg/apps/gregg-gui)
   background thread beside Slint's main-thread event loop.
 - **`slint-build`** — compiles `src/ui/main.slint` at build time.
 - **`objc2` + `objc2-app-kit`** — **macOS only**, and only for the `NSApplication`
-  feature. They exist so the GUI can activate itself when it raises the
-  pulldown panel; see "Application activation" above. They never enter the
-  Linux or Windows builds.
+  and `NSWindow` features. They exist so the GUI can activate itself when it
+  raises the pulldown panel, and so the pulldown's **native window** can be
+  told to float over another application's full-screen space; see
+  "Application activation" and "Another application's full screen" above.
+  They never enter the Linux or Windows builds.
 
 ### Locked Slint versions
 

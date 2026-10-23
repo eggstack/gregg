@@ -509,7 +509,17 @@ component DetailSectionView inherits Rectangle {
 }
 
 export component Pulldown inherits Window {
-    title: "Gregg";
+    /// The pulldown's own window title.
+    ///
+    /// The window's title is **bound** to this property, so the title is
+    /// defined **once** — here, in the file that owns the window — and the
+    /// Rust side reads it from here. On macOS the native window is found by
+    /// its title, and a title that lived in two places would be a title that
+    /// could drift: the overlay over another application's full screen would
+    /// silently stop working.
+    in property <string> window-title: "Gregg";
+    title: root.window-title;
+
     // The pulldown is a popover, not a window: no chrome, and it stays above
     // whatever the operator is looking at.
     no-frame: true;

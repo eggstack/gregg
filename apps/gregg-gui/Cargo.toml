@@ -112,6 +112,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "AppKitDefines",
     "AppKitErrors",
     "NSApplication",
+    "NSWindow",
 ] }
 
 # Linux only: the desktop's system tray is a `StatusNotifierItem`, and the

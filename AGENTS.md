@@ -154,6 +154,30 @@ The GUI prints one machine-readable line — `pulldown=placed x=… y=… width=
 height=… area=…` — so the native exercises assert the **position**, not only
 that a window exists.
 
+**The pulldown must reach another application's full screen — macOS.** A
+full-screen application owns a **space** of its own, and a window that is not
+in that space is not on the screen at all: the click reaches the tray, the
+pulldown is built, and the operator sees nothing happen — and the full-screen
+application is dropped out of its space on the way. macOS keeps a **Dock**
+application's windows out of another application's space, and that right is
+**fixed when the window is created**: no window level and no collection
+behaviour changes it. So the GUI installs the **`Accessory`** activation
+policy (a menu-bar-only application) **before any window exists**, through
+winit's event-loop builder, and then tells the pulldown's **native window**
+to join every space (`CanJoinAllSpaces`, `FullScreenAuxiliary`, `Stationary`,
+`IgnoresCycle`), to stay visible when the application is deactivated, and to
+sit at **`NSPopUpMenuWindowLevel`** — the level a native status item's own
+menu is drawn at, because `always-on-top` only reaches the *floating* level
+and the floating level is below full-screen content. The native window is
+found by its **title**, and that title is **owned by the `.slint` file** —
+bound to a property the Rust side reads — so the two cannot drift apart: a
+title that lived in two places would be a title that could drift, and the
+overlay would silently stop working. Two consequences are deliberate: the GUI has **no Dock icon**, and
+the menu bar stays the other application's — which is what a native menu-bar
+extra does. The menu bar itself is macOS's business: in full screen it is
+hidden, and the operator brings it back by moving the pointer to the top of
+the screen.
+
 **The pulldown's macOS look depends on a vendored `softbuffer` patch — keep
 it.** On macOS a frameless Slint window *is* a transparent `NSWindow`, and
 `winit` asks for exactly that, but the framebuffer carrying the window's

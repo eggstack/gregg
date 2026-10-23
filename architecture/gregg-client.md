@@ -692,8 +692,32 @@ launcher, an agent — is a background app from its first moment, so opening the
 pulldown would silently do nothing. The GUI therefore **activates itself**
 before it raises the panel, through `apps/gregg-gui/src/platform.rs`. The
 activation is the only platform-specific code in the GUI, it is macOS-only
-(`objc2`/`objc2-app-kit`, `NSApplication` feature only), and it is a no-op on
-Windows and Linux, where showing a window the process owns is enough.
+(`objc2`/`objc2-app-kit`, `NSApplication` and `NSWindow` features only), and
+it is a no-op on Windows and Linux, where showing a window the process owns is
+enough.
+
+**A tray pulldown has to reach another application's full screen.** A
+full-screen application owns a **space** of its own, and a window that is not
+in that space is not on the screen at all: the click reaches the tray, the
+pulldown is built, and the operator sees nothing happen. macOS keeps a **Dock**
+application's windows out of another application's space, and that is fixed
+when the window is created — no window level and no collection behaviour
+changes it. So the GUI installs the **`Accessory`** activation policy (a
+menu-bar-only application) before any window exists, through winit's
+event-loop builder, and then tells the pulldown's **native window** to join
+every space (`CanJoinAllSpaces`, `FullScreenAuxiliary`, `Stationary`,
+`IgnoresCycle`), to stay visible when the application is deactivated, and to
+sit at **`NSPopUpMenuWindowLevel`** — the level a native status item's own
+menu is drawn at, because `always-on-top` only reaches the *floating* level
+and the floating level is below full-screen content. The native window is
+found by its **title**, and that title is **owned by the `.slint` file** —
+bound to a property the Rust side reads — so the two cannot drift apart: a
+title that lived in two places would be a title that could drift, and the
+overlay would silently stop working. The consequences are deliberate: the GUI has **no Dock icon**, and
+the menu bar stays the other application's, which is what a native menu-bar
+extra does. The menu bar itself is macOS's own business — in full screen it
+is hidden, and the operator brings it back by moving the pointer to the top of
+the screen.
 
 ### The GUI's qualification record (Plan 190)
 

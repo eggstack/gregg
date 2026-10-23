@@ -362,6 +362,32 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The desktop frontend's tray click did nothing over another application's
+  full screen (macOS).** This was not new: since the pulldown existed, clicking
+  the tray icon while another application was in full screen built the pulldown
+  and showed the operator **nothing** — and dropped the full-screen application
+  out of its space on the way. A full-screen application owns a **space** of its
+  own, and a window that is not in that space is not on the screen at all.
+  macOS keeps a **Dock** application's windows out of another application's
+  space, and that right is fixed when the window is created: no window level and
+  no collection behaviour changes it.
+
+  The GUI is now a **menu-bar-only** application — it installs the `Accessory`
+  activation policy before any window exists, through winit's event-loop
+  builder — and the pulldown's **native window** is told to join every space
+  (`CanJoinAllSpaces`, `FullScreenAuxiliary`, `Stationary`, `IgnoresCycle`), to
+  stay visible when the application is deactivated, and to sit at
+  `NSPopUpMenuWindowLevel`, the level a native status item's own menu is drawn
+  at. `always-on-top` was not enough: it only reaches the *floating* level, and
+  the floating level is below full-screen content.
+
+  The pulldown now floats over the full-screen application with the
+  application still in full screen behind it, the way every native menu-bar
+  extra behaves. Two consequences are deliberate: the GUI has **no Dock icon**,
+  and the menu bar stays the other application's. The menu bar itself is still
+  macOS's own business — it is hidden in full screen, and the operator brings
+  it back by moving the pointer to the top of the screen.
+
 - **A reachable host read as `offline (invalid)` because one of its optional
   network capacities could not be represented.** The v2 protocol bounds a
   network capacity, and the client's validator rejected a whole snapshot when

@@ -345,6 +345,12 @@ TUI and a GUI window cost the fleet exactly what one window costs.
 The GUI is meant to live in the background, so it stays small: its window is
 built when it is first opened, and a hidden panel is not re-rendered.
 
+On macOS it is a **menu-bar-only** application, and the pulldown's window is
+told to join every space and to sit at the level a native status item's own
+menu is drawn at. So the tray's click opens the pulldown over another
+application that is in full screen, with that application still in full screen
+behind it.
+
 ```bash
 cargo build --manifest-path apps/gregg-gui/Cargo.toml --release
 apps/gregg-gui/target/release/gregg-gui --config ~/.config/gregg/gregg.toml \

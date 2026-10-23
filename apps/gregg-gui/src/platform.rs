@@ -227,6 +227,122 @@ pub fn transparent_window() -> bool {
     }
 }
 
+/// Install the desktop's own rules for this application.
+///
+/// # macOS
+///
+/// The application becomes a **menu-bar-only** application: no Dock icon,
+/// no application menu, no launcher entry. A tray-only GUI has none of
+/// those anyway — the pulldown carries `Reload`, `About` and `Quit` itself —
+/// and there is a second reason that matters more:
+///
+/// A **Regular** (Dock) application can never put a window into another
+/// application's full-screen space. Not at any window level, and not with
+/// any collection behaviour: the desktop keeps a Dock application's windows
+/// out of another application's space. An **Accessory** application can.
+/// That is the difference between a pulldown that opens over the
+/// application the operator is looking at and one that opens nowhere.
+///
+/// The policy is installed through the event-loop builder, because that is
+/// where the desktop's own decision is made: it is applied when the
+/// application finishes launching, which is before the pulldown's window
+/// exists — and a window's right to reach another application's space is
+/// fixed when the window is created.
+///
+/// The other two desktops need nothing: they have no full-screen spaces
+/// that another application's windows are kept out of, so this is a no-op
+/// there.
+pub fn install_backend() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use slint::winit_030::winit::event_loop::EventLoop;
+        use slint::winit_030::winit::platform::macos::{
+            ActivationPolicy, EventLoopBuilderExtMacOS,
+        };
+        use slint::winit_030::SlintEvent;
+
+        // The builder carries the desktop's own event type, so it is
+        // Slint's builder and not a bare `winit` one.
+        let mut builder = EventLoop::<SlintEvent>::with_user_event();
+        builder.with_activation_policy(ActivationPolicy::Accessory);
+        slint::BackendSelector::new()
+            .with_winit_event_loop_builder(builder)
+            .select()
+            .map_err(|error| format!("the desktop backend could not be started: {error}"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(())
+    }
+}
+
+/// Let the pulldown float over another application's full-screen space.
+///
+/// A full-screen application owns a **space** of its own, and that space is
+/// what the operator is looking at. A window that is not in that space is
+/// not on the screen at all: the click reaches the tray, the pulldown is
+/// built and placed, and the operator sees nothing happen. That is the
+/// behaviour this fixes.
+///
+/// Three things have to be true, and all three are native:
+///
+/// - the window **joins every space**, including another application's
+///   full-screen space (`CanJoinAllSpaces` and `FullScreenAuxiliary`), it
+///   **stays put** when the space changes (`Stationary`), and it **stays
+///   visible** when the application is deactivated;
+/// - the window is **above** the full-screen content. `always-on-top` only
+///   reaches the floating level, and the floating level is below
+///   full-screen content, so the level is raised to the one a native status
+///   item's own menu is drawn at;
+/// - the application is a **menu-bar-only** application, which
+///   [`install_backend`] takes care of.
+///
+/// `title` is the pulldown's own window title, and the native window is
+/// found by it: the pulldown is the only window this application owns that
+/// carries one, because the status item's own windows are AppKit's. The
+/// title comes from the `.slint` file that owns the window, so the two
+/// cannot drift apart.
+///
+/// Returns whether the pulldown's native window was found and configured.
+/// It is `false` while the native window does not exist yet: the window is
+/// created when the event loop resumes it, which is after the panel is
+/// shown, so the caller asks again on the next tick.
+#[cfg(target_os = "macos")]
+pub fn prepare_overlay(title: &str) -> bool {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSPopUpMenuWindowLevel, NSWindowCollectionBehavior};
+
+    let Some(marker) = MainThreadMarker::new() else {
+        return false;
+    };
+    let application = NSApplication::sharedApplication(marker);
+    let Some(window) = application
+        .windows()
+        .iter()
+        .find(|window| window.title().to_string() == title)
+    else {
+        return false;
+    };
+    window.setCollectionBehavior(
+        NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::FullScreenAuxiliary
+            | NSWindowCollectionBehavior::Stationary
+            | NSWindowCollectionBehavior::IgnoresCycle,
+    );
+    window.setLevel(NSPopUpMenuWindowLevel);
+    window.setHidesOnDeactivate(false);
+    true
+}
+
+/// Let the pulldown float over another application's full-screen space.
+///
+/// The other two desktops need nothing: their window managers put a window
+/// where it is asked to be, and the title is of no interest to them.
+#[cfg(not(target_os = "macos"))]
+pub fn prepare_overlay(_title: &str) -> bool {
+    true
+}
+
 /// Activate the macOS application.
 #[cfg(target_os = "macos")]
 fn activate_macos() {
@@ -347,6 +463,14 @@ mod tests {
     #[test]
     fn activating_the_application_is_safe_on_this_platform() {
         super::activate();
+    }
+
+    #[test]
+    fn preparing_the_overlay_without_a_pulldown_is_safe() {
+        // There is no pulldown in a test process, so there is nothing to
+        // prepare — but the call has to get there without panicking, because
+        // it reaches AppKit.
+        let _ = super::prepare_overlay("Gregg");
     }
 
     #[test]

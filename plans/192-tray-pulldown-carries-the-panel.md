@@ -126,6 +126,37 @@ the GUI is **not shippable** for Windows or Linux.
 > CI run **`39909338640`** on `62e74f9` is **green on all ten jobs**, including the three `GUI`
 > legs — the only authority for this workspace's Windows and Linux behaviour.
 
+> **Amendment, 2026-10-23 (fifth) — the pulldown reaches another application's full screen.**
+> The direction this plan set — *the pulldown reads as a dropdown* — is unchanged and is still the
+> goal. What changed is **where the pulldown can appear**: it now opens over another application
+> that is in full screen, which it could not do before.
+>
+> - A full-screen application owns a **space** of its own, and a window that is not in that space is
+>   not on the screen at all: the click reaches the tray, the pulldown is built and placed, and the
+>   operator sees **nothing** — and the full-screen application is dropped out of its space on the
+>   way. macOS keeps a **Dock** application's windows out of another application's space, and that
+>   right is **fixed when the window is created**: no window level and no collection behaviour
+>   changes it. The GUI is now a **menu-bar-only** application — it installs the `Accessory`
+>   activation policy before any window exists, through winit's event-loop builder, which is where
+>   the desktop makes that decision itself.
+> - The pulldown's **native window** is told to join every space (`CanJoinAllSpaces`,
+>   `FullScreenAuxiliary`, `Stationary`, `IgnoresCycle`), to stay visible when the application is
+>   deactivated, and to sit at **`NSPopUpMenuWindowLevel`** — the level a native status item's own
+>   menu is drawn at. `always-on-top` was not enough: it reaches the *floating* level, and the
+>   floating level is below full-screen content.
+> - The native window is found by its **title**, and that title is **owned by the `.slint` file** —
+>   bound to a property the Rust side reads — so the two cannot drift apart: a title that lived in
+>   two places would be a title that could drift, and the overlay would silently stop working.
+>
+> Two consequences are deliberate: the GUI has **no Dock icon**, and the menu bar stays the other
+> application's — which is what a native menu-bar extra does. The menu bar itself is still macOS's
+> business: it is hidden in full screen, and the pointer at the top of the screen brings it back.
+>
+> The amendment changes **where the pulldown can appear**, not its *behaviour*: the tray's click
+> still opens the pulldown, the pulldown still carries the content, there is still no launcher
+> entry, and the protocol is still untouched. The whole change is inside
+> `#[cfg(target_os = "macos")]`.
+
 ## Objective
 
 Make the **tray's click open the pulldown**, and make the pulldown **carry the panel's contents**
@@ -694,3 +725,78 @@ rendered natively from a build whose panel opened directly in the detail view
 CI run **`39909338640`** on `62e74f9` is **green on all ten jobs**, including the
 three `GUI` legs — the only authority for this workspace's Windows and Linux
 behaviour.
+
+### Fifth amendment — the pulldown reached over another application's full screen (2026-10-23)
+
+This was a **defect, and it was not new**: since the pulldown existed,
+clicking the tray icon while another application was in full screen built the
+pulldown and showed the operator **nothing** — and dropped the full-screen
+application out of its space on the way.
+
+The cause is macOS's own rule, and it has two halves. A full-screen
+application owns a **space** of its own, and a window that is not in that
+space is not on the screen at all. And macOS keeps a **Dock** application's
+windows out of another application's space, and that right is **fixed when the
+window is created** — no window level and no collection behaviour changes it.
+The GUI was a Dock application, because `winit` sets
+`NSApplicationActivationPolicyRegular` for an unbundled binary.
+
+Reproduced natively on macOS 15 (arm64), with TextEdit in full screen
+(`0,33 1512x949`, on screen) and the tray icon clicked after the menu bar was
+revealed:
+
+```text
+gregg-gui: pulldown=placed x=844.28125 y=36 width=606 height=478 area=8,36,1496x938
+60184  layer=3    onscreen=false  gregg-gui  Gregg  844,65 606x478
+frontmost: MiniMax Code
+```
+
+The click **was** delivered — the pulldown was built and placed — but its
+window was `onscreen=false`: it was in the GUI's own Space, on one the
+operator was not looking at. And the display had **left** the full-screen
+space altogether.
+
+The fix is three native things, all in `apps/gregg-gui/src/platform.rs` and
+all inside `#[cfg(target_os = "macos")]`:
+
+1. the application installs the **`Accessory`** activation policy — a
+   menu-bar-only application — **before any window exists**, through winit's
+   event-loop builder, which is where the desktop makes that decision itself;
+2. the pulldown's **native window** is told to join every space
+   (`CanJoinAllSpaces`, `FullScreenAuxiliary`, `Stationary`,
+   `IgnoresCycle`), to stay visible when the application is deactivated, and
+   to sit at **`NSPopUpMenuWindowLevel`** (101) — the level a native status
+   item's own menu is drawn at. `always-on-top` reaches only the *floating*
+   level (3), and the floating level is below full-screen content;
+3. the native window is found by its **title**, and that title is **owned by the
+   `.slint` file** — bound to a property the Rust side reads — so the two cannot
+   drift apart. A title that lived in two places would be a title that could
+   drift, and the overlay would silently stop working.
+
+Verified natively on the same machine, with the same full-screen TextEdit and
+the same click:
+
+```text
+60145  layer=0    onscreen=true   TextEdit  fs-note.txt  0,33 1512x949
+60294  layer=101  onscreen=true   gregg-gui  Gregg       844,65 606x478
+frontmost: gregg-gui
+```
+
+TextEdit is **still in full screen** — `1512x949`, on screen — and the
+pulldown is on screen above it at the pop-up-menu level. The ordinary desktop
+path is unchanged, `Esc` still dismisses the pulldown, `--panel` still opens
+it at start-up, and the idle resident set is unchanged at **35.1–36.2 MB**
+against the **35.8 MB** minimum measured before.
+
+Two visible consequences are deliberate: the GUI has **no Dock icon**, and the
+menu bar stays the other application's — which is what a native menu-bar extra
+does. The menu bar itself is still macOS's business: it is hidden in full
+screen, and the operator brings it back by moving the pointer to the top of
+the screen.
+
+**What was not performed:** this was exercised **natively on macOS only**. No
+leg of the GUI CI job drives the macOS tray, so this behaviour is **not**
+covered by CI; it is covered by the native exercise above. The Windows and
+Linux legs are authority for those platforms, and the whole change is inside
+macOS's own conditional.
+

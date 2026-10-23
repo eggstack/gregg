@@ -380,6 +380,18 @@ fn main() {
         }
     };
 
+    // The desktop's own rules are installed before anything else is created.
+    //
+    // On macOS this makes the application a menu-bar-only application, and
+    // that has to happen before the pulldown's window exists: a Dock
+    // application's window can never reach another application's full-screen
+    // space, and a window's right to reach it is fixed when the window is
+    // created.
+    if let Err(reason) = platform::install_backend() {
+        eprintln!("gregg-gui: {reason}");
+        std::process::exit(2);
+    }
+
     // The desktop is asked about its system tray before anything else: the
     // answer decides what closing the panel means, and it is reported on one
     // machine-readable line.
@@ -953,6 +965,19 @@ fn show_pulldown(panel: &Pulldown, state: &Arc<Mutex<UiState>>) {
     });
 }
 
+/// Whether the pulldown is ready to be placed, and to float over another
+/// application's space.
+///
+/// Both need the pulldown's **native** window: the work area is read from
+/// it, and on macOS it is the window that has to be told how to reach
+/// another application's full-screen space. The native window appears on
+/// the event loop's own terms — it is created when the event loop resumes
+/// the window, which is after `show()` — so the placement waits for it, and
+/// waits for the overlay with it.
+fn pulldown_is_ready(area: Option<&placement::WorkArea>, overlay_ready: bool) -> bool {
+    area.is_some() && overlay_ready
+}
+
 /// Place the pulldown, and give it the size its content calls for.
 ///
 /// The work area is read from the pulldown's **native** window, and the
@@ -961,11 +986,18 @@ fn show_pulldown(panel: &Pulldown, state: &Arc<Mutex<UiState>>) {
 /// placement is retried for a bounded number of ticks, and a pulldown whose
 /// native window never appears is left to the window manager — which places
 /// it, if not where the platform's convention says.
+///
+/// The same tick prepares the native window for the overlay: on macOS the
+/// window has to be told to reach another application's full-screen space,
+/// and the window that is told is the native one. Both need the same
+/// event — the native window's arrival — so both wait on the same bounded
+/// schedule.
 fn place_pulldown(panel: &Pulldown, state: &Arc<Mutex<UiState>>, attempts_left: u8) {
     let Ok(mut guard) = state.lock() else {
         return;
     };
     let area = placement::work_area(panel.window());
+    let overlay_ready = platform::prepare_overlay(panel.get_window_title().as_str());
     let content = (
         placement::metrics::DEFAULT_WIDTH,
         placement::content_height(&content_from_state(&guard, panel)),
@@ -998,7 +1030,7 @@ fn place_pulldown(panel: &Pulldown, state: &Arc<Mutex<UiState>>, attempts_left: 
             );
         }
     }
-    if area.is_none() && attempts_left > 0 {
+    if !pulldown_is_ready(area.as_ref(), overlay_ready) && attempts_left > 0 {
         let weak = panel.as_weak();
         let state = Arc::clone(state);
         // The next tick is after the event loop has resumed the window.
@@ -1595,6 +1627,50 @@ mod tests {
             SLINT.contains("root.tray-clicked()"),
             "the tray's click reaches the GUI"
         );
+    }
+
+    #[test]
+    fn the_pulldown_carries_the_title_the_overlay_looks_for() {
+        // On macOS the native window is the only thing that can be told to
+        // float over another application's full-screen space, and AppKit
+        // finds that window by its title. The title is defined **once** — in
+        // the `.slint` file that owns the window — and the Rust side reads it
+        // from there, so the two cannot drift apart: a title that lived in
+        // two places would be a title that could drift, and the overlay
+        // would silently stop working.
+        assert!(
+            SLINT.contains("title: root.window-title;"),
+            "the window's title is bound to the property the Rust side reads"
+        );
+        // And it is a title and not the empty string: an empty title would
+        // match the desktop's own windows, which carry no title at all.
+        assert!(
+            SLINT.contains(r#"in property <string> window-title: "Gregg";"#),
+            "the pulldown's window has a title of its own"
+        );
+    }
+
+    #[test]
+    fn the_pulldown_waits_for_its_native_window_before_it_is_placed() {
+        // The native window appears on the event loop's own terms — it is
+        // created when the event loop resumes the window, which is after
+        // `show()`. Until it exists there is no work area to place the
+        // pulldown in and no native window to tell about the overlay, so
+        // the placement waits for both of them.
+        let area = placement::WorkArea::new(0.0, 0.0, 100.0, 100.0);
+        assert!(
+            !pulldown_is_ready(None, false),
+            "no native window, no placement"
+        );
+        assert!(
+            !pulldown_is_ready(Some(&area), false),
+            "the overlay waits for the same window the placement waits for"
+        );
+        assert!(
+            !pulldown_is_ready(None, true),
+            "no native window, no placement"
+        );
+        assert!(pulldown_is_ready(Some(&area), true));
     }
 
     #[test]
