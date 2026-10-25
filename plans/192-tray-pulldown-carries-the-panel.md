@@ -427,6 +427,58 @@ the GUI is **not shippable** for Windows or Linux.
 > chrome and the plane's presence, the one that holds the plane's own rule, and the two that hold
 > the height), its clippy is clean under `-D warnings`, its formatting is clean, and its release
 > binary is **11,979,552 bytes** — **+0 bytes** on the build before this work.
+
+> **Amendment, 2026-10-25 (eleventh) — the pulldown opens over a maximized window, and a stranded
+> window is replaced.**
+> The direction this plan set is unchanged. This amendment is about the pulldown being **on the
+> screen at all** when the operator asks for it.
+>
+> **What was reported.** That gregg cannot open on top of windows if the window is currently
+> maximized. Measured on the machine as it stood: the GUI placed the panel **correctly** and
+> showed **nothing** — `pulldown=placed x=1092 y=36 width=412 height=446 area=8,36,1496x938`
+> followed by `onscreen=false` on **every** tick of a three-second watch. It was just as invisible
+> on the **desktop** as it was over the **full-screen** application, and a **fresh** instance of
+> the same binary opened over the same full-screen application without a hitch
+> (`onscreen=true`, layer 101, with the full-screen terminal intact behind it).
+>
+> **Why.** A window that is not on the space the operator is looking at is **not on the screen at
+> all**. The long-running instance's native window had been created on a **second display** — a
+> 3840×1080 one that has since been detached — and the display's space went with it: the window
+> was left in a space that no longer exists. The overlay itself was configured correctly the
+> whole time (`behaviour=337`, `level=101`), so the **space** was the problem, never the level.
+>
+> **What changed.**
+>
+> - The GUI asks the desktop, on every open, whether the pulldown's window is on the active
+>   space, and when it is not the panel's component is **dropped** and a **new** one is built. A
+>   native window cannot be moved between spaces — there is no public API for it — and the new
+>   component brings a native window of its own, created in the space the operator is looking at.
+>   The old component is hidden **first**: a visible window keeps its own component alive, and
+>   the component is what owns the native window.
+> - The rebuild's own open never rebuilds again, and a window that cannot be **found** is reported
+>   as *on* the active space — so the first open, where the native window does not exist yet,
+>   never rebuilds a panel that is fine.
+> - **Every** window carrying the pulldown's title is **prepared**, not just the first one
+>   found. While a window is being replaced, both the old one and the new one carry the title,
+>   and preparing only the first left the new window at the *floating* level — below full-screen
+>   content — so a rebuilt panel would have been the very thing it was rebuilt to avoid.
+>
+> **Measured, natively on macOS 15 (arm64).** With the recovery exercised by forcing the
+> desktop's answer, the window was **replaced** and not merely re-shown: window `74128` (layer
+> 101, on screen) became window `74139` (layer 101, on screen) with the old one **gone**. The
+> ordinary path was checked on the same production binary with no forcing at all: the tray's
+> click over a full-screen application placed the panel and showed it, with no rebuild.
+>
+> The GUI workspace's own suite is **186 passed / 0 failed** (182 before this work, plus four new
+> tests) and its release binary is **11,979,552 bytes**, **+0** on the build before this work.
+>
+> **What was not performed.** The stranded state itself could **not** be reproduced on demand —
+> the display that caused it is gone, and macOS offers no way to remove a display on command. The
+> recovery was therefore exercised by forcing the desktop's answer, which drives the same code
+> path, and the *cause* was established from the measurement above. The Windows and Linux legs are
+> unaffected: the recovery is macOS-only, and the decision that drives it is a pure function with
+> its own tests.
+
 >
 > The run that covers this work, **`40041653415`** against `05ed618`, is **green on all ten jobs**,
 > including the three `GUI` legs — the only authority for this workspace's Windows and Linux

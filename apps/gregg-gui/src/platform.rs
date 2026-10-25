@@ -330,21 +330,89 @@ pub fn prepare_overlay(title: &str) -> bool {
         return false;
     };
     let application = NSApplication::sharedApplication(marker);
-    let Some(window) = application
+    let windows: Vec<_> = application
         .windows()
         .iter()
-        .find(|window| window.title().to_string() == title)
-    else {
+        .filter(|window| window.title().to_string() == title)
+        .collect();
+    if windows.is_empty() {
         return false;
+    }
+
+    // **Every** window with the title is prepared, not just the first.
+    //
+    // While a stranded window is being replaced, both the window that is
+    // being replaced and the one that replaces it carry the title: the old
+    // one is still on the desktop's books until it is destroyed. Preparing
+    // only the first would leave the **new** window at the level Slint gave
+    // it — the floating level, which is below full-screen content — so the
+    // rebuilt panel would be the very thing it was rebuilt to avoid: a panel
+    // that a full-screen application covers. Preparing the old one as well
+    // costs nothing: it is on its way out.
+    for window in windows {
+        window.setCollectionBehavior(
+            NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::FullScreenAuxiliary
+                | NSWindowCollectionBehavior::Stationary
+                | NSWindowCollectionBehavior::IgnoresCycle,
+        );
+        window.setLevel(NSPopUpMenuWindowLevel);
+        window.setHidesOnDeactivate(false);
+    }
+    true
+}
+
+/// Whether the pulldown's native window is on the **Space** the operator is
+/// looking at.
+///
+/// A window that is not on the active Space is not on the screen at all: the
+/// operator clicks the tray, the panel is built and placed at the right
+/// coordinates, and nothing appears — and nothing appears anywhere else
+/// either, because the Space the window lives in is not the one being
+/// displayed.
+///
+/// That is what a window whose display was removed looks like. The display is
+/// gone, the Space it owned went with it, and the window is left in a Space
+/// that no longer exists: it is placed correctly and it is never seen.
+///
+/// The other two desktops need nothing: their window managers put a window
+/// where it is asked to be, so it is always on the space the operator is
+/// looking at.
+///
+/// A window that cannot be found is reported as **on** the active space: the
+/// native window does not exist yet on the first open, and "cannot tell" must
+/// not be read as "stranded".
+#[cfg(target_os = "macos")]
+pub fn overlay_is_on_the_active_space(title: &str) -> bool {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSApplication;
+
+    let Some(marker) = MainThreadMarker::new() else {
+        return true;
     };
-    window.setCollectionBehavior(
-        NSWindowCollectionBehavior::CanJoinAllSpaces
-            | NSWindowCollectionBehavior::FullScreenAuxiliary
-            | NSWindowCollectionBehavior::Stationary
-            | NSWindowCollectionBehavior::IgnoresCycle,
-    );
-    window.setLevel(NSPopUpMenuWindowLevel);
-    window.setHidesOnDeactivate(false);
+    let application = NSApplication::sharedApplication(marker);
+    let windows: Vec<_> = application
+        .windows()
+        .iter()
+        .filter(|window| window.title().to_string() == title)
+        .collect();
+    if windows.is_empty() {
+        return true;
+    }
+    // **Any** of them being on the active space is enough: the operator can
+    // see the panel. While a stranded window is being replaced, both the old
+    // one and the new one carry the title, and the answer must not depend on
+    // which of them the desktop happens to list first.
+    windows.iter().any(|window| window.isOnActiveSpace())
+}
+
+/// Whether the pulldown's native window is on the **Space** the operator is
+/// looking at.
+///
+/// The other two desktops need nothing: their window managers put a window
+/// where it is asked to be.
+#[cfg(not(target_os = "macos"))]
+pub fn overlay_is_on_the_active_space(_title: &str) -> bool {
     true
 }
 

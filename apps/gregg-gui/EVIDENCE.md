@@ -1737,6 +1737,139 @@ and the panel's height there is unchanged.
 The release binary is **11,979,552 bytes** — **+0 bytes** on the build before
 this work.
 
+### The pulldown opened nowhere at all, and the tray was dead (2026-10-25)
+
+The next report was that **gregg cannot open on top of windows if the window
+is currently maximized**. The report was made against the machine as it stood
+that morning: a full-screen application owning the display, the operator
+clicking the tray, and no panel.
+
+**What was measured, on the machine as it stood.** The GUI instance that had
+been running since the previous session placed the panel **correctly** and
+showed nothing:
+
+```text
+gregg-gui: pulldown=placed x=1092 y=36 width=412 height=446 area=8,36,1496x938
+64898  pid=41024  layer=101  onscreen=false  gregg-gui  Gregg  1092,36 412x446
+```
+
+`onscreen=false` on **every** tick of a three-second watch, and — the part
+that matters — it was just as invisible on the **desktop** space as it was
+over the **full-screen** application. The click was delivered, the panel was
+built, and the placement was right; the window was simply not on the screen.
+
+A **fresh** instance of the same binary, over the same full-screen
+application, opened without a hitch:
+
+```text
+73539  pid=19882  layer=101  onscreen=true  gregg-gui  Gregg  1092,65 412x446
+```
+
+and the screenshot `apps/gregg-gui/target/gui-evidence/pulldown-over-fullscreen-terminal.png`
+shows the panel floating over the full-screen terminal, with the terminal
+intact behind it; `pulldown-over-fullscreen-with-menubar.png` shows the same
+panel over the same full-screen application with the menu bar revealed. The same was true of a second fresh instance
+(`73967 … onscreen=true`), whose panel was still on screen after the operator
+moved to another space — the window follows, because it joins every space.
+
+**What the difference was.** The long-running instance's native window had been
+created on a **second display** — a 3840×1080 one that is attached to this
+machine and was detached since. The display is gone, and **the space it owned
+went with it**: the window was left in a space that no longer exists. It is
+placed correctly and it is never seen, because a window that is not on the
+space the operator is looking at is **not on the screen at all**.
+
+The native window was configured correctly the whole time — the diagnostic
+build reported, for a healthy instance:
+
+```text
+gregg-gui: overlay title=Gregg behaviour=337 level=101 visible=true on_active_space=true
+```
+
+`behaviour=337` is `CanJoinAllSpaces | FullScreenAuxiliary | IgnoresCycle |
+Stationary`, and `level=101` is `NSPopUpMenuWindowLevel`. The overlay was
+never the problem; the **space** was.
+
+**What changed.** A native window cannot be moved between spaces — there is no
+public API for it — so the only way out of a stranded window is a **new**
+one. The GUI now asks the desktop, on every open, whether the pulldown's
+window is on the active space (`NSWindow.isOnActiveSpace`), and when it is
+not:
+
+1. the panel's component is **dropped** — hidden first, because a visible
+   window keeps its own component alive, and the component is what owns the
+   native window;
+2. a new component is built, and it brings a native window of its own,
+   created in the space the operator is looking at.
+
+The rebuild's own open does not rebuild again: a window stranded twice is a
+window the desktop cannot show, and a rebuild that repeats is a loop. A window
+that **cannot be found** is reported as *on* the active space, so the first
+open — where the native window does not exist yet — never rebuilds a panel
+that is fine.
+
+**A defect the first version of the fix had, and how it was found.** The
+recovery built a new window, and the panel came back — but the new window was
+left at **level 3**, the floating level, which is **below full-screen
+content**. The instrumentation said why:
+
+```text
+gregg-gui: prepare_overlay title=Gregg matches=2 levels=[101, 3] visible=[false, true]
+```
+
+While a window is being replaced, **both** the window that is being replaced
+and the one that replaces it carry the title: the old one is still on the
+desktop's books until it is destroyed. Preparing only the **first** match
+prepared the old one and left the new one at the level Slint gave it. Every
+window carrying the title is now prepared.
+
+**Verified natively, after the fix.** The recovery was exercised by forcing
+the desktop's own answer — a build that reports the window as stranded — and
+the window was **replaced**, not merely re-shown:
+
+```text
+== the window after the first open ==
+74128  pid=64815  layer=101  onscreen=true  gregg-gui  Gregg  1092,65 412x446
+== the window after the recovery ==
+74139  pid=64815  layer=101  onscreen=true  gregg-gui  Gregg  1092,36 412x446
+```
+
+A **new** native window (a new window id), at the **pop-up-menu level** (101),
+on screen, with the old one **gone** — no orphan left behind. The log shows
+the recovery and the rebuild's own placement:
+
+```text
+gregg-gui: the pulldown's window is not on the space the operator is looking at; building a new one
+gregg-gui: pulldown=placed x=1092 y=36 width=412 height=446 area=8,36,1496x938
+```
+
+And the **ordinary** path was checked on the same build, with the production
+binary and no forcing at all: the tray's click over a full-screen application
+placed the panel and showed it, with no recovery and no rebuild:
+
+```text
+gregg-gui: tray=available
+gregg-gui: pulldown=placed x=1092 y=36 width=412 height=446 area=8,36,1496x938
+74215  pid=88697  layer=101  onscreen=true  gregg-gui  Gregg  1092,65 412x446
+```
+
+The GUI workspace's own suite is **186 passed / 0 failed** (182 before this
+work, plus four new tests: the three that hold the recovery's decision and
+the one that holds "a pulldown that cannot be found is not a stranded one"),
+its clippy is clean under `-D warnings` and its formatting is clean, and the
+release binary is **11,979,552 bytes** — **+0 bytes** on the build before this
+work.
+
+**What was not performed.** The stranded state itself could **not** be
+reproduced on demand: the display that caused it is gone from this machine,
+and macOS offers no way to remove a display on command. The recovery was
+therefore exercised by **forcing the desktop's answer**, which drives the same
+code path the real stranding takes, and the *cause* was established from the
+measurement above — the window's level and collection behaviour were correct
+and it was still invisible on every space. The Windows and Linux legs are
+unaffected: the recovery is macOS-only (`#[cfg(target_os = "macos")]`), and
+the decision that drives it is a pure function with its own tests.
+
 ### What the GUI costs, and what it polls (2026-10-23)
 
 The same session asked two questions that are worth answering with numbers

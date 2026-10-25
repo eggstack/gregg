@@ -285,7 +285,28 @@ placement measured from the window's own report would carry that shift into
 the memory, so the panel would open a little lower every time and never come
 back. `UiState::drag_panel` is where that rule lives, and a test says so.
 
-**A fourth trap, and it is about space rather than place: a Slint layout adds
+**A fourth trap, and it is about *space* rather than place: a window that is not
+on the space the operator is looking at is not on the screen at all.** The
+click reaches the tray, the panel is built and placed at the right
+coordinates, and the operator sees nothing — and nothing appears anywhere
+else either, because the space the window lives in is not the one being
+displayed. That is what a window whose **display was removed** leaves
+behind: the display is gone, the space it owned went with it, and the window
+is left in a space that no longer exists. A native window cannot be moved
+between spaces, so the panel's component is **dropped** — hidden first,
+because a visible window keeps its own component alive, and the component is
+what owns the native window — and a new one is built, which brings a native
+window of its own, created in the space the operator is looking at. The
+rebuild's own open never rebuilds again (a window stranded twice is a window
+the desktop cannot show, and a rebuild that repeats is a loop), and a window
+that cannot be **found** is reported as *on* the active space, so the first
+open — where the native window does not exist yet — never rebuilds a panel
+that is fine. Every window carrying the pulldown's title is prepared, not
+just the first: while a window is being replaced, both the old one and the
+new one carry the title, and preparing only the first leaves the new window
+at the *floating* level, which is below full-screen content.
+
+**A fifth trap, and it is about space rather than place: a Slint layout adds
 its spacing between every cell, and an empty cell still takes part in the
 layout.** The pulldown's body used to start with three notice rows — the
 attachment's state, the last action's message, the tray's warning — all empty
@@ -295,7 +316,7 @@ all** when it is empty, the body's own spacing is **zero**, and every group
 carries the gap that follows it. The title line says **`7 online`** and names
 the hosts that are not answering **only when there are any**.
 
-**A fifth trap: an invisible pane is still a pane to a layout.** The two
+**A sixth trap: an invisible pane is still a pane to a layout.** The two
 forms — *Add a host* and *Edit a host* — are always in the tree, because their
 fields have to be nameable, or the pulldown cannot tell that one of them
 holds the keyboard focus. They were also 220 points tall each, whether they

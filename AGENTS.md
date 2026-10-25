@@ -254,6 +254,26 @@ extra does. The menu bar itself is macOS's business: in full screen it is
 hidden, and the operator brings it back by moving the pointer to the top of
 the screen.
 
+**A stranded window is rebuilt, and the whole panel is the recovery — macOS.**
+A window that is not on the space the operator is looking at is **not on the
+screen at all**: the click reaches the tray, the panel is built and placed at
+the right coordinates, and the operator sees nothing. That is what a window
+whose **display was removed** leaves behind — the display is gone, the space
+it owned went with it, and the window is left in a space that no longer
+exists. A native window cannot be moved between spaces, so the panel's
+component is **dropped** (hidden first, because a visible window keeps its
+own component alive, and the component owns the native window) and a new one
+is built, which brings a native window of its own, created in the space the
+operator is looking at. The rebuild's own open never rebuilds again (a window
+stranded twice is a window the desktop cannot show, and a rebuild that
+repeats is a loop), and a window that cannot be **found** is reported as
+*on* the active space, so the first open — where the native window does not
+exist yet — never rebuilds a panel that is fine. Every window carrying the
+pulldown's title is **prepared**, not just the first: while a window is being
+replaced, both the old one and the new one carry the title, and preparing
+only the first leaves the new window at the *floating* level, which is below
+full-screen content.
+
 **The pulldown's macOS look depends on a vendored `softbuffer` patch — keep
 it.** On macOS a frameless Slint window *is* a transparent `NSWindow`, and
 `winit` asks for exactly that, but the framebuffer carrying the window's

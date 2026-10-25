@@ -700,6 +700,14 @@ drift apart. The pulldown is the only window this application owns that
 carries a title at all; the status item's own windows are AppKit's, and they
 carry AppKit's titles.
 
+**Every** window carrying that title is prepared, not only the first one
+found. While a stranded window is being replaced, both the window that is
+being replaced and the one that replaces it carry the title — the old one is
+still on the desktop's books until it is destroyed — and preparing only the
+first would leave the **new** window at the level Slint gave it, which is the
+floating level, which is below full-screen content. A rebuilt panel would then
+be the very thing it was rebuilt to avoid.
+
 Two consequences worth stating:
 
 - **There is no Dock icon.** An accessory application has none, and a
@@ -715,6 +723,46 @@ the operator brings it back by moving the pointer to the top of the screen
 (unless "Automatically hide and show the menu bar in full screen" is set to
 Never). That is true of every menu-bar extra, and nothing in this GUI can
 change it.
+
+### The pulldown's window was stranded in a space that no longer exists
+
+A window that is not on the space the operator is looking at is **not on the
+screen at all**. The click reaches the tray, the panel is built and placed at
+the right coordinates, and the operator sees nothing — and nothing appears
+anywhere else either, because the space the window lives in is not the one
+being displayed.
+
+That is what a window whose **display was removed** looks like. The display
+is gone, the space it owned went with it, and the window is left in a space
+that no longer exists: it is placed correctly and it is never seen. The
+operator's only way back to the panel is a **new** window, and a native
+window cannot be moved between spaces — so the panel is rebuilt.
+
+What the GUI does, in order:
+
+1. the pulldown is opened, and the native window is asked whether it is on the
+   active space (`NSWindow.isOnActiveSpace`);
+2. if it is not, the panel's component is **dropped** — hidden first, because
+   a visible window keeps its own component alive, and the component is what
+   owns the native window;
+3. a new component is built, and it brings a native window of its own, created
+   in the space the operator is looking at.
+
+The rebuild's own open does **not** rebuild again: a window that is stranded
+twice is a window the desktop cannot show, and a rebuild that repeats is a
+loop.
+
+The check is deliberately conservative. A window that **cannot be found** is
+reported as *on* the active space: the native window does not exist yet on
+the first open, and "cannot tell" must not be read as "stranded", or every
+first open would rebuild a panel that is perfectly fine. And **any** of the
+windows carrying the title being on the active space is enough — while a
+window is being replaced, both the old one and the new one carry it, and the
+answer must not depend on which of them the desktop happens to list first.
+
+The other two desktops need none of this: their window managers put a window
+where it is asked to be, so it is always on the space the operator is looking
+at.
 
 ### The pulldown opened in the middle of the desk
 

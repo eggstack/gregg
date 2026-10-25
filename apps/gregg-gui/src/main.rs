@@ -589,13 +589,14 @@ fn main() {
     // twelve of physical footprint, which is what the machine really pays —
     // and a background GUI that the operator has not opened yet should not be
     // paying for it.
-    let callback_state = Arc::clone(&state);
     let callback_context = context.clone();
     let callback_panel = Arc::clone(&notify_panel);
+    let host = PulldownHost {
+        context: callback_context.clone(),
+        slot: callback_panel.clone(),
+    };
     tray.on_tray_clicked(move || {
-        with_or_create_panel(&callback_context, &callback_panel, |panel| {
-            toggle_pulldown(panel, &callback_state);
-        });
+        host.toggle();
     });
 
     tray.on_quit_requested(move || {
@@ -617,13 +618,12 @@ fn main() {
     // the loop starts is a panel the window manager places by guesswork, and
     // it lands under the menu bar.
     if options.panel || tray_support != platform::TraySupport::Available {
-        let context = context.clone();
-        let panel_slot = Arc::clone(&notify_panel);
-        let state = Arc::clone(&state);
+        let host = PulldownHost {
+            context: context.clone(),
+            slot: Arc::clone(&notify_panel),
+        };
         slint::Timer::single_shot(Duration::ZERO, move || {
-            with_or_create_panel(&context, &panel_slot, |panel| {
-                show_pulldown(panel, &state);
-            });
+            host.open();
         });
     }
 
@@ -699,6 +699,122 @@ struct PanelContext {
     geometry_path: PathBuf,
     /// Whether this desktop has a tray.
     tray_support: platform::TraySupport,
+}
+
+/// The pulldown's own lifecycle: what it is built from, and where its
+/// handle is published.
+///
+/// The pulldown is built on demand and kept in the UI thread's own storage,
+/// so everything that opens it needs a way to reach that storage. This is
+/// that way.
+#[derive(Clone)]
+struct PulldownHost {
+    /// Everything the pulldown's own callbacks need.
+    context: PanelContext,
+    /// Where the pulldown's handle is published, for the notification path.
+    slot: Arc<Mutex<Option<slint::Weak<Pulldown>>>>,
+}
+
+impl PulldownHost {
+    /// Build the pulldown if it does not exist yet, and open it.
+    fn open(&self) {
+        with_or_create_panel(&self.context, &self.slot, |panel| {
+            show_pulldown(panel, self, true);
+        });
+    }
+
+    /// The tray's click: open the pulldown, or close it if it is already up.
+    fn toggle(&self) {
+        with_or_create_panel(&self.context, &self.slot, |panel| {
+            toggle_pulldown(panel, self);
+        });
+    }
+
+    /// Build a new pulldown, because the old one's window cannot be shown.
+    ///
+    /// A window that is not on the space the operator is looking at is not on
+    /// the screen at all: the click reaches the tray, the panel is built and
+    /// placed, and the operator sees nothing. That is what a window whose
+    /// display was removed looks like — the display is gone, the space it
+    /// owned went with it, and the window is left in a space that no longer
+    /// exists. The window cannot be moved out of it, so the only way out is
+    /// a **new** window: the component is dropped, and the one that replaces
+    /// it brings a native window of its own, created in the space the
+    /// operator is looking at.
+    fn rebuild(&self) {
+        let context = self.context.clone();
+        let slot = Arc::clone(&self.slot);
+        let host = self.clone();
+        // The rebuild runs on the next tick: the pulldown is held in a cell,
+        // and the cell cannot be taken while the callback that is opening it
+        // still holds it.
+        slint::Timer::single_shot(Duration::ZERO, move || {
+            // The stranded window is hidden first. A visible window keeps its
+            // own component alive, and the component is what owns the native
+            // window — so a component that is only dropped is not destroyed,
+            // and the replacement would be the very same window.
+            PANEL.with(|cached| {
+                if let Some(panel) = cached.borrow().as_ref() {
+                    let _ = panel.window().hide();
+                }
+            });
+            let stranded = PANEL.with(|cached| cached.borrow_mut().take());
+            drop(stranded);
+            with_or_create_panel(&context, &slot, |panel| {
+                // The replacement is not recovered a second time: a window
+                // that is stranded again is a window the desktop cannot
+                // show, and a rebuild that repeats is a loop.
+                show_pulldown(panel, &host, false);
+            });
+        });
+    }
+
+    /// Rebuild the pulldown if its window is not where the operator is
+    /// looking.
+    ///
+    /// The check is the desktop's own answer, asked on the UI thread: a
+    /// window that is not on the active space is not on the screen, and the
+    /// operator's only way back to the panel is a new window.
+    fn recover_if_stranded(&self, panel: &Pulldown, may_recover: bool) {
+        let title = panel.get_window_title().as_str().to_owned();
+        let on_active_space = platform::overlay_is_on_the_active_space(&title);
+        match after_open(may_recover, on_active_space) {
+            AfterOpen::Settled => {}
+            AfterOpen::Rebuild => {
+                eprintln!(
+                    "gregg-gui: the pulldown's window is not on the space the operator is looking at; building a new one"
+                );
+                self.rebuild();
+            }
+        }
+    }
+}
+
+/// What the GUI does once the pulldown has been opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterOpen {
+    /// The window is where the operator is looking: nothing to do.
+    Settled,
+    /// The window is stranded: build a new one.
+    Rebuild,
+}
+
+/// The decision, as a pure function of what the desktop reported.
+///
+/// `on_active_space` is the desktop's own answer, and it is the whole
+/// question: a window that is not on the active space is not on the screen
+/// at all, so the operator clicks the tray, the panel is built and placed,
+/// and nothing appears.
+///
+/// `may_recover` says whether this open is allowed to recover at all. The
+/// rebuild's own open is not: a window that is stranded twice is a window
+/// the desktop cannot show, and a rebuild that repeats is a loop.
+fn after_open(may_recover: bool, on_active_space: bool) -> AfterOpen {
+    if !may_recover || on_active_space {
+        AfterOpen::Settled
+    } else {
+        AfterOpen::Rebuild
+    }
 }
 
 /// Build the pulldown and register its callbacks.
@@ -1119,7 +1235,8 @@ fn dismiss_state(state: &mut UiState) {
 /// `StatusNotifierItem` host can start after the GUI did, and the panel must
 /// not keep claiming there is no tray when there is one by now. The probe
 /// runs off the UI thread, so a slow session bus never freezes the panel.
-fn show_pulldown(panel: &Pulldown, state: &Arc<Mutex<UiState>>) {
+fn show_pulldown(panel: &Pulldown, host: &PulldownHost, may_recover: bool) {
+    let state = &host.context.state;
     platform::activate();
     if let Ok(mut state) = state.lock() {
         state.panel_visible = true;
@@ -1135,7 +1252,11 @@ fn show_pulldown(panel: &Pulldown, state: &Arc<Mutex<UiState>>) {
         let weak = panel.as_weak();
         render_panel(&mut guard, Some(&weak));
     }
-    place_pulldown(panel, state, PLACEMENT_ATTEMPTS);
+    place_pulldown(panel, host, PLACEMENT_ATTEMPTS);
+
+    // The panel is only useful if the operator can see it, and a window that
+    // is not on the space they are looking at is not on the screen at all.
+    host.recover_if_stranded(panel, may_recover);
 
     let weak = panel.as_weak();
     let probe_state = Arc::clone(state);
@@ -1185,7 +1306,8 @@ fn pulldown_is_ready(area: Option<&placement::WorkArea>, overlay_ready: bool) ->
 /// and the window that is told is the native one. Both need the same
 /// event — the native window's arrival — so both wait on the same bounded
 /// schedule.
-fn place_pulldown(panel: &Pulldown, state: &Arc<Mutex<UiState>>, attempts_left: u8) {
+fn place_pulldown(panel: &Pulldown, host: &PulldownHost, attempts_left: u8) {
+    let state = &host.context.state;
     let Ok(mut guard) = state.lock() else {
         return;
     };
@@ -1233,20 +1355,20 @@ fn place_pulldown(panel: &Pulldown, state: &Arc<Mutex<UiState>>, attempts_left: 
     }
     if !pulldown_is_ready(area.as_ref(), overlay_ready) && attempts_left > 0 {
         let weak = panel.as_weak();
-        let state = Arc::clone(state);
+        let host = host.clone();
         // The next tick is after the event loop has resumed the window.
         slint::Timer::single_shot(PLACEMENT_RETRY, move || {
             let Some(panel) = weak.upgrade() else {
                 return;
             };
-            place_pulldown(&panel, &state, attempts_left - 1);
+            place_pulldown(&panel, &host, attempts_left - 1);
         });
     }
 }
 
 /// Show the pulldown, or hide it if it is already up.
-fn toggle_pulldown(panel: &Pulldown, state: &Arc<Mutex<UiState>>) {
-    let Ok(mut guard) = state.lock() else {
+fn toggle_pulldown(panel: &Pulldown, host: &PulldownHost) {
+    let Ok(mut guard) = host.context.state.lock() else {
         return;
     };
     if guard.panel_visible {
@@ -1256,7 +1378,7 @@ fn toggle_pulldown(panel: &Pulldown, state: &Arc<Mutex<UiState>>) {
         return;
     }
     drop(guard);
-    show_pulldown(panel, state);
+    show_pulldown(panel, host, true);
 }
 
 /// The groups of detail for the selected host.
@@ -1816,6 +1938,41 @@ fn tray_status(counts: &model::FleetCounts, summary: &str) -> String {
 mod tests {
     use super::*;
     use crate::bridge::BridgeMessage;
+
+    /// A window that is on the space the operator is looking at is left
+    /// alone.
+    #[test]
+    fn a_window_on_the_operators_space_is_left_alone() {
+        assert_eq!(after_open(true, true), AfterOpen::Settled);
+    }
+
+    /// A window that is not on that space is not on the screen at all, so it
+    /// is rebuilt: a new window is the only way out of a stranded one.
+    #[test]
+    fn a_window_that_is_not_on_the_operators_space_is_rebuilt() {
+        assert_eq!(after_open(true, false), AfterOpen::Rebuild);
+    }
+
+    /// The rebuild's own open is not recovered again: a window that is
+    /// stranded twice is a window the desktop cannot show, and a rebuild
+    /// that repeats is a loop.
+    #[test]
+    fn a_rebuild_is_never_rebuilt_again() {
+        assert_eq!(after_open(false, false), AfterOpen::Settled);
+        assert_eq!(after_open(false, true), AfterOpen::Settled);
+    }
+
+    /// A pulldown that cannot be found is not a stranded one.
+    ///
+    /// The native window does not exist on the first open, and "cannot tell"
+    /// must not be read as "stranded" — or every first open would rebuild a
+    /// panel that is perfectly fine.
+    #[test]
+    fn a_pulldown_that_cannot_be_found_is_not_stranded() {
+        assert!(platform::overlay_is_on_the_active_space(
+            "a window that is not there"
+        ));
+    }
 
     /// A bridge whose messages the test chooses, and the state they are
     /// applied to.

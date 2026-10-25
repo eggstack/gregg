@@ -301,6 +301,11 @@ with that application still in full screen behind it, and the GUI has no Dock
 icon of its own. The menu bar is still macOS's own business: it is hidden in
 full screen, and the pointer at the top of the screen brings it back.
 
+And when the pulldown's window is left in a **space that no longer exists** —
+which is what a display being unplugged leaves behind — the panel is rebuilt
+rather than left where it can never be seen: the operator clicks the tray and
+a panel appears, not silence.
+
 It is its own Cargo workspace with its own lockfile, because Slint 1.18 needs
 Rust 1.92 and the five core crates keep their Rust 1.89 MSRV. Nothing in the
 core workspace depends on it, it is not published to crates.io, and the

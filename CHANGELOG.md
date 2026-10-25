@@ -406,6 +406,34 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The desktop frontend's pulldown opened nowhere when its window was left in
+  a space that no longer existed.** A window that is not on the space the
+  operator is looking at is **not on the screen at all**: the tray's click
+  reached the GUI, the panel was built and placed at the right coordinates,
+  and the operator saw nothing — and nothing appeared anywhere else either.
+  That is what a window whose **display was removed** leaves behind: the
+  display is gone, the space it owned went with it, and the window is left in a
+  space that no longer exists. **Measured** on macOS 15 (arm64): a long-running
+  GUI whose panel had been created while a second display was attached placed
+  the panel at `1092,36` with the right work area and reported
+  `onscreen=false` on every tick, on the desktop and over a full-screen
+  application alike — while a **fresh** instance opened over the full-screen
+  application without a hitch.
+
+  A native window cannot be moved between spaces, so the panel's component is
+  now **dropped** — hidden first, because a visible window keeps its own
+  component alive, and the component owns the native window — and a new one is
+  built; the new component brings a native window of its own, created in the
+  space the operator is looking at. The rebuild's own open never rebuilds
+  again, and a window that cannot be *found* is reported as *on* the active
+  space, so a first open never rebuilds a panel that is fine.
+
+  **Every** window carrying the pulldown's title is now prepared, not just the
+  first one found. While a window is being replaced, both the old one and the
+  new one carry the title, and preparing only the first left the new window
+  at the *floating* level — below full-screen content — so a rebuilt panel
+  would have been the very thing it was rebuilt to avoid.
+
 - **The desktop frontend's pulldown has no `×`, and the `EggPool` plane is
   always shown.** The `×` in the upper right served no function: the tray's
   click, `Esc` and a click away all dismiss the pulldown, and a fourth
