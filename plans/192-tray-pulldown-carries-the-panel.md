@@ -470,7 +470,9 @@ the GUI is **not shippable** for Windows or Linux.
 > click over a full-screen application placed the panel and showed it, with no rebuild.
 >
 > The GUI workspace's own suite is **186 passed / 0 failed** (182 before this work, plus four new
-> tests) and its release binary is **11,979,552 bytes**, **+0** on the build before this work.
+> tests) and its release binary is **11,979,552 bytes**, **+0** on the build before this work. The run
+> that covers it, **`40214604992`** on `eda88ce`, is **green on all ten jobs**, including the three
+> `GUI` legs, whose native tray exercises assert the pulldown's **position**.
 >
 > **What was not performed.** The stranded state itself could **not** be reproduced on demand —
 > the display that caused it is gone, and macOS offers no way to remove a display on command. The

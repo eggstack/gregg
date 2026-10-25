@@ -1860,6 +1860,17 @@ its clippy is clean under `-D warnings` and its formatting is clean, and the
 release binary is **11,979,552 bytes** — **+0 bytes** on the build before this
 work.
 
+**The CI run that covers this work is green.** Run **`40214604992`** against
+`eda88ce` is **green on all ten jobs**: the core `Linux`, `macOS (macos-15)`,
+`macOS (macos-15-intel)`, `Windows`, `Scripts`, `MSRV` and `FreeBSD` jobs, and
+the three `GUI` legs (`macos-15`, `windows-2022`, `ubuntu-latest`). The `GUI`
+legs are the only authority for this workspace's Windows and Linux behaviour,
+because the workspace is not a member of the root workspace and no root job
+compiles it. The legs' native tray exercises assert the pulldown's
+**position**, and the recovery is macOS-only — the whole change is inside
+`#[cfg(target_os = "macos")]` apart from the decision that drives it, which is
+a pure function.
+
 **What was not performed.** The stranded state itself could **not** be
 reproduced on demand: the display that caused it is gone from this machine,
 and macOS offers no way to remove a display on command. The recovery was
