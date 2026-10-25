@@ -323,3 +323,46 @@ is reading.
 or not a TUI is attached, which is why ten windows with the pane open cost the
 fleet exactly what zero windows cost. An intent change alters the document
 without touching the cache, and is therefore its own publication reason.
+
+## Optional desktop GUI
+
+`apps/gregg-gui` is an **optional** Slint frontend: a system tray entry and a
+pulldown panel for the same fleet this TUI shows. The pulldown's **fleet** gives
+every host a **block of its own** — a header line that names the host and
+carries the readings that are not used shares (the I/O wait, the load, the core
+count and the frequency) in this TUI's own words, and under it a usage bar for
+each of the five used shares — `CPU`, `MEM`, `SWP`/`COMMIT`, `DISK` and `NET` —
+each bar taking the full width of the panel less its percentage. The selected
+host's own numbers are behind the pulldown's own `Detail` control, and the
+detail is that host's **own block, drawn by the same component the fleet view
+draws every host with** — one bar per used share in the whole panel — with the
+numbers behind the shares, each drive's own facts and each interface's in one
+condensed list underneath. It is a
+second way to *look* at the fleet, never a second way to *poll* it — it
+attaches to the same per-config client daemon over the same local channel, so a
+TUI and a GUI window cost the fleet exactly what one window costs.
+
+The GUI is meant to live in the background, so it stays small: its window is
+built when it is first opened, and a hidden panel is not re-rendered.
+
+On macOS it is a **menu-bar-only** application, and the pulldown's window is
+told to join every space and to sit at the level a native status item's own
+menu is drawn at. So the tray's click opens the pulldown over another
+application that is in full screen, with that application still in full screen
+behind it.
+
+```bash
+cargo build --manifest-path apps/gregg-gui/Cargo.toml --release
+apps/gregg-gui/target/release/gregg-gui --config ~/.config/gregg/gregg.toml \
+    --gregg ./target/release/gregg
+```
+
+It needs an existing Gregg installation: it names the `gregg` client it should
+launch with `--gregg`, or uses an installer-owned `gregg` beside the GUI. It
+never launches itself and never polls the fleet directly. Closing its window
+hides it and leaves the tray running; quitting it never stops the client
+daemon.
+
+It is currently a **source build** — there is no installer and no release
+asset — and it has been exercised natively on macOS only. See
+[`apps/gregg-gui/README.md`](../apps/gregg-gui/README.md).

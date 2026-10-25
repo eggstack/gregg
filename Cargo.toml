@@ -7,6 +7,13 @@ members = [
     "crates/greggd",
     "crates/gregg",
 ]
+# Plan 188: the optional Slint desktop frontend is deliberately NOT a member of
+# this workspace. Slint 1.18 requires Rust >= 1.92 and this workspace's MSRV is
+# 1.89, so a member here would break `cargo test --workspace --all-features`
+# under the MSRV CI job even with no core code touched. `apps/gregg-gui` owns
+# its own workspace and lockfile; this entry makes the ownership unambiguous so
+# a future `members = ["apps/*"]` glob cannot silently pull it back in.
+exclude = ["apps/gregg-gui"]
 
 [workspace.package]
 version = "1.0.15"

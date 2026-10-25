@@ -1207,6 +1207,69 @@ fn spawn_request<C: Clock + Clone + Send + 'static>(
     })
 }
 
+// ── Shared display vocabulary ──────────────────────────────────────────
+//
+// These two formatters were private to the TUI's `ui::eggpool` renderer. The
+// optional desktop frontend has to describe the same failures, and a second
+// implementation of "authentication required" is a second thing that can
+// drift from the truth. They are therefore pure functions of the published
+// outcome, living here so both frontends render the same words.
+
+/// Bounded health diagnostic text. Raw bodies, credentials, and upstream
+/// error text are never rendered.
+#[must_use]
+pub fn health_error_text(outcome: &EggpoolHealthFetchOutcome) -> &'static str {
+    match outcome {
+        EggpoolHealthFetchOutcome::AuthenticationRequired => "auth required",
+        EggpoolHealthFetchOutcome::Forbidden => "forbidden",
+        EggpoolHealthFetchOutcome::Unsupported => "unsupported",
+        EggpoolHealthFetchOutcome::InvalidApiKey => "invalid api key",
+        EggpoolHealthFetchOutcome::Timeout => "timed out",
+        // Every local transport failure renders the same bounded word: a
+        // transport failure is never a `EggPool`-reported proxy status.
+        EggpoolHealthFetchOutcome::ConnectionRefused
+        | EggpoolHealthFetchOutcome::DnsFailure
+        | EggpoolHealthFetchOutcome::NetworkError => "unreachable",
+        EggpoolHealthFetchOutcome::HttpStatus(code) if *code == 503 => "unavailable",
+        EggpoolHealthFetchOutcome::BodyTooLarge => "response too large",
+        EggpoolHealthFetchOutcome::DecodeError => "invalid response",
+        EggpoolHealthFetchOutcome::UnsupportedSchema => "schema unsupported",
+        EggpoolHealthFetchOutcome::InvalidStatus => "invalid status",
+        EggpoolHealthFetchOutcome::InvalidEndpoint => "invalid endpoint",
+        EggpoolHealthFetchOutcome::HttpStatus(_) => "unavailable",
+        EggpoolHealthFetchOutcome::Online(_) => "unknown",
+    }
+}
+
+/// The bounded reason a summary fetch failed.
+///
+/// An `Online` outcome has no failure text, so it renders as the empty
+/// string: there is nothing wrong to report.
+#[must_use]
+pub fn outcome_text(outcome: &EggpoolFetchOutcome) -> String {
+    match outcome {
+        EggpoolFetchOutcome::MissingApiKeyEnv { name } => {
+            format!("API key environment variable {name} is not set")
+        }
+        EggpoolFetchOutcome::Unauthorized => "authentication required or key rejected".into(),
+        EggpoolFetchOutcome::Forbidden => "access forbidden".into(),
+        EggpoolFetchOutcome::StatsUnavailable => {
+            "stats unavailable — enable EggPool dashboard/statistics routes".into()
+        }
+        EggpoolFetchOutcome::Timeout => "request timed out".into(),
+        EggpoolFetchOutcome::ConnectionRefused => "connection refused".into(),
+        EggpoolFetchOutcome::DnsFailure => "DNS lookup failed".into(),
+        EggpoolFetchOutcome::NetworkError => "network error".into(),
+        EggpoolFetchOutcome::HttpStatus(code) => format!("HTTP {code}"),
+        EggpoolFetchOutcome::BodyTooLarge => "response too large".into(),
+        EggpoolFetchOutcome::DecodeError => "invalid JSON response".into(),
+        EggpoolFetchOutcome::InvalidSummary => "invalid summary response".into(),
+        EggpoolFetchOutcome::Cancelled => "refresh cancelled".into(),
+        EggpoolFetchOutcome::InvalidEndpoint => "invalid endpoint".into(),
+        EggpoolFetchOutcome::Online(_) => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

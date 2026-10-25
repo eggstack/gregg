@@ -1,0 +1,895 @@
+# apps/gregg-gui — resolved dependency tree
+#
+# Generated with:
+#   cargo tree --manifest-path apps/gregg-gui/Cargo.toml --prefix none
+#
+# Lockfile: apps/gregg-gui/Cargo.lock (this workspace's own lockfile;
+# it is NOT the root workspace's Cargo.lock).
+#
+# Packages in the lockfile: 604
+# Unique package names in the tree: 326
+# Distinct package versions in the tree: 352
+#
+# ---------------------------------------------------------------------
+# Direct dependencies
+# ---------------------------------------------------------------------
+gregg-gui v0.1.0 (/Users/davidbowman/projects/gregg/apps/gregg-gui)
+├── gregg v1.0.15 (/Users/davidbowman/projects/gregg/crates/gregg)
+├── gregg-protocol v1.0.15 (/Users/davidbowman/projects/gregg/crates/gregg-protocol)
+├── objc2 v0.6.5
+├── objc2-app-kit v0.3.2
+├── slint v1.18.1
+└── tokio v1.54.0
+[build-dependencies]
+└── slint-build v1.18.1
+[dev-dependencies]
+├── gregg-protocol v1.0.15 (/Users/davidbowman/projects/gregg/crates/gregg-protocol) (*)
+├── serde_json v1.0.154
+└── tokio-util v0.7.20
+
+# ---------------------------------------------------------------------
+# Full tree (one package per line; cargo tree marks a repeated
+# package with a trailing (*))
+# ---------------------------------------------------------------------
+gregg-gui v0.1.0 (/Users/davidbowman/projects/gregg/apps/gregg-gui)
+gregg v1.0.15 (/Users/davidbowman/projects/gregg/crates/gregg)
+clap v4.4.18
+clap_builder v4.4.18
+anstream v0.6.21
+anstyle v1.0.14
+anstyle-parse v0.2.7
+utf8parse v0.2.2
+anstyle-query v1.1.5
+colorchoice v1.0.5
+is_terminal_polyfill v1.70.2
+utf8parse v0.2.2
+anstyle v1.0.14
+clap_lex v0.6.0
+strsim v0.10.0
+clap_derive v4.4.7 (proc-macro)
+heck v0.4.1
+proc-macro2 v1.0.107
+unicode-ident v1.0.27
+quote v1.0.47
+proc-macro2 v1.0.107 (*)
+syn v2.0.119
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+unicode-ident v1.0.27
+crossterm v0.28.1
+bitflags v2.13.2
+serde_core v1.0.229
+futures-core v0.3.34
+mio v1.2.4
+libc v0.2.191
+log v0.4.34
+parking_lot v0.12.5
+lock_api v0.4.14
+scopeguard v1.2.0
+parking_lot_core v0.9.12
+cfg-if v1.0.5
+libc v0.2.191
+smallvec v1.16.3
+rustix v0.38.44
+bitflags v2.13.2 (*)
+errno v0.3.14
+libc v0.2.191
+libc v0.2.191
+signal-hook v0.3.18
+libc v0.2.191
+signal-hook-registry v1.4.8
+errno v0.3.14 (*)
+libc v0.2.191
+signal-hook-mio v0.2.5
+libc v0.2.191
+mio v1.2.4 (*)
+signal-hook v0.3.18 (*)
+eggfetch-core v0.2.2
+bytes v1.12.1
+futures-core v0.3.34
+futures-util v0.3.34
+futures-core v0.3.34
+futures-task v0.3.34
+pin-project-lite v0.2.17
+slab v0.4.12
+http v1.5.0
+bytes v1.12.1
+itoa v1.0.18
+http-body v1.1.0
+bytes v1.12.1
+http v1.5.0 (*)
+http-body-util v0.1.5
+bytes v1.12.1
+futures-core v0.3.34
+http v1.5.0 (*)
+http-body v1.1.0 (*)
+pin-project-lite v0.2.17
+hyper v1.12.0
+atomic-waker v1.1.2
+bytes v1.12.1
+futures-core v0.3.34
+http v1.5.0 (*)
+http-body v1.1.0 (*)
+httparse v1.10.1
+itoa v1.0.18
+pin-project-lite v0.2.17
+smallvec v1.16.3
+tokio v1.54.0
+bytes v1.12.1
+libc v0.2.191
+mio v1.2.4 (*)
+pin-project-lite v0.2.17
+signal-hook-registry v1.4.8 (*)
+socket2 v0.6.5
+libc v0.2.191
+tokio-macros v2.7.2 (proc-macro)
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v3.0.9
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+unicode-ident v1.0.27
+want v0.3.2
+try-lock v0.2.5
+hyper-rustls v0.27.10
+http v1.5.0 (*)
+hyper v1.12.0 (*)
+hyper-util v0.1.21
+bytes v1.12.1
+futures-channel v0.3.34
+futures-core v0.3.34
+futures-util v0.3.34 (*)
+http v1.5.0 (*)
+http-body v1.1.0 (*)
+httparse v1.10.1
+hyper v1.12.0 (*)
+libc v0.2.191
+pin-project-lite v0.2.17
+socket2 v0.6.5 (*)
+tokio v1.54.0 (*)
+tower-service v0.3.3
+tracing v0.1.44
+pin-project-lite v0.2.17
+tracing-core v0.1.36
+once_cell v1.21.4
+critical-section v1.2.0
+portable-atomic v1.15.0
+critical-section v1.2.0
+log v0.4.34
+rustls v0.23.46
+log v0.4.34
+once_cell v1.21.4 (*)
+ring v0.17.14
+cfg-if v1.0.5
+getrandom v0.2.17
+cfg-if v1.0.5
+libc v0.2.191
+libc v0.2.191
+untrusted v0.9.0
+cc v1.9.0
+find-msvc-tools v0.1.15
+shlex v2.0.1
+rustls-pki-types v1.15.1
+zeroize v1.9.1
+rustls-webpki v0.103.16
+ring v0.17.14 (*)
+rustls-pki-types v1.15.1 (*)
+untrusted v0.9.0
+subtle v2.6.1
+zeroize v1.9.1
+tokio v1.54.0 (*)
+tokio-rustls v0.26.6
+rustls v0.23.46 (*)
+tokio v1.54.0 (*)
+tower-service v0.3.3
+hyper-util v0.1.21 (*)
+pem-rfc7468 v0.1.1
+base64ct v1.8.3
+percent-encoding v2.3.2
+pin-project-lite v0.2.17
+rustls v0.23.46 (*)
+thiserror v2.0.21
+thiserror-impl v2.0.21 (proc-macro)
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v3.0.9 (*)
+tokio v1.54.0 (*)
+tokio-rustls v0.26.6 (*)
+tower-service v0.3.3
+url v2.5.8
+form_urlencoded v1.2.2
+percent-encoding v2.3.2
+idna v1.1.0
+idna_adapter v1.2.2
+icu_normalizer v2.3.0
+icu_collections v2.3.0
+displaydoc v0.2.7 (proc-macro)
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v3.0.9 (*)
+potential_utf v0.1.6
+writeable v0.6.4
+zerovec v0.11.8
+yoke v0.8.3
+stable_deref_trait v1.2.1
+yoke-derive v0.8.4 (proc-macro)
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v3.0.9 (*)
+synstructure v0.14.0
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v3.0.9 (*)
+zerofrom v0.1.8
+zerofrom-derive v0.1.8 (proc-macro)
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v3.0.9 (*)
+synstructure v0.14.0 (*)
+zerofrom v0.1.8 (*)
+zerovec-derive v0.11.6 (proc-macro)
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v3.0.9 (*)
+utf8_iter v1.0.4
+yoke v0.8.3 (*)
+zerofrom v0.1.8 (*)
+zerovec v0.11.8 (*)
+icu_normalizer_data v2.3.0
+icu_provider v2.3.1
+displaydoc v0.2.7 (proc-macro) (*)
+icu_locale_core v2.3.0
+displaydoc v0.2.7 (proc-macro) (*)
+litemap v0.8.3
+tinystr v0.8.4
+displaydoc v0.2.7 (proc-macro) (*)
+zerovec v0.11.8 (*)
+writeable v0.6.4
+zerovec v0.11.8 (*)
+stable_deref_trait v1.2.1
+writeable v0.6.4
+yoke v0.8.3 (*)
+zerofrom v0.1.8 (*)
+zerotrie v0.2.5
+displaydoc v0.2.7 (proc-macro) (*)
+yoke v0.8.3 (*)
+zerofrom v0.1.8 (*)
+zerovec v0.11.8 (*)
+smallvec v1.16.3
+zerovec v0.11.8 (*)
+icu_properties v2.3.0
+displaydoc v0.2.7 (proc-macro) (*)
+icu_collections v2.3.0 (*)
+icu_locale_core v2.3.0 (*)
+icu_properties_data v2.3.0
+icu_provider v2.3.1 (*)
+zerotrie v0.2.5 (*)
+zerovec v0.11.8 (*)
+smallvec v1.16.3
+utf8_iter v1.0.4
+percent-encoding v2.3.2
+webpki-roots v0.26.11
+webpki-roots v1.0.10
+rustls-pki-types v1.15.1 (*)
+futures-util v0.3.34 (*)
+gregg-protocol v1.0.15 (/Users/davidbowman/projects/gregg/crates/gregg-protocol)
+serde v1.0.229
+serde_core v1.0.229
+serde_derive v1.0.229 (proc-macro)
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v3.0.9 (*)
+serde_json v1.0.154
+itoa v1.0.18
+memchr v2.8.3
+serde_core v1.0.229
+zmij v1.0.23
+thiserror v1.0.69
+thiserror-impl v1.0.69 (proc-macro)
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v2.0.119 (*)
+gregg-update v1.0.15 (/Users/davidbowman/projects/gregg/crates/gregg-update)
+self-replace v1.5.0
+tempfile v3.27.0
+fastrand v2.5.0
+getrandom v0.4.3
+cfg-if v1.0.5
+libc v0.2.191
+once_cell v1.21.4 (*)
+rustix v1.1.5
+bitflags v2.13.2 (*)
+errno v0.3.14 (*)
+libc v0.2.191
+serde_json v1.0.154 (*)
+sha2 v0.10.9
+cfg-if v1.0.5
+cpufeatures v0.2.17
+libc v0.2.191
+digest v0.10.7
+block-buffer v0.10.4
+generic-array v0.14.7
+typenum v1.20.1
+version_check v0.9.5
+crypto-common v0.1.7
+generic-array v0.14.7 (*)
+typenum v1.20.1
+tempfile v3.27.0 (*)
+thiserror v1.0.69 (*)
+libc v0.2.191
+ratatui v0.29.0
+bitflags v2.13.2 (*)
+cassowary v0.3.0
+compact_str v0.8.2
+castaway v0.2.4
+rustversion v1.0.23 (proc-macro)
+cfg-if v1.0.5
+itoa v1.0.18
+rustversion v1.0.23 (proc-macro)
+ryu v1.0.23
+static_assertions v1.1.0
+crossterm v0.28.1 (*)
+indoc v2.0.8 (proc-macro)
+rustversion v1.0.23 (proc-macro)
+instability v0.3.14 (proc-macro)
+darling v0.24.1
+darling_core v0.24.1
+ident_case v1.0.1
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+strsim v0.11.1
+syn v3.0.9 (*)
+darling_macro v0.24.1 (proc-macro)
+darling_core v0.24.1 (*)
+quote v1.0.47 (*)
+syn v3.0.9 (*)
+indoc v2.0.8 (proc-macro) (*)
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v3.0.9 (*)
+itertools v0.13.0
+either v1.19.0
+lru v0.12.5
+hashbrown v0.15.5
+allocator-api2 v0.2.21
+equivalent v1.0.3
+foldhash v0.1.5
+paste v1.0.15 (proc-macro)
+strum v0.26.3
+strum_macros v0.26.4 (proc-macro)
+heck v0.5.0
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+rustversion v1.0.23 (proc-macro)
+syn v2.0.119 (*)
+unicode-segmentation v1.13.3
+unicode-truncate v1.1.0
+itertools v0.13.0 (*)
+unicode-segmentation v1.13.3
+unicode-width v0.1.14
+unicode-width v0.2.0
+serde v1.0.229 (*)
+serde_json v1.0.154 (*)
+thiserror v1.0.69 (*)
+tokio v1.54.0 (*)
+tokio-util v0.7.20
+bytes v1.12.1
+futures-core v0.3.34
+futures-sink v0.3.34
+pin-project-lite v0.2.17
+tokio v1.54.0 (*)
+toml v0.8.23
+serde v1.0.229 (*)
+serde_spanned v0.6.9
+serde v1.0.229 (*)
+toml_datetime v0.6.11
+serde v1.0.229 (*)
+toml_edit v0.22.27
+indexmap v2.14.2
+equivalent v1.0.3
+hashbrown v0.17.1
+foldhash v0.2.0
+serde v1.0.229 (*)
+serde_spanned v0.6.9 (*)
+toml_datetime v0.6.11 (*)
+toml_write v0.1.2
+winnow v0.7.15
+unicode-width v0.2.0
+url v2.5.8 (*)
+uuid v1.28.0
+getrandom v0.4.3 (*)
+gregg-protocol v1.0.15 (/Users/davidbowman/projects/gregg/crates/gregg-protocol) (*)
+objc2 v0.6.5
+objc2-encode v4.1.0
+objc2-app-kit v0.3.2
+bitflags v2.13.2 (*)
+objc2 v0.6.5 (*)
+objc2-core-foundation v0.3.2
+bitflags v2.13.2 (*)
+objc2 v0.6.5 (*)
+objc2-core-graphics v0.3.2
+bitflags v2.13.2 (*)
+objc2 v0.6.5 (*)
+objc2-core-foundation v0.3.2 (*)
+objc2-foundation v0.3.2
+bitflags v2.13.2 (*)
+block2 v0.6.2
+objc2 v0.6.5 (*)
+objc2 v0.6.5 (*)
+objc2-core-foundation v0.3.2 (*)
+objc2-quartz-core v0.3.2
+bitflags v2.13.2 (*)
+objc2 v0.6.5 (*)
+objc2-core-foundation v0.3.2 (*)
+objc2-foundation v0.3.2 (*)
+slint v1.18.1
+const-field-offset v0.2.1
+const-field-offset-macro v0.2.1 (proc-macro)
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v3.0.9 (*)
+field-offset v0.3.6
+memoffset v0.9.1
+autocfg v1.5.1
+rustc_version v0.4.1
+semver v1.0.28
+i-slint-backend-selector v1.18.1
+cfg-if v1.0.5
+i-slint-backend-winit v1.18.1
+arboard v3.7.0
+objc2 v0.6.5 (*)
+objc2-app-kit v0.3.2 (*)
+objc2-foundation v0.3.2 (*)
+block2 v0.6.2 (*)
+bytemuck v1.25.2
+bytemuck_derive v1.12.1 (proc-macro)
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v3.0.9 (*)
+cfg-if v1.0.5
+i-slint-common v1.18.1
+derive_more v2.1.1
+derive_more-impl v2.1.1 (proc-macro)
+convert_case v0.10.0
+unicode-segmentation v1.13.3
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v2.0.119 (*)
+unicode-xid v0.2.6
+rustc_version v0.4.1 (*)
+fontique v0.11.1
+hashbrown v0.17.1 (*)
+linebender_resource_handle v0.1.1
+memmap2 v0.9.11
+libc v0.2.191
+objc2 v0.6.5 (*)
+objc2-core-foundation v0.3.2 (*)
+objc2-core-text v0.3.2
+bitflags v2.13.2 (*)
+objc2-core-foundation v0.3.2 (*)
+objc2-foundation v0.3.2 (*)
+parlance v0.1.1
+read-fonts v0.41.0
+bytemuck v1.25.2 (*)
+font-types v0.12.7
+bytemuck v1.25.2 (*)
+once_cell v1.21.4 (*)
+smallvec v1.16.3
+htmlparser v0.2.1
+icu_decimal v2.3.0
+displaydoc v0.2.7 (proc-macro) (*)
+fixed_decimal v0.7.2
+displaydoc v0.2.7 (proc-macro) (*)
+smallvec v1.16.3
+writeable v0.6.4
+icu_decimal_data v2.3.0
+icu_locale_core v2.3.0 (*)
+icu_locale_fallback v2.3.0
+icu_locale_core v2.3.0 (*)
+icu_locale_fallback_data v2.3.0
+icu_provider v2.3.1 (*)
+potential_utf v0.1.6 (*)
+tinystr v0.8.4 (*)
+zerovec v0.11.8 (*)
+icu_provider v2.3.1 (*)
+writeable v0.6.4
+zerovec v0.11.8 (*)
+icu_locale_core v2.3.0 (*)
+icu_provider v2.3.1 (*)
+pulldown-cmark v0.13.4
+bitflags v2.13.2 (*)
+memchr v2.8.3
+unicase v2.10.0
+resvg v0.48.1
+bytemuck v1.25.2 (*)
+gif v0.14.2
+color_quant v1.1.0
+weezl v0.1.12
+image-webp v0.2.4
+byteorder-lite v0.1.0
+quick-error v2.0.1
+log v0.4.34
+pico-args v0.5.0
+rgb v0.8.53
+bytemuck v1.25.2 (*)
+svgtypes v0.16.1
+kurbo v0.13.1
+arrayvec v0.7.8
+polycool v0.4.0
+arrayvec v0.7.8
+smallvec v1.16.3
+siphasher v1.0.4
+tiny-skia v0.12.0
+arrayref v0.3.9
+arrayvec v0.7.8
+bytemuck v1.25.2 (*)
+cfg-if v1.0.5
+log v0.4.34
+png v0.18.1
+bitflags v2.13.2 (*)
+crc32fast v1.5.3
+cfg-if v1.0.5
+fdeflate v0.3.7
+simd-adler32 v0.3.10
+flate2 v1.1.10
+crc32fast v1.5.3 (*)
+miniz_oxide v0.9.1
+adler2 v2.0.1
+simd-adler32 v0.3.10
+miniz_oxide v0.8.9
+adler2 v2.0.1
+simd-adler32 v0.3.10
+tiny-skia-path v0.12.0
+arrayref v0.3.9
+bytemuck v1.25.2 (*)
+strict-num v0.1.1
+float-cmp v0.9.0
+usvg v0.48.1
+base64 v0.23.1
+data-url v0.3.2
+flate2 v1.1.10 (*)
+fontdb v0.24.0
+log v0.4.34
+slotmap v1.1.1
+version_check v0.9.5
+tinyvec v1.13.3
+harfrust v0.12.0
+bitflags v2.13.2 (*)
+bytemuck v1.25.2 (*)
+read-fonts v0.41.0 (*)
+smallvec v1.16.3
+imagesize v0.15.0
+kurbo v0.13.1 (*)
+log v0.4.34
+pico-args v0.5.0
+roxmltree v0.21.1
+memchr v2.8.3
+simplecss v0.2.2
+log v0.4.34
+siphasher v1.0.4
+skrifa v0.44.0
+bytemuck v1.25.2 (*)
+read-fonts v0.41.0 (*)
+strict-num v0.1.1 (*)
+svgtypes v0.16.1 (*)
+tiny-skia-path v0.12.0 (*)
+unicode-bidi v0.3.18
+unicode-script v0.5.8
+unicode-vo v0.1.0
+xmlwriter v0.1.0
+zune-jpeg v0.5.15
+zune-core v0.5.3
+skrifa v0.44.0 (*)
+i-slint-core v1.18.1
+bitflags v2.13.2 (*)
+cfg-if v1.0.5
+chrono v0.4.45
+iana-time-zone v0.1.65
+core-foundation-sys v0.8.7
+num-traits v0.2.19
+libm v0.2.16
+autocfg v1.5.1
+clru v0.6.3
+hashbrown v0.16.1
+allocator-api2 v0.2.21
+equivalent v1.0.3
+foldhash v0.2.0
+const-field-offset v0.2.1 (*)
+derive_more v2.1.1 (*)
+euclid v0.22.14
+num-traits v0.2.19 (*)
+i-slint-common v1.18.1 (*)
+i-slint-core-macros v1.18.1 (proc-macro)
+quote v1.0.47 (*)
+serde_json v1.0.154 (*)
+syn v3.0.9 (*)
+icu_normalizer v2.3.0 (*)
+image v0.25.10
+bytemuck v1.25.2 (*)
+byteorder-lite v0.1.0
+moxcms v0.8.1
+num-traits v0.2.19 (*)
+pxfm v0.1.30
+num-traits v0.2.19 (*)
+png v0.18.1 (*)
+zune-core v0.5.3
+zune-jpeg v0.5.15 (*)
+lyon_algorithms v1.0.22
+lyon_path v1.0.19
+lyon_geom v1.0.20
+arrayvec v0.7.8
+euclid v0.22.14 (*)
+num-traits v0.2.19 (*)
+num-traits v0.2.19 (*)
+num-traits v0.2.19 (*)
+lyon_extra v1.1.0
+lyon_path v1.0.19 (*)
+thiserror v2.0.21 (*)
+lyon_geom v1.0.20 (*)
+lyon_path v1.0.19 (*)
+num-traits v0.2.19 (*)
+objc2 v0.6.5 (*)
+objc2-app-kit v0.3.2 (*)
+objc2-foundation v0.3.2 (*)
+once_cell v1.21.4 (*)
+parley v0.11.1
+fontique v0.11.1 (*)
+harfrust v0.12.0 (*)
+hashbrown v0.17.1 (*)
+icu_normalizer v2.3.0 (*)
+icu_properties v2.3.0 (*)
+icu_segmenter v2.3.0
+icu_collections v2.3.0 (*)
+icu_locale_fallback v2.3.0 (*)
+icu_provider v2.3.1 (*)
+icu_segmenter_data v2.3.0
+potential_utf v0.1.6 (*)
+smallvec v1.16.3
+utf8_iter v1.0.4
+zerovec v0.11.8 (*)
+linebender_resource_handle v0.1.1
+parlance v0.1.1
+parley_data v0.11.1
+icu_properties v2.3.0 (*)
+skrifa v0.44.0 (*)
+pin-project v1.1.13
+pin-project-internal v1.1.13 (proc-macro)
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v2.0.119 (*)
+pin-weak v1.1.0
+portable-atomic v1.15.0 (*)
+resvg v0.48.1 (*)
+rgb v0.8.53 (*)
+scopeguard v1.2.0
+skrifa v0.44.0 (*)
+slab v0.4.12
+strum v0.28.0
+strum_macros v0.28.0 (proc-macro)
+heck v0.5.0
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v2.0.119 (*)
+swash v0.2.10
+skrifa v0.44.0 (*)
+yazi v0.2.1
+zeno v0.3.3
+sys-locale v0.3.2
+taffy v0.10.1
+arrayvec v0.7.8
+slotmap v1.1.1 (*)
+unicode-linebreak v0.1.5
+unicode-script v0.5.8
+unicode-segmentation v1.13.3
+vtable v0.5.0
+const-field-offset v0.2.1 (*)
+portable-atomic v1.15.0 (*)
+stable_deref_trait v1.2.1
+vtable-macro v0.5.0 (proc-macro)
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v3.0.9 (*)
+i-slint-core-macros v1.18.1 (proc-macro) (*)
+i-slint-renderer-software v1.18.1
+bytemuck v1.25.2 (*)
+clru v0.6.3 (*)
+derive_more v2.1.1 (*)
+euclid v0.22.14 (*)
+i-slint-common v1.18.1 (*)
+i-slint-core v1.18.1 (*)
+lyon_path v1.0.19 (*)
+num-traits v0.2.19 (*)
+skrifa v0.44.0 (*)
+swash v0.2.10 (*)
+zeno v0.3.3
+imgref v1.12.3
+lyon_path v1.0.19 (*)
+muda v0.19.3
+crossbeam-channel v0.5.17
+crossbeam-utils v0.8.23
+dpi v0.1.2
+keyboard-types v0.7.0
+bitflags v2.13.2 (*)
+serde v1.0.229 (*)
+unicode-segmentation v1.13.3
+objc2 v0.6.5 (*)
+objc2-app-kit v0.3.2 (*)
+objc2-core-foundation v0.3.2 (*)
+objc2-foundation v0.3.2 (*)
+once_cell v1.21.4 (*)
+png v0.18.1 (*)
+thiserror v2.0.21 (*)
+objc2 v0.6.5 (*)
+objc2-app-kit v0.3.2 (*)
+objc2-foundation v0.3.2 (*)
+objc2-quartz-core v0.3.2 (*)
+pin-weak v1.1.0
+raw-window-handle v0.6.2
+rgb v0.8.53 (*)
+scoped-tls-hkt v0.1.5
+scopeguard v1.2.0
+softbuffer v0.4.8 (/Users/davidbowman/projects/gregg/apps/gregg-gui/vendor/softbuffer)
+objc2 v0.6.5 (*)
+objc2-core-foundation v0.3.2 (*)
+objc2-core-graphics v0.3.2 (*)
+objc2-foundation v0.3.2 (*)
+objc2-quartz-core v0.3.2 (*)
+raw-window-handle v0.6.2
+tracing v0.1.44 (*)
+strum v0.28.0 (*)
+vtable v0.5.0 (*)
+webbrowser v1.2.4
+log v0.4.34
+objc2 v0.6.5 (*)
+objc2-app-kit v0.3.2 (*)
+objc2-foundation v0.3.2 (*)
+url v2.5.8 (*)
+winit v0.30.13
+bitflags v2.13.2 (*)
+block2 v0.5.1
+objc2 v0.5.3
+objc-sys v0.3.5
+objc2-encode v4.1.0
+core-foundation v0.9.4
+core-foundation-sys v0.8.7
+libc v0.2.191
+core-graphics v0.23.2
+bitflags v1.3.2
+core-foundation v0.9.4 (*)
+core-graphics-types v0.1.3
+bitflags v1.3.2
+core-foundation v0.9.4 (*)
+libc v0.2.191
+foreign-types v0.5.0
+foreign-types-macros v0.2.4 (proc-macro)
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v3.0.9 (*)
+foreign-types-shared v0.3.1
+libc v0.2.191
+cursor-icon v1.2.0
+dpi v0.1.2
+objc2 v0.5.3 (*)
+objc2-app-kit v0.2.2
+bitflags v2.13.2 (*)
+objc2 v0.5.3 (*)
+objc2-foundation v0.2.2
+bitflags v2.13.2 (*)
+block2 v0.5.1 (*)
+dispatch v0.2.0
+objc2 v0.5.3 (*)
+objc2-foundation v0.2.2 (*)
+raw-window-handle v0.6.2
+smol_str v0.2.2
+tracing v0.1.44 (*)
+cfg_aliases v0.2.2
+cfg_aliases v0.2.2
+i-slint-core v1.18.1 (*)
+i-slint-core-macros v1.18.1 (proc-macro) (*)
+cfg_aliases v0.2.2
+i-slint-common v1.18.1 (*)
+i-slint-backend-winit v1.18.1 (*)
+i-slint-common v1.18.1 (*)
+i-slint-core v1.18.1 (*)
+i-slint-core-macros v1.18.1 (proc-macro) (*)
+i-slint-renderer-software v1.18.1 (*)
+num-traits v0.2.19 (*)
+once_cell v1.21.4 (*)
+pin-weak v1.1.0
+slint-macros v1.18.1 (proc-macro)
+i-slint-compiler v1.18.1
+annotate-snippets v0.12.9 (/Users/davidbowman/projects/gregg/apps/gregg-gui/vendor/annotate-snippets)
+anstyle v1.0.14
+unicode-width v0.2.0
+by_address v1.2.1
+data-url v0.3.2
+derive_more v2.1.1
+derive_more-impl v2.1.1 (proc-macro) (*)
+i-slint-common v1.18.1 (*)
+icu_normalizer v2.3.0 (*)
+icu_properties v2.3.0
+displaydoc v0.2.7 (proc-macro) (*)
+icu_collections v2.3.0 (*)
+icu_locale_core v2.3.0 (*)
+icu_properties_data v2.3.0
+icu_provider v2.3.1 (*)
+zerotrie v0.2.5 (*)
+zerovec v0.11.8 (*)
+image v0.25.10 (*)
+indexmap v2.14.2 (*)
+itertools v0.15.0
+either v1.19.0
+lyon_extra v1.1.0
+lyon_path v1.0.19
+lyon_geom v1.0.20
+arrayvec v0.7.8
+euclid v0.22.14 (*)
+num-traits v0.2.19 (*)
+num-traits v0.2.19 (*)
+thiserror v2.0.21
+thiserror-impl v2.0.21 (proc-macro) (*)
+lyon_path v1.0.19 (*)
+num_enum v0.7.6
+num_enum_derive v0.7.6 (proc-macro)
+proc-macro-crate v3.5.0
+toml_edit v0.25.17+spec-1.1.0
+indexmap v2.14.2 (*)
+toml_datetime v1.1.2+spec-1.1.0
+toml_parser v1.1.5+spec-1.1.0
+winnow v1.0.4
+toml_writer v1.1.3+spec-1.1.0
+winnow v1.0.4
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v2.0.119 (*)
+rustversion v1.0.23 (proc-macro)
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+rayon v1.12.0
+either v1.19.0
+rayon-core v1.13.0
+crossbeam-deque v0.8.8
+crossbeam-epoch v0.9.21
+crossbeam-utils v0.8.23
+crossbeam-utils v0.8.23
+crossbeam-utils v0.8.23
+resvg v0.48.1 (*)
+rowan v0.17.0
+countme v3.0.1
+hashbrown v0.14.5
+memoffset v0.9.1 (*)
+rustc-hash v1.1.0
+text-size v1.1.1
+rspolib v0.1.2
+lazy_static v1.5.1
+natord v1.0.9
+snafu v0.8.9
+snafu-derive v0.8.9 (proc-macro)
+heck v0.5.0
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v2.0.119 (*)
+unicode-linebreak v0.1.5
+unicode-width v0.2.0
+skrifa v0.44.0 (*)
+smol_str v0.3.7
+strum v0.28.0 (*)
+swash v0.2.10 (*)
+typed-index-collections v3.5.0
+unicode-segmentation v1.13.3
+url v2.5.8 (*)
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+spin_on v0.1.1
+pin-utils v0.1.1
+unicode-segmentation v1.13.3
+vtable v0.5.0 (*)
+tokio v1.54.0 (*)
+slint-build v1.18.1
+derive_more v2.1.1 (*)
+i-slint-compiler v1.18.1 (*)
+spin_on v0.1.1 (*)
+toml_edit v0.25.17+spec-1.1.0 (*)
+gregg-protocol v1.0.15 (/Users/davidbowman/projects/gregg/crates/gregg-protocol) (*)
+serde_json v1.0.154 (*)
+tokio-util v0.7.20 (*)

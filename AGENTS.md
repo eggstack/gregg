@@ -24,6 +24,302 @@ gregg-update    ◄── gregg       (shared self-update mechanics)
 - `greggd` and `gregg` never depend on each other. `gregg-protocol` never depends on another workspace crate. `gregg-host`/`gregg-update` never depend on app crates, service managers, or the protocol.
 → `architecture/workspace.md`
 
+### The optional GUI app is NOT a workspace member
+
+`apps/gregg-gui/` is a **separate Cargo workspace** with its own lockfile, its own
+`rust-toolchain.toml`, and its own MSRV (**1.92**, because Slint 1.18 requires it).
+The root workspace lists it under `exclude` so a `members` glob cannot pull it
+back in.
+
+This is not a style choice. The root workspace's MSRV is **1.89** and its MSRV CI
+job runs `cargo test --workspace --all-targets --all-features`; a Slint member
+would break that job even with no core code touched. Build it on its own:
+
+```bash
+cargo build --manifest-path apps/gregg-gui/Cargo.toml --release
+cargo test  --manifest-path apps/gregg-gui/Cargo.toml
+```
+
+The GUI is a **frontend**, not a second poller: it attaches to the existing
+per-config client daemon over the same local IPC and renders what that daemon
+already polls. It must never open its own remote HTTP client. It is not
+published to crates.io (`publish = false`).
+
+**The GUI workspace has its own CI.** It is not a member of the root workspace,
+so no root job sees it: one CI job formats, lints, tests and release-builds it
+on macOS, Windows and Linux **natively**, and exercises the system tray on the
+Windows and Linux legs. A `#[cfg(windows)]` branch inside it — or inside the
+`gregg` crate it depends on — that no other job compiles is exactly how the
+Windows build of `gregg` stayed broken for a whole line of work; the GUI's own
+job is what makes that impossible now.
+
+**A desktop with no system tray must never lose its only control surface.**
+On Linux the tray needs a `StatusNotifierItem` host, and a plain GNOME session
+has none. The GUI therefore probes for a tray host, reports the answer in one
+machine-readable line, shows the operator what is going on in the panel, and
+**closes by quitting rather than by hiding** when there is no tray — a hidden
+panel with no tray is an unreachable application. With no tray the panel is
+also opened at startup, so it is never a hidden surface.
+
+**The GUI has one surface: a tray pulldown.** The separate monitor window is
+gone. A borderless, always-on-top panel carries every pane: the fleet summary,
+the host list, the selected host's metrics, drives, interfaces, cron, records
+and the EggPool plane, plus the forms that add, remove and edit hosts. The
+lists scroll with **bounded** heights: a large fleet must not push the metrics,
+cron and EggPool panes — or the buttons — out of the panel. It is dismissed by
+`Esc`, the tray's click **and a click away** — and by nothing else, because a
+fourth control that does the same thing is a target the operator can miss. The
+click
+away is **two signals on two platforms**, because another application's mouse
+is not watchable everywhere: **macOS watches the mouse** — AppKit's global
+event monitor reports the clicks that are dispatched to *other* applications,
+which is exactly a click that landed elsewhere, and the pointer's position says
+where — while **Windows and Linux watch the keyboard focus**, because Slint
+1.18 exposes `FocusScope`'s `focus-lost` callback and its
+`FocusReason.window-activation` is the desktop saying the window is no longer
+active, and there is no portable way to watch another application's mouse.
+The focus is **not** a reliable click-away signal on macOS: **measured**, a
+desktop that took the foreground for its own reasons closed the pulldown in
+**4 of 5** opens, so macOS does not use it. The **menu bar is excluded** from
+"away" on macOS, because the tray's own click *toggles* the pulldown — the
+watch must not also dismiss it, or the pulldown would hide and open again —
+and a 40-point band below the bar absorbs the drift between the click and the
+pointer's position. The watch uses **safe** AppKit API only: no event tap, no
+accessibility permission, and the GUI crate still contains no `unsafe` at all.
+The limit that is left is stated rather than papered over: on Windows and
+Linux the signal is *the focus was lost*, not *a click landed elsewhere*, so a
+desktop that takes the focus away for another reason dismisses the pulldown
+too.
+
+**The pulldown has two views, and the fleet view is a table of blocks.** The
+**fleet** is the TUI's condensed fleet row turned on its side: every host is a
+**block of its own** — a **header line** that names the host and carries the
+readings that are not used shares (the I/O wait, the load, the core count and
+the frequency) in the TUI's own words, and under it the **five used shares**
+(`CPU`, `MEM`, `SWP`/`COMMIT`, `DISK`, `NET`), one row each, each row carrying
+**only its share**: the bar takes the full width of the row less the
+percentage, and the percentage is the last thing in the row. A reading that is
+not a used share has no bar, so it can never be drawn as one. The block names
+the host and not where it is. A host that is not online has **no rows**: its
+header says why it is offline and nothing else. The selected host's own
+numbers are behind the pulldown's own footer control, so the main window is a
+list of hosts and nothing else. The selected host is marked with a **quiet
+tint** and by its name in the accent colour, never with the platform's
+selection colour: that colour is a saturated accent whose palette foreground
+is black on macOS, and a bar drawn in it reads as a hole. **A bar fills from
+its left edge**, and that is written down: Slint centres a child that has
+a size and no explicit `x`/`y` inside a parent that is not a layout, so every
+element the pulldown places inside another element carries its own `x` and
+`y`.
+
+**The detail view is the fleet view's own block, and its extra facts are one
+condensed list.** The detail view is **not** a second rendering of the selected
+host: it is the selected host's **own block**, drawn by the **same `HostBlock`
+component** the fleet view draws every host with, so there is **exactly one
+bar per used share in the whole panel** and the two views cannot drift apart.
+Do not give the detail view its own bars, its own column widths or its own
+headings for the readings. The extra facts under the block are **one
+condensed list**: a quiet heading and a two-column row under it — the name on
+the left, the value on the right, in the quiet colour. `RESOURCES` carries the
+numbers **behind the shares** the block already shows, under the block's own
+row labels; `DRIVES` carries each mount's own facts, with the free space
+falling back to what is left of the total when the platform reported none
+(the TUI's own rule); `NETWORK` carries the aggregate first and then each
+interface, and a link capacity that was **not measured** is **not stated**.
+
+**The two views share ONE scrolling box, and a hidden pane takes no room.**
+The fleet view and the detail view scroll in the **same** box, so the panel's
+height does not change when the operator opens the detail, and the footer's
+control that brings the fleet back never moves under the pointer — a control
+that moves is a control that cannot be used to come back. The box is the
+fleet's blocks and it has a floor, so the detail always has room to be read.
+The two forms are **always** in the tree, because their fields have to be
+nameable, and so they must declare **zero height** while their mode is not
+showing: a Slint layout lays out the **invisible** items as if they were
+visible, so two 220-point forms that were merely hidden took 440 points of
+the body's height and crushed the fleet's scroll box to a third of what the
+panel had room for. `visible: false` hides a pane; it does not unmake it.
+The pulldown is a **dropdown** and most of what it carries is vertical, so it
+is **412 points** wide: a bar takes the whole row less the percentage, and a
+panel wider than the row is mostly empty.
+
+**The `EggPool` plane is pinned, and it is always shown.** It describes the
+service and not a host, so it is **not** one of the selected host's groups and
+it is **not** behind the detail view: it is pinned **below** the scrolling
+box, in every view, and it never scrolls out of reach. The footer's link that
+opens and closes it is in every view too, and the plane is **open from the
+first frame** — the GUI publishes the `EggPool` intent when it attaches, so
+the daemon is already sending the plane the panel shows. A plane with nothing
+to say takes **no room at all**: a configuration with no `EggPool` entry has
+none, and the panel must not carry a gap where one would have been — the same
+rule the forms follow, and for the same reason.
+
+**A hidden pulldown does not rebuild the view, and the window is not built
+until it is opened.** The daemon publishes a document every few seconds and
+the whole model is a few thousand formatted strings; building that for a panel
+nobody is looking at is work nobody can see. A hidden pulldown is **not**
+re-rendered — the tray keeps the fleet's counts and its summary line straight
+from the document — and the pulldown is rebuilt **the moment it is opened**,
+so it shows the newest document. The pulldown's **component** is built on the
+**first tray click** rather than at start-up: a window costs about **twelve
+megabytes** of physical footprint (and about thirty of `ps` resident set, which
+is the inflated figure on macOS), and a background GUI nobody has opened
+yet should not be paying for it. `--panel` and a desktop with no tray still
+open it at start-up, because that is what those two paths are for. Note that
+**dropping the window does not give the memory back** (measured: flat over
+ninety-six seconds), so this is a one-off saving, not a running one.
+
+**The pulldown moves under the tray's click — Plan 192.** The interaction
+model above is what Plan 191 built; Plan 192 **replaced** it, and this is the
+shape now: **the tray's click opens the pulldown, and the pulldown carries the
+content.** The native tray menu is **not** the dropdown — it is the context
+menu, and on macOS it is **detached entirely**, because an attached menu
+swallows the click that has to open the pulldown. The mechanism is Slint's
+`SystemTrayIcon.clicked`: a native menu with no entries **detaches itself**, so
+the platform routes the tray's click to that callback instead of popping the
+menu — on macOS, on Windows (where a right-click still opens the native menu)
+and on Linux. There is **no launcher entry**; the pulldown carries `Reload`,
+`About` and `Quit` itself, and the whole host list. Do not build against the
+launcher model. The pulldown is still a Slint window, because a native menu
+cannot host Slint widgets, and it is still anchored to the platform's trailing
+corner, because Slint 1.18 does not expose the tray item's position.
+
+**The pulldown is placed, and its geometry survives a restart — Plan 192.** The
+first open is **deferred into the event loop**, because Slint's
+`with_winit_window` "will only succeed when the event loop is active", so
+`placement::work_area()` returns `None` before the loop runs: an open that is
+not deferred is never positioned, never clamped to the work area, and its size
+is never clamped either. The **position** is written to a small state file
+beside the config — `<config>.gui-state`, mirroring the `<config>.lock`
+convention — read **bounded** (4 KiB) and validated, and written atomically; a
+corrupt or out-of-range file falls back to the default rather than failing the
+GUI. The **size** is not in that file: the pulldown's size is its content's
+size, and there is no grip in its corner — a size the operator could set once
+and never change again goes stale the moment the fleet changes. **Rust owns the
+pulldown's size**, because Slint 1.18 cannot expose a layout's preferred size
+to a `.slint` file: the height comes from the model's row counts through
+`placement::metrics`, and a test asserts those numbers against the `.slint`
+literals so the two cannot drift. The detail area is a scroll view, so a wrong
+estimate yields a scrollbar, never clipped content. The GUI prints one
+machine-readable line — `pulldown=placed x=… y=… width=… height=… area=…` — so
+the native exercises assert the **position**, not only that a window exists.
+
+**The pulldown spends no vertical space on nothing.** A Slint layout adds its
+spacing between **every** cell, and a cell that is empty still takes part in
+the layout — so the body's three notice rows, all empty on a healthy fleet,
+used to take eighteen points of dead space between the title and the first
+host. The notices are **one cell** now, it takes **no room at all** when it is
+empty, the body's own spacing is **zero**, and each group carries the gap that
+follows it. The title line says **`7 online`** and names the hosts that are not
+answering **only when there are any** — it used to carry three counts and a
+list of names that was elided away on any fleet of any size.
+
+**What the pulldown remembers is an offset, not a position.** The anchor is
+computed from the work area of the display the window is on, so it is already
+display-aware — but a remembered **position** was allowed to win over it, and
+a position names a place on *one* display: a pulldown placed on a 1512-point
+laptop display opened on a 3840×1080 one landed 2382 points from the tray, on
+screen and the right size and nowhere near the icon that opened it. The file
+therefore holds the **gap at the trailing edge** and the **gap at the edge the
+pulldown hangs from**, measured against the display it was placed on, and an
+older file's `position=` key is **not read** — reading it would reproduce the
+very defect the offset exists to fix. The offset is measured against the
+position the GUI **asked for**, never against the position the window reports
+back: in another application's full-screen space macOS draws the window 26
+points lower than it was asked to be, and a placement measured from the
+window's own report would carry that shift into the memory, so the pulldown
+would open a little lower every time and never come back.
+
+**The pulldown must reach another application's full screen — macOS.** A
+full-screen application owns a **space** of its own, and a window that is not
+in that space is not on the screen at all: the click reaches the tray, the
+pulldown is built, and the operator sees nothing happen — and the full-screen
+application is dropped out of its space on the way. macOS keeps a **Dock**
+application's windows out of another application's space, and that right is
+**fixed when the window is created**: no window level and no collection
+behaviour changes it. So the GUI installs the **`Accessory`** activation
+policy (a menu-bar-only application) **before any window exists**, through
+winit's event-loop builder, and then tells the pulldown's **native window**
+to join every space (`CanJoinAllSpaces`, `FullScreenAuxiliary`, `Stationary`,
+`IgnoresCycle`), to stay visible when the application is deactivated, and to
+sit at **`NSPopUpMenuWindowLevel`** — the level a native status item's own
+menu is drawn at, because `always-on-top` only reaches the *floating* level
+and the floating level is below full-screen content. The native window is
+found by its **title**, and that title is **owned by the `.slint` file** —
+bound to a property the Rust side reads — so the two cannot drift apart: a
+title that lived in two places would be a title that could drift, and the
+overlay would silently stop working. Two consequences are deliberate: the GUI has **no Dock icon**, and
+the menu bar stays the other application's — which is what a native menu-bar
+extra does. The menu bar itself is macOS's business: in full screen it is
+hidden, and the operator brings it back by moving the pointer to the top of
+the screen.
+
+**A stranded window is rebuilt, and the whole panel is the recovery — macOS.**
+A window that is not on the space the operator is looking at is **not on the
+screen at all**: the click reaches the tray, the panel is built and placed at
+the right coordinates, and the operator sees nothing. That is what a window
+whose **display was removed** leaves behind — the display is gone, the space
+it owned went with it, and the window is left in a space that no longer
+exists. A native window cannot be moved between spaces, so the panel's
+component is **dropped** (hidden first, because a visible window keeps its
+own component alive, and the component owns the native window) and a new one
+is built, which brings a native window of its own, created in the space the
+operator is looking at. The rebuild's own open never rebuilds again (a window
+stranded twice is a window the desktop cannot show, and a rebuild that
+repeats is a loop), and a window that cannot be **found** is reported as
+*on* the active space, so the first open — where the native window does not
+exist yet — never rebuilds a panel that is fine. Every window carrying the
+pulldown's title is **prepared**, not just the first: while a window is being
+replaced, both the old one and the new one carry the title, and preparing
+only the first leaves the new window at the *floating* level, which is below
+full-screen content.
+
+**The pulldown's macOS look depends on a vendored `softbuffer` patch — keep
+it.** On macOS a frameless Slint window *is* a transparent `NSWindow`, and
+`winit` asks for exactly that, but the framebuffer carrying the window's
+pixels goes through `softbuffer`, whose macOS backend declares the pixel format
+as `CGImageAlphaInfo::NoneSkipFirst` — **no alpha channel** — so CoreGraphics
+presents every transparent pixel opaque. The pulldown's shadow margin is
+transparent by design, so it was presented as a **thick black frame**, and the
+card's rounded corners were black squares. The fix is one word
+(`CGImageAlphaInfo::PremultipliedFirst`) in a **vendored copy** of `softbuffer`
+0.4.8 under `apps/gregg-gui/vendor/softbuffer`, because 0.4.8 is the latest
+release and the defect is still in it. `softbuffer` was already in the graph
+through Slint, so no crate was added. The change is inside Apple's platform
+only. **Do not drop that copy** without checking the release notes for the
+alpha declaration: without it the pulldown cannot have a soft shadow or
+rounded corners on macOS at all, because the alternative is an opaque square
+window. `apps/gregg-gui/vendor/VENDORED-PATCH.md` carries the rationale, the
+measurements and the removal condition. The rest of the pulldown's chrome is
+a **measured** macOS hairline (`NSColor.separatorColor`, not Slint's
+`Palette.border`, which is 45 % black in one pixel in the light scheme), a
+translucent card fill, a **fourteen-ring Gaussian shadow** (Slint's software
+renderer ignores `drop-shadow-*`), and a pointer on the card's **trailing
+edge** — the edge the tray is on.
+
+**The GUI may write the configuration file, and only through the CLI's own
+code.** The panel's add, remove and rename go through `gregg::cli::add_host`
+and `gregg::cli::remove_host` — the paths `gregg add` and `gregg remove` take —
+so the endpoint grammar, the config lock, the whole-config validation and the
+atomic write are the CLI's, unchanged. A refused mutation leaves the file
+byte-identical and says why in the panel. The panel is a second writer of the
+configuration **file**, never a second writer of fleet state: the client
+daemon remains the only poller, and `DaemonRequest` gains no message. An
+endpoint change is a **replacement**, not an edit — the endpoint is part of a
+host's identity — and the panel says so before it applies one. Reach for
+those narrow entry points, not `gregg::cli::dispatch`: the dispatcher also
+reaches the daemon commands, and the daemon reaches the HTTP client and its
+TLS stack, so calling it linked 2.8 MB of unused machinery into the GUI.
+
+**The GUI is a source build.** There is no installer, no bundle and no release
+asset for it, and it is not shipped for any target yet: it has been qualified
+natively on macOS only, and the interactive Windows and Linux native runs are
+still outstanding. It requires an existing Gregg installation and never bundles
+a second `gregg`. Do not add a GUI release asset, a packaging job or a publish
+step without a new, explicitly approved plan and the native evidence for the
+target it would ship to.
+→ `architecture/gregg-client.md`
+
 ## Build and verify
 
 Routine loop (fmt + tests only; no clippy/docs/release checks):
@@ -70,8 +366,10 @@ Cross-checking a `--target x86_64-pc-windows-gnu` Clippy run locally is a fast d
 - **Client-daemon fan-out is a `watch` slot, not a queue,** and each document is serialized **once** for all frontends (same discipline as greggd's scheduler cell). A slow frontend skips to the newest generation, which is safe because documents are complete. Control acks are the only non-latest-state message and ride a small per-connection channel. Frontend connection ids are stable, so a reconnecting frontend cannot leave a stale `EggPool` intent behind. **The `Hello` is always the first frame on a connection:** never publish a document before the handshake is answered, or a frontend cannot identify its daemon and refuses a healthy one.
 - **Selection placement keys on first *polled reachability*, not first document.** The daemon publishes once at bind with everything `pending`, so a frontend uses `FrontendSnapshot::poll_initialized`, and the daemon publishes that one-time transition even when it changed nothing visible — otherwise the placement would fire on an unrelated later change and undo the operator's selection.
 - **`EggPool` state converges, it does not race.** The worker is daemon-owned; each frontend publishes its whole `(active, period)` intent and the daemon reduces it order-independently (any-active, shortest period). Fleet state carries the **converged** period, never one frontend's request: the reducer accepts a result only on a period match, so a per-frontend value would reject everything the worker fetched and strand both panes in `Refreshing`. The last pane leaving always converges the worker to inactive. `j`/`k` records a *request* in `AppState::eggpool_period_request`; the pane only ever shows a period the daemon actually fetched.
+- **An unrepresentable optional capacity is omitted, not fatal.** A v2 payload whose only fault is a network capacity the protocol cannot represent (an old producer that mis-casts a collector structure publishes a packet counter as a link capacity) is **repaired**: the capacity is dropped, and the payload is accepted only if the *repaired* payload validates. Every other fault is still rejected, so a repair can never smuggle an invalid payload through. This is the collectors' own rule for a family they cannot measure — omit it, never fabricate a zero — and without it one bad capacity failed the whole snapshot and a reachable host read as `offline (invalid)` while the rest of the fleet was sound.
 - **`Ctrl-R` stays the only config-reload boundary** (no watcher) and is now performed by the daemon, which republishes; an invalid file keeps the last-known-good fleet and publishes a diagnostic. `gregg add`/`remove`/`refresh` nudge a running daemon best-effort and silently — absence is the common case and never fails a successful mutation. `gregg daemon status`/`stop` identify their target through the local protocol handshake, never a process name or PID file. `gregg daemon run` never forks or self-daemonizes.
-- **Client-daemon lazy activation is lock-based, never PID-file-based.** The launch lock is an advisory OS lock held only across probe/spawn/readiness, its file is never unlinked or read as a signal, and the wait runs on `spawn_blocking` (a blocking sleep loop would starve the current-thread runtime a TUI runs on). **Only plain absence authorizes a spawn, and the classification is redone under the lock** — a foreign service can bind the endpoint while a launcher waits. Rotation is directional: an *older* owned daemon is replaced, a *newer* one is reported with upgrade guidance and left running.
+- **Client-daemon lazy activation is lock-based, never PID-file-based.** The launch lock is an advisory OS lock held only across probe/spawn/readiness, its file is never unlinked or read as a signal, and the wait runs on `spawn_blocking` (a blocking sleep loop would starve the current-thread runtime a TUI runs on). **Only plain absence authorizes a spawn, and the classification is redone under the lock** — a foreign service can bind the endpoint while a launcher waits. Rotation is directional: an *older* owned daemon is replaced, a *newer* one is reported with upgrade guidance and left running. **The lock's path must be a path a file can really be created at, and on Windows that means beside the config, not beside the endpoint:** the endpoint there is a named pipe, the whole pipe namespace is a device namespace, and a lock path inside it can never exist — so the launcher failed before it ever spawned a daemon and neither the TUI nor the GUI could start one on Windows. A lock path is not derivable from an endpoint on every platform; derive it from the config identity.
+- **A detached daemon spawn must not hold the launcher's stdout pipe open.** `Stdio::null()` gives the daemon `/dev/null` on Unix, so it inherits nothing; on Windows it does not, because Rust creates the child with `bInheritHandles = TRUE` and Windows hands over **every** inheritable handle the parent holds, so the daemon keeps the launcher's stdout pipe open and the pipe never reaches EOF. A command that spawns the daemon and whose stdout is a pipe (`gregg daemon restart | tee`) therefore hangs. This is **known and unfixed** — it needs a handle list (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`), which the standard library does not expose — and any script or CI step that spawns the daemon must redirect that command's output to a **file** rather than pipe it.
 - **Client-daemon startup is always user-scoped.** `systemctl --user`, `~/Library/LaunchAgents`, a current-user Startup-folder entry, or a managed user crontab watchdog — never a system unit, never `LocalService` SCM, never `sudo`. A root/Administrator install registers nothing. All manager execution goes through one allowlist (`startup_support`) with no shell and a bounded wait, so a config path is a path, not a command. Artifact ownership is proven by parsing what would be written and re-reading it after; `Unknown` (unreadable) is preserved exactly like `Foreign`. Artifact names embed the config identity; no global daemon registry exists.
 - **Update is prepare-then-quiesce; uninstall is ownership-first.** `gregg update` identifies the daemon, prepares and verifies the candidate, and only then stops, replaces, and relaunches — a failed relaunch is reported as partial success with the retry command. `gregg uninstall --dry-run` names the startup entry and running daemon; execution stops only an identified owned daemon, removes only a provably owned entry, and **blocks executable deletion when it cannot confidently stop a running daemon**. No idle shutdown on last-TUI disconnect, ever.
 

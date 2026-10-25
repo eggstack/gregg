@@ -45,7 +45,10 @@ pub use identity::{
     ClientDaemonIdentity,
 };
 pub use ipc::{BoundEndpoint, Connection, TransportError};
-pub use launch::{ensure_running, restart, EnsureError};
+pub use launch::{
+    adjacent_daemon_executable, ensure_running, ensure_running_with_executable, restart,
+    restart_with_executable, verify_gregg_client_executable, DaemonExecutable, EnsureError,
+};
 pub use protocol::{
     classify, encode_frame, parse_length, DaemonRequest, DecodeError, EncodeError,
     FrameDisposition, FrontendFrame, HelloPayload, VersionMismatchPayload, LEN_PREFIX_BYTES,

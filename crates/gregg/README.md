@@ -131,6 +131,55 @@ and preserves the existing fleet-wide layout rules.
 Each monitored host must have `greggd` running and reachable on the
 configured port (default 11310).
 
+### As a library
+
+The crate is also consumed as a library by the optional desktop frontend in
+`apps/gregg-gui`, which is a **separate** Cargo workspace with its own
+lockfile and its own Rust 1.92 toolchain floor (Slint 1.18 requires it; the
+core workspace's MSRV stays 1.89). That frontend is a second way to look at
+the fleet, not a second poller: it attaches to the same per-config client
+daemon over the same local IPC and renders what that daemon already polls.
+
+Because that workspace is separate, **no root job builds or tests it** — the
+GUI has its own CI job, which formats, lints, tests and release-builds it on
+macOS, Windows and Linux natively (`scripts/check-gui.sh` runs the same checks
+locally). That separation is also why a Windows-only branch in this crate must
+be covered by a Windows-gated test: the `#[cfg(windows)]` branch of
+`is_executable_file` once asked `std::fs::Metadata` for a method it does not
+have, and nothing on a non-Windows machine could have noticed.
+
+A Windows-gated test has to live in a module that **compiles on Windows**. The
+launcher's own test module is `#[cfg(all(test, unix))]`, so the `#[cfg(windows)]`
+tests written inside it never compiled there and never ran — which is how both
+the Windows executable rule and the Windows launch lock reached a merged
+branch unexercised. The Windows rules now live in their own
+`#[cfg(all(test, windows))]` module and run on the native Windows job.
+
+Because that frontend is not the `gregg` binary, it cannot launch the client
+daemon by using its own image. The launcher therefore takes the executable as
+an explicit argument:
+
+```rust
+use gregg::clientd::{ensure_running_with_executable, DaemonExecutable};
+
+let attachment =
+    ensure_running_with_executable(&store, &DaemonExecutable::Path(gregg_path)).await?;
+```
+
+`ensure_running` remains the TUI's entry point and is exactly
+`ensure_running_with_executable(store, &DaemonExecutable::Current)`: one
+launcher, one set of ownership rules, one lock. A named executable is resolved
+to an absolute path and proved usable before anything destructive happens, and
+a frontend may never name itself. See
+[`architecture/gregg-client.md`](../../architecture/gregg-client.md).
+
+The shared display vocabulary the desktop frontend needs — the words for a
+scheduler job's state, a terminal outcome, a load gate and a duration, and for
+an `EggPool` failure — lives in this crate as `gregg::cron` and
+`gregg::eggpool`, not in the frontend. A second implementation of "load
+delayed" or "authentication required" is a second thing that can drift from
+the truth, and the TUI's own output is unchanged by sharing them.
+
 The normal view uses five rows for an online system whose snapshot lacks
 network telemetry, or six when its snapshot provides it, including aggregate
 disk and NET capacity. Mixed fleets can therefore contain both heights. All active metric rows share a fleet-wide `bar_width` so the opening

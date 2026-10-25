@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eggfetch_core::{Error as EggfetchError, NetworkFailureKind, RequestFailure};
-use gregg_protocol::v2::{StatusPayloadV2, SCHEMA_VERSION_V2};
+use gregg_protocol::v2::{StatusPayloadV2, MAX_CAPACITY_BITS_PER_SEC, SCHEMA_VERSION_V2};
 use gregg_protocol::{StatusSnapshot, SCHEMA_VERSION_V1};
 use serde::{Deserialize, Serialize};
 
@@ -520,14 +520,14 @@ impl HttpClient {
                     clock.now(),
                 );
             }
-            if payload.validate().is_err() {
+            let Some(payload) = accept_payload_v2(payload) else {
                 return Self::make_result_owned(
                     endpoint,
                     PollOutcome::InvalidSnapshot,
                     start,
                     clock.now(),
                 );
-            }
+            };
             return Self::make_result_owned(
                 endpoint,
                 PollOutcome::OnlineV2(Box::new(payload)),
@@ -648,14 +648,14 @@ impl HttpClient {
                     clock.now(),
                 );
             }
-            if payload.validate().is_err() {
+            let Some(payload) = accept_payload_v2(payload) else {
                 return Self::make_result(
                     endpoint,
                     PollOutcome::InvalidSnapshot,
                     start,
                     clock.now(),
                 );
-            }
+            };
             return Self::make_result(
                 endpoint,
                 PollOutcome::OnlineV2(Box::new(payload)),
@@ -683,6 +683,82 @@ impl HttpClient {
             clock.now(),
         )
     }
+}
+
+/// Accept a v2 payload, tolerating an unrepresentable optional capacity.
+///
+/// A payload that validates is accepted as it is. A payload whose only fault
+/// is an optional capacity the protocol cannot represent is repaired — the
+/// capacity is dropped — and is accepted only when the *repaired* payload
+/// validates. Every other fault is still rejected, so a repair can never
+/// smuggle an invalid payload through.
+fn accept_payload_v2(mut payload: StatusPayloadV2) -> Option<StatusPayloadV2> {
+    if payload.validate().is_ok() {
+        return Some(payload);
+    }
+    if drop_unrepresentable_capacities(&mut payload) && payload.validate().is_ok() {
+        return Some(payload);
+    }
+    None
+}
+
+/// Drop optional network capacities the protocol cannot represent.
+///
+/// A producer can publish a capacity that is not representable: a collector
+/// that reads a 32-bit interface structure through the 64-bit one hands a
+/// packet counter to the link capacity, for instance. The capacity is
+/// *optional* telemetry, so an unrepresentable one is omitted rather than
+/// failing an otherwise-good snapshot — the host answered, and every other
+/// reading in the payload is sound.
+///
+/// This is the rule the collectors already follow for a family they cannot
+/// measure: omit it, and never fabricate a zero for it.
+///
+/// Returns `true` when at least one capacity was dropped.
+fn drop_unrepresentable_capacities(payload: &mut StatusPayloadV2) -> bool {
+    let Some(network) = payload.network.as_mut() else {
+        return false;
+    };
+    let mut dropped = false;
+    if network
+        .aggregate_rx_capacity_bps
+        .is_some_and(unrepresentable_capacity)
+    {
+        network.aggregate_rx_capacity_bps = None;
+        dropped = true;
+    }
+    if network
+        .aggregate_tx_capacity_bps
+        .is_some_and(unrepresentable_capacity)
+    {
+        network.aggregate_tx_capacity_bps = None;
+        dropped = true;
+    }
+    for interface in &mut network.interfaces {
+        if interface
+            .rx_capacity_bps
+            .is_some_and(unrepresentable_capacity)
+        {
+            interface.rx_capacity_bps = None;
+            dropped = true;
+        }
+        if interface
+            .tx_capacity_bps
+            .is_some_and(unrepresentable_capacity)
+        {
+            interface.tx_capacity_bps = None;
+            dropped = true;
+        }
+    }
+    dropped
+}
+
+/// Whether a capacity is one the protocol cannot represent.
+///
+/// Zero is not a capacity, and a value above the protocol's ceiling is a
+/// collector bug rather than a reading.
+fn unrepresentable_capacity(bits_per_sec: u64) -> bool {
+    bits_per_sec == 0 || bits_per_sec > MAX_CAPACITY_BITS_PER_SEC
 }
 
 /// Classify an eggfetch detailed failure into a [`PollOutcome`].
@@ -1982,6 +2058,140 @@ mod tests {
             "v2 success should return OnlineV2, got {:?}",
             result.outcome
         );
+    }
+
+    /// A payload whose only fault is an optional capacity the protocol cannot
+    /// represent is repaired, not rejected: the host answered, and every other
+    /// reading in the payload is sound.
+    #[tokio::test]
+    async fn v2_unrepresentable_capacity_is_dropped_not_rejected() {
+        let mut payload = LinuxSnapshotV2Builder::default()
+            .network(Some(NetworkPayload {
+                aggregate_rx_bytes_per_sec: 1_024,
+                aggregate_tx_bytes_per_sec: 2_048,
+                aggregate_rx_capacity_bps: Some(304_200_000),
+                aggregate_tx_capacity_bps: Some(304_200_000),
+                interfaces: vec![NetworkInterfaceMetrics {
+                    id: "en0".to_string(),
+                    name: "en0".to_string(),
+                    rx_bytes_per_sec: 1_024,
+                    tx_bytes_per_sec: 2_048,
+                    rx_capacity_bps: Some(304_200_000),
+                    tx_capacity_bps: Some(304_200_000),
+                    is_loopback: false,
+                    aggregate_member: true,
+                }],
+            }))
+            .build_payload();
+        // The producer's fault: a packet counter read as a link capacity.
+        let network = payload
+            .network
+            .as_mut()
+            .expect("the network family is there");
+        network.aggregate_rx_capacity_bps = Some(u64::MAX);
+        network.aggregate_tx_capacity_bps = Some(u64::MAX);
+        network.interfaces[0].rx_capacity_bps = Some(u64::MAX);
+        network.interfaces[0].tx_capacity_bps = Some(u64::MAX);
+
+        let body = serde_json::to_vec(&payload).unwrap();
+        let url = mock_server_v1_v2(
+            Some((body, "200 OK".to_string())),
+            (b"should not reach".to_vec(), "200 OK".to_string()),
+        )
+        .await;
+        let ep = endpoint_for(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let clock = crate::clock::RealClock;
+
+        let result = client.poll(&ep, &clock).await;
+        let PollOutcome::OnlineV2(accepted) = result.outcome else {
+            panic!(
+                "an unrepresentable optional capacity must not fail the snapshot: {:?}",
+                result.outcome
+            );
+        };
+        let network = accepted
+            .network
+            .as_ref()
+            .expect("the network family is kept");
+        assert_eq!(network.aggregate_rx_capacity_bps, None);
+        assert_eq!(network.aggregate_tx_capacity_bps, None);
+        assert_eq!(network.interfaces[0].rx_capacity_bps, None);
+        assert_eq!(network.interfaces[0].tx_capacity_bps, None);
+        // Only the capacity is dropped: the throughput is untouched.
+        assert_eq!(network.aggregate_rx_bytes_per_sec, 1_024);
+        assert_eq!(network.aggregate_tx_bytes_per_sec, 2_048);
+        assert_eq!(network.interfaces[0].rx_bytes_per_sec, 1_024);
+        assert_eq!(network.interfaces[0].tx_bytes_per_sec, 2_048);
+    }
+
+    /// A repair never rescues another fault: a payload that is wrong in more
+    /// than its optional capacity is still invalid.
+    #[tokio::test]
+    async fn v2_unrepresentable_capacity_does_not_rescue_another_fault() {
+        let mut payload = LinuxSnapshotV2Builder::default()
+            .network(Some(NetworkPayload {
+                aggregate_rx_bytes_per_sec: 1_024,
+                aggregate_tx_bytes_per_sec: 2_048,
+                aggregate_rx_capacity_bps: Some(304_200_000),
+                aggregate_tx_capacity_bps: Some(304_200_000),
+                interfaces: Vec::new(),
+            }))
+            .build_payload();
+        let network = payload
+            .network
+            .as_mut()
+            .expect("the network family is there");
+        network.aggregate_rx_capacity_bps = Some(u64::MAX);
+        // A throughput the protocol cannot represent is not an optional
+        // capacity, and it is not repairable.
+        network.aggregate_tx_bytes_per_sec = MAX_RATE_BYTES_PER_SEC + 1;
+
+        let body = serde_json::to_vec(&payload).unwrap();
+        let url = mock_server_v1_v2(
+            Some((body, "200 OK".to_string())),
+            (b"should not reach".to_vec(), "200 OK".to_string()),
+        )
+        .await;
+        let ep = endpoint_for(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let clock = crate::clock::RealClock;
+
+        let result = client.poll(&ep, &clock).await;
+        assert!(
+            matches!(result.outcome, PollOutcome::InvalidSnapshot),
+            "a payload with another fault is still invalid, got {:?}",
+            result.outcome
+        );
+    }
+
+    /// A zero capacity is not a capacity either, and it is dropped the same
+    /// way.
+    #[test]
+    fn zero_capacity_is_dropped_too() {
+        let mut payload = LinuxSnapshotV2Builder::default()
+            .network(Some(NetworkPayload {
+                aggregate_rx_bytes_per_sec: 0,
+                aggregate_tx_bytes_per_sec: 0,
+                aggregate_rx_capacity_bps: Some(304_200_000),
+                aggregate_tx_capacity_bps: Some(304_200_000),
+                interfaces: Vec::new(),
+            }))
+            .build_payload();
+        let network = payload
+            .network
+            .as_mut()
+            .expect("the network family is there");
+        network.aggregate_rx_capacity_bps = Some(0);
+        network.aggregate_tx_capacity_bps = Some(0);
+
+        let accepted = accept_payload_v2(payload).expect("a zero capacity is repairable");
+        let network = accepted
+            .network
+            .as_ref()
+            .expect("the network family is kept");
+        assert_eq!(network.aggregate_rx_capacity_bps, None);
+        assert_eq!(network.aggregate_tx_capacity_bps, None);
     }
 
     #[tokio::test]
