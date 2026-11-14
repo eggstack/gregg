@@ -3,331 +3,63 @@
 [![Crates.io](https://img.shields.io/crates/v/gregg.svg)](https://crates.io/crates/gregg)
 [![Docs.rs](https://docs.rs/gregg/badge.svg)](https://docs.rs/gregg)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Downloads](https://img.shields.io/crates/d/gregg.svg)](https://crates.io/crates/gregg)
 
-Compact keyboard-first terminal monitor for observing system metrics across
-multiple machines.
+A keyboard-driven terminal monitor for system metrics across multiple hosts.
+Each monitored host needs a reachable `greggd` daemon. The `gregg` client polls
+through a per-user client daemon, so multiple TUI windows share one polling
+cycle.
 
-## Installation
+## Install
 
-Prebuilt binaries are published on GitHub Releases; the bootstrap installer
-is the default path and Cargo is the fallback for source-only hosts.
+Prebuilt releases are recommended and do not require Rust. Linux or macOS:
 
 ```sh
-# Default installation (Linux/macOS)
-curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | bash -s -- gregg
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh \
+  | bash -s -- gregg
+```
 
-# Source install / fallback (requires Rust 1.89+)
+For a source install, use Rust 1.89 or newer:
+
+```sh
 cargo install gregg --locked
 ```
 
-Prebuilt assets (glibc 2.17 on Linux, unsigned on macOS):
+See the [installation guide](https://github.com/eggstack/gregg/blob/main/docs/installation.md)
+for Windows, other platforms, updates, and uninstall instructions.
 
-- `gregg-x86_64-unknown-linux-gnu` · `gregg-aarch64-unknown-linux-gnu` (covers 64-bit Raspberry Pi/Le Potato)
-- `gregg-x86_64-apple-darwin` · `gregg-aarch64-apple-darwin`
-- `gregg-x86_64-pc-windows-msvc.exe`
-
-Linux ARMv7 (`armv7l`) is source-build only and uses `cargo install` when available.
-
-## Usage
-
-Start the TUI:
-
-```sh
-gregg
-```
-
-Manage endpoints:
+## Start monitoring
 
 ```sh
 gregg add 192.168.1.10:11310
-gregg add deadpool.local:11320
-gregg add deadpool@192.168.1.10:11310          # `nickname@host:port` form
-gregg add http://192.168.1.10:11310/
-gregg add 192.168.1.10:11310 --name deadpool  # explicit `--name` instead of `@`
-gregg list
-gregg remove 192.168.1.10                     # host-only remove is still supported
-gregg refresh 30
-gregg edit
-gregg update                                 # binary-first self-update to latest stable crates.io version
-gregg uninstall --dry-run                    # preview removal (mutates nothing)
-gregg uninstall                              # remove only this client binary (config preserved)
-gregg uninstall --purge                      # also remove the client config file (destructive)
+gregg add deadpool@server.local:11310
+gregg
 ```
 
-`gregg uninstall` deletes only the exact invoked executable (a sibling
-`greggd` sharing the directory survives; directories are never removed
-recursively). Configuration is preserved by default; `--purge` removes only
-the resolved client config file. Cargo-owned Unix installs delegate package
-removal to Cargo and apply `--purge` only after Cargo succeeds; Windows prints
-the exact zero-mutation handoff.
-
-`gregg add` requires an explicit port. Host-only input such as
-`gregg add 192.168.1.10` is rejected; supply `host:port`, an HTTP URL
-(`http://host:port/`), or `nickname@host:port`. Combining the inline
-`nickname@` form with `--name` is rejected as ambiguous. The retained
-`default_port` setting is configuration-compatible but is not used by
-`gregg add`.
-
-`gregg update` queries the latest stable `gregg` crate on crates.io
-(`max_stable_version`), compares with the compiled-in version, and if newer
-downloads the exact `vX.Y.Z` GitHub Release asset for the current host
-plus `.sha256`, verifies checksum and candidate `version` before any
-replacement, then atomically replaces the current executable (via
-`self-replace`, same-filesystem rename on Unix). Missing asset (404)
-falls back to `cargo install --locked --version "=X.Y.Z"` staged to a temp
-`--root`; checksum/version mismatch or transport failure never falls back.
-No background checks or `sudo` internally; permission failures print
-`sudo gregg update` (with the executable path shell-quoted, so an install path
-containing a space is not pasted into a command that runs the wrong binary). The download/verify/stage/replace mechanism is shared
-with `greggd update` in the internal `gregg-update` crate.
-
-IPv6 link-local zone identifiers are accepted in bare `%eth0` or URL-escaped
-`%25eth0` form and are stored in URL-safe `%25` form for polling.
-Bracketed endpoint syntax is reserved for IPv6 literals; values such as
-`[server.local]:11310` are rejected.
-The optional EggPool client reports `InvalidEndpoint` for zone-ID authorities
-because the pinned URL representation cannot safely encode that authority;
-the systems poller remains the supported zone-ID transport.
-
-The client configuration accepts `request_timeout_ms` from 100 through 60,000
-milliseconds. Values outside that range are rejected during config validation.
+`gregg add` requires an explicit port. It accepts `host:port`, `[ipv6]:port`,
+`nickname@host:port`, and `http://host:port/`. HTTPS is not supported.
 
 ## Navigation
 
 | Key | Action |
 | --- | --- |
-| `j` / Down | Next system |
-| `k` / Up | Previous system |
-| `h` / Left | Previous view |
-| `l` / Right | Next view |
-| `v` | Toggle Normal/Condensed Systems view |
-| `d` | Expand or collapse selected-system drives |
-| `n` | Expand or collapse selected-system network details |
-| `PageDown`/`PageUp` (or `f`/`b`, or `Ctrl-D`/`Ctrl-U`) | Page forward/back through the system list |
-| `Ctrl-R` | Reload Systems config and refresh, or refresh EggPool |
+| `j` / Down, `k` / Up | Select a host |
+| `h` / Left, `l` / Right | Switch panes |
+| `v` | Toggle normal and condensed layouts |
+| `d` | Expand drive details |
+| `n` | Expand network details |
+| `c` | Expand scheduled-job details when supported |
+| `Ctrl-R` | Reload the Systems config or refresh the active pane |
 
-If a Systems config reload is missing, malformed, or invalid, the last-known-good
-configuration remains active and the error is shown in the diagnostic line until
-a later reload succeeds.
-If the bounded scheduler channel is full, delivery remains ordered while the
-event loop continues processing input and poll results.
+The client daemon starts on demand and continues polling after the last TUI
+window closes. It does not fall back to polling directly if it cannot connect.
+See the [client guide](https://github.com/eggstack/gregg/blob/main/docs/client.md)
+for configuration, EggPool, and daemon management.
 
-`selected_id` is the persistent logical selection that drives `d`
-(drive expansion), `n` (network expansion), and viewport behavior. The reverse-video highlight
-on the selected device is transient: it activates when you navigate,
-and disappears after about ten seconds of inactivity. Leaving the
-Systems pane or returning to it does not extend or re-trigger the
-highlight, and `d` continues to operate on the same logical system
-after the highlight fades.
+## Security
 
-The event loop redraws only after render-visible poll, EggPool, action, resize,
-configuration, or highlight changes. Unmapped keys are ignored without
-rebuilding a full frame; the renderer still produces complete Ratatui frames
-and preserves the existing fleet-wide layout rules.
-
-## Requirements
-
-Each monitored host must have `greggd` running and reachable on the
-configured port (default 11310).
-
-The normal view uses five rows for an online system whose snapshot lacks
-network telemetry, or six when its snapshot provides it, including aggregate
-disk and NET capacity. Mixed fleets can therefore contain both heights. All active metric rows share a fleet-wide `bar_width` so the opening
-`[` and closing `]` columns align across every online system. When the
-longest natural metric suffix across the entire online fleet exceeds one
-quarter of the terminal width, every normal-view metric row collapses to
-bar-only — the `[` and `]` brackets remain aligned and the percentage, core
-count, and byte-count suffix disappears. Resizing wider restores them
-dynamically without restart. The aggregate DISK suffix renders
-`<used bytes> / <total bytes>` so the denominator matches the percentage;
-explicit caller-available space is preserved by the normalized model and
-surfaced only through the expanded per-drive rows. The condensed view uses
-one comparison row per system. `d` adds bounded detail rows for valid
-mounted-local-filesystem records belonging only to the selected online
-system; the expanded rows share one table layout so mount names, used,
-total, remaining, and percentage columns stay aligned across drives. When
-disk-I/O telemetry is available, `d` also shows daemon aggregate and
-trustworthy per-drive R/s/W/s values; `n` independently shows aggregate and
-per-interface network rates/capacity, including loopback. View and expansion
-state are not persisted.
-
-Unreachable systems collapse to one offline row (`name@host:port offline`
-or `host:port offline`). When the accepted poll failure carries provenance,
-the stable failure category is appended inside the existing width budget
-(`offline (refused)`, `offline (http) HTTP 503`); pending systems never
-carry a reason. Recovery clears the reason in the same poll generation.
-Offline endpoints keep polling on every configured cadence and recover
-automatically.
-
-Reachable systems are listed first and unreachable ones last. A system that
-goes down therefore moves to the bottom of the list, and the view does not
-follow it: the visible window stays on the same part of the fleet, so the
-other systems remain on screen instead of being scrolled out of view. This
-holds in a narrow pane too, where the fleet is larger than the view.
-
-The selection follows the same rule: when the selected system is the one that
-goes down, the selection moves to the reachable system that takes its place,
-so the view is never dragged down to the failed system. The failed system is
-still listed at the bottom, with its offline reason.
-
-The client also normalizes optional v2 CPU-frequency, disk-I/O, and network
-telemetry without renderer branches on wire version. A v1-only or pre-feature
-v2 daemon remains online and leaves these fields absent; `gregg` falls back
-from `/v2/status` to v1 only on HTTP 404. CPU frequency means the current
-OS-reported frequency, not base or maximum frequency, and macOS may omit it
-because no privileged or undocumented source is used. `R/s`, `W/s`, `Rx/s`,
-and `Tx/s` are byte-throughput rates. Disk capacity remains separate from disk
-I/O accounting, while network utilization uses the maximum valid directional
-percentage rather than summing full-duplex traffic. Loopback is available in
-`n` detail but excluded from aggregate capacity. Gregg does not transport
-daemon versions.
-
-## Supported platforms
-
-| Platform | Architecture | Rust target | Status |
-| --- | --- | --- | --- |
-| Linux | x86-64 | `x86_64-unknown-linux-gnu` | Supported (glibc 2.17) |
-| Linux | ARM64 (64-bit Pi/Le Potato) | `aarch64-unknown-linux-gnu` | Supported (glibc 2.17) |
-| macOS | Intel (x86-64) | `x86_64-apple-darwin` | Supported (unsigned) |
-| macOS | Apple Silicon (arm64) | `aarch64-apple-darwin` | Supported (unsigned) |
-| Windows | x86-64 | `x86_64-pc-windows-msvc` | Supported |
-
-macOS binaries are unsigned; Gatekeeper may require approval via System
-Settings or `xattr -d com.apple.quarantine`. Linux ARMv7 is source-only.
-
-On Windows, configuration is stored in `%APPDATA%\gregg\gregg.toml`.
-Cross-process config locking uses Windows-native `LockFileEx`.
-The optional `gregg eggpool add HOST` command configures one EggPool source,
-using HTTP port `11300` by default. Use `--https`, `--name`,
-`--api-key-env ENV_NAME`, and `--replace` as needed. Only the environment
-variable name is persisted; the secret is never read by these commands.
-Adding a second source without `--replace` reports a configuration conflict,
-not a name-validation error.
-The TUI reads two independent `EggPool` routes. The four periodized metrics
-come only from `/api/stats/summary` and require EggPool's dashboard/statistics
-routes to be enabled: accounted tokens, provider cache-read share, output
-tokens per second, and average TTFT for `1h`, `24h`, `7d`, or `30d`. The pane
-does not display a request-level cache hit rate or invent values when a metric
-is unavailable. Current service health comes separately from EggPool's
-schema-version-1 `/api/status`, which stays authenticated even when the
-dashboard is public; the pane header shows a bounded `Health: ready |
-degraded | unready | unknown` token plus a one-line provider count summary. An
-older EggPool without `/api/status` keeps the metrics and reports health as
-unsupported, and a failed health read never hides a valid summary. `j`/Down and `k`/Up select the period,
-while `h`/Left and `l`/Right enter or leave the pane. `Ctrl-R` refreshes only
-the active pane, and EggPool's active refresh cadence is fixed at 60 seconds.
-
-The worker always converges on the *newest* published intent, including while a
-finished result is waiting for room in the bounded four-slot result channel:
-cancellation, a newer `(active, period, refresh)` intent, and delivery are all
-selected together, so closing the pane or switching window is never delayed
-behind a result nobody is reading. A publication identical to the state the
-completed result already answers is consumed without discarding that result, and
-with no shutdown or newer intent the channel still applies ordinary backpressure
-rather than dropping anything.
-
-The pane's `Refreshing` state is only published for a converged **active** intent,
-which is one whose result the worker will actually deliver. Closing the pane — or
-starting with it closed — converges the worker inactive, and an inactive intent
-aborts in-flight work and emits no result at all, so the pane returns to `Idle`
-instead of waiting forever for an answer that cannot arrive. Deactivation still
-supersedes: the generation advances, so a result already fetched is rejected as
-stale rather than applied. With several windows open, `active` is the converged
-reduction over all of them, so one window closing does not stop the worker while
-another still holds the pane open.
-
-Omit `[eggpool]` to remove the pane and all EggPool worker/network activity.
-Editor fallbacks: `hx`, `vim`, `vi` (Unix) or `hx`, `code`, `notepad` (Windows).
-Malformed or URL-unrepresentable EggPool endpoints are reported as invalid
-endpoints rather than generic network failures.
-
-## Links
-
-- Repository: <https://github.com/eggstack/gregg>
-- Project: <https://github.com/eggstack/gregg>
+The `greggd` HTTP listener has no TLS or authentication and is intended for
+trusted private networks. See the project's [security guidance](https://github.com/eggstack/gregg/blob/main/SECURITY.md).
 
 ## License
 
 MIT
-
-## Cron observability
-
-When a monitored `greggd` serves the Plan-162 scheduler routes, the TUI's cron
-block shows each configured job, its state, its last result, and the history of
-recent runs for one selected job.
-
-Press `c` to expand the block for the selected system; press it again to
-collapse. `Shift-J` and `Shift-K` move between jobs. The block is independent of
-the `d` drive and `n` network expansions — opening one does not close another —
-and all three share one vertical budget, so cron takes whatever the other two
-did not claim.
-
-The block stays usable at both extremes. With more jobs than fit, the table is a
-window around the selected job rather than a fixed prefix, so the highlighted row
-never vanishes and the hidden jobs are counted above and below. On a short
-terminal the selected job's newest run is reserved before any job row is drawn,
-and anything left out is reported as `… more cron rows not shown` — which is a
-different fact from the remote's own `stdout+` truncation, and says so
-separately.
-
-Everything here is a read-only projection of remote scheduler state:
-
-- The **summary** (`/v2/scheduler`) carries no command output and is read on a
-  30-second cadence. It is what the at-a-glance job rows need.
-- The **history** (`/v2/scheduler/history`) carries bounded stdout/stderr tails
-  and is fetched only on first support discovery and when the remote's
-  `history_revision` changes, so it is never on the hot path to draw five job
-  rows.
-
-The client daemon owns this plane, so it polls whether or not any TUI is
-attached. It observes the fleet with at most four reads in flight, and an
-accepted `Ctrl-R` config reload interrupts the round it lands in: the in-flight
-requests are dropped, the new endpoint list is read, and a fresh round starts
-immediately instead of waiting out the old fleet's request deadlines.
-
-"Interrupts the round it lands in" covers both places a round can wait, not just
-the remote reads. Handing a finished observation to the engine goes through the
-same bounded 64-slot channel and can park there when the engine is not draining,
-so cancellation and reload are selected ahead of that send rather than after it.
-Without that, a reload could wait on receiver capacity for work already
-superseded. With no signal in flight the channel still applies ordinary
-backpressure, so nothing is silently dropped. History is re-downloaded only after
-a fetched document has actually been handed to the engine, so an interrupted or
-abandoned round never marks a target's history as already fetched.
-
-A `greggd` that does not serve the routes is reported as *unsupported*, which
-is the normal state for an older daemon and never marks the system offline: the
-metrics plane owns reachability, and a healthy daemon with no cron jobs must not
-read as down. A failed scheduler read keeps the last known data and is labelled
-stale rather than presented as current.
-
-Three columns deliberately do not share a time base. The schedule is the remote
-host's own local civil cron; each record's clock is labelled UTC (`10-05
-07:00Z`) because the daemon reports no remote timezone; and relative durations
-(`ran 1.5s`, `for 3m`) are measured from the Unix instant and so need no label.
-A load gate states the relation it actually means — `load15m 9.24 > 8.00` when
-the job is load-delayed, `start load15m 1.20 <= 8.00` for the gate a running job
-was admitted under, `last gate ...` for an idle one, and `unavailable` when there
-is no reading to compare. A missing reading is never zero, and an elapsed state
-never reads as an age (`for 3m`, not `for 3m ago`).
-
-The two documents are applied as one pair. They are separate requests, so a
-daemon restart between them yields a summary from one lifetime and history from
-another; that pair is never merged, never suppresses a later history fetch, and
-is reported as a stale-history diagnostic while the summary itself stays on
-screen. Scheduler state also belongs to the endpoint it was read from: repointing
-a system at a different address drops the old answers and its retained history
-instead of presenting them as the new machine's.
-
-Remote command output is treated as hostile terminal text. Control sequences are
-made visible in `cat -v` caret notation (`ESC` renders as `^[`) rather than
-stripped, so `ESC [ 2 J` displays as `^[[2J` instead of clearing your screen and
-an OSC title sequence cannot retitle your terminal.
-
-There is no local log or configuration fallback. Parsing a remote's scheduler
-logs would be a second, undocumented contract with no version negotiation and no
-way to tell a stale file from a live one.
-
-See `docs/client.md` and `architecture/gregg-client.md` for the client-daemon
-side of this plane.

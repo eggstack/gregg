@@ -3,341 +3,66 @@
 [![Crates.io](https://img.shields.io/crates/v/greggd.svg)](https://crates.io/crates/greggd)
 [![Docs.rs](https://docs.rs/greggd/badge.svg)](https://docs.rs/greggd)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Downloads](https://img.shields.io/crates/d/greggd.svg)](https://crates.io/crates/greggd)
 
-Lightweight Linux, macOS, and Windows metrics daemon for the gregg monitoring ecosystem.
+A lightweight metrics daemon for Linux, macOS, and Windows. `greggd` collects
+host telemetry and serves a read-only JSON API on port `11310` by default.
 
-## Installation
+## Install
 
-Prebuilt binaries are published on GitHub Releases; the bootstrap installer
-is the default path and Cargo is the fallback for source-only hosts.
+Prebuilt release binaries are recommended. Linux or macOS:
 
 ```sh
-# Default installation (Linux/macOS)
-curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo bash -s -- greggd
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh \
+  | sudo bash -s -- greggd
+```
 
-# Source install / fallback (requires Rust 1.89+)
+For a source install, use Rust 1.89 or newer:
+
+```sh
 cargo install greggd --locked
 ```
 
-Prebuilt assets (glibc 2.17 on Linux, unsigned on macOS):
+See the [installation guide](https://github.com/eggstack/gregg/blob/main/docs/installation.md)
+for Windows, platform options, updates, and uninstall instructions.
 
-- `greggd-x86_64-unknown-linux-gnu` · `greggd-aarch64-unknown-linux-gnu` (covers 64-bit Raspberry Pi/Le Potato)
-- `greggd-x86_64-apple-darwin` · `greggd-aarch64-apple-darwin`
-- `greggd-x86_64-pc-windows-msvc.exe`
-
-Linux ARMv7 (`armv7l`) is source-build only and uses `cargo install` when available.
-See `packaging/README.md` for the full bootstrap contract, checksum verification,
-and `install.sh`/`install.ps1` details.
-
-## Usage
-
-Run the daemon directly in the foreground. On Unix, systemd and launchd are optional
-operator-managed deployment mechanisms; `greggd` does not invoke them.
+## Run
 
 ```sh
 greggd run
-greggd run --config /path/to/greggd.toml
-```
-
-On Windows, native SCM lifecycle commands remain available:
-
-```sh
-greggd start
-greggd stop
-greggd restart
-```
-
-Automatic startup and restart (cross-platform `restart`, Unix `startup`):
-
-```sh
-greggd startup install                        # auto: systemd / launchd / cron / Windows SCM
-greggd startup install --method systemd       # explicit method
-greggd startup instructions                   # read-only, prints exact commands/paths
-greggd startup instructions --method cron
-greggd restart                                # manager-aware restart (systemd / launchd / SCM / direct)
-greggd update                                 # binary-first update; restarts if running, leaves stopped services stopped
-greggd uninstall --dry-run                    # preview removal (mutates nothing)
-greggd uninstall                              # remove this binary + Gregg startup integration (config preserved)
-greggd uninstall --purge                      # also remove the daemon config file (destructive)
-```
-
-`greggd uninstall` removes only the exact invoked executable plus startup
-integration whose command target matches that executable (systemd
-`ExecStart`, launchd `ProgramArguments`, the managed cron command, or the
-registered SCM image path). Foreign and ambiguous artifacts are reported and
-preserved; SCM query uncertainty blocks mutation. Discovery is independent per
-artifact, so multiple owned artifacts can be removed together. Configuration
-is preserved by default; `--purge` removes the resolved daemon config (and the
-macOS daemon log). Permissions are preflighted before teardown; an uncertain
-direct stop blocks deletion. On Unix, Cargo-owned removal completes owned
-startup/direct-stop work before delegating the executable to Cargo and applies
-`--purge` only after Cargo succeeds.
-
-`startup install` defaults to `auto`: Windows→SCM, macOS→launchd, Linux with running systemd→systemd, else cron. Systemd uses `/usr/local/bin/greggd`, `/etc/gregg/greggd.toml`, `greggd` user/group, `/etc/systemd/system/greggd.service` (atomic, `daemon-reload` + `enable` + `start`/`restart`); launchd uses `/Library/LaunchDaemons/com.eggstack.greggd.plist`; cron uses an idempotent `# greggd managed watchdog` block with `@reboot` + `* * * * *` `croncheck` (shell-quoted, preserves unrelated crontab, never edits `/var/spool/cron`). An identified systemd/launchd host never silently falls back to cron on permission failure; the exact `sudo <exe> startup install --method <...>` is printed and exit 4 is returned, with the executable path shell-quoted. No internal
-`sudo`. `startup instructions` never mutates state. `restart` is manager-aware and exact-executable-aware: systemd and launchd are restarted only when their registration targets the invoked binary; foreign same-config or unknown registrations fail closed, while a foreign registration with a different known config may use the config-specific direct path. Windows queries the SCM image path and preserves foreign, unknown, and not-installed states without direct fallback. Otherwise Unix uses `stop` + detached `run`.
-
-`greggd update` queries the latest stable `greggd` crate on crates.io, downloads the exact `vX.Y.Z` GitHub asset plus `.sha256`, verifies checksum and candidate `version` before any replacement, observes exact-executable `UpdateLifecycle` only after full preparation (Unix ownership + selected health; Windows SCM ownership revalidated immediately before quiescence, owned-to-foreign fails pre-replacement), then atomically replaces the current executable (same-filesystem rename on Unix, `self-replace` on Windows) and restarts only `ManagedRunning`/`DirectRunning` via ownership-aware `restart_daemon()` (owned Windows running/start-pending may stop, owned stop-pending waits stopped without restart, foreign/unknown/not-installed do zero SCM mutation; Unix foreign same-config preserved, foreign inactive cannot mask direct running); intentionally stopped/foreign services remain stopped/preserved and a successful replacement with failed restart reports `Installed X.Y.Z but not activated` with the exact `greggd restart`/`systemctl`/`launchctl` command and returns nonzero. No background checks or `sudo`. The shared download/verify/stage/replace mechanism lives in the internal `gregg-update` crate; `greggd` owns only activation/restart coordination.
-
-## Shutdown
-
-A stop signal (`SIGTERM`/`SIGINT`, SCM Stop/Shutdown, or `STOP\n` on the Unix
-control socket) is bounded twice over, because a collection cycle runs on Tokio's
-blocking pool and `spawn_blocking` cannot abort started work.
-
-The sampling loop observes shutdown *while* a cycle is in flight, so a slow
-native read cannot stall the loop beyond its five-second collection bound. A
-cycle that outlives the loop is then **joined** under an explicit one-second
-bound and detached only past it, with a warning naming the cause. Without that
-join, dropping the handle detached the task instead of cancelling it and the
-runtime's shutdown blocked on the blocking-pool drain with no bound and no
-diagnostic — after the daemon had already reported a clean sampler shutdown. A
-read that was merely slow cost exit latency; a genuinely hung one (macOS
-registry traversal, a Windows CPU/power query, a wedged `/proc` read) held exit
-indefinitely.
-
-A collection that completes in the same poll the stop signal becomes ready in is
-still applied and published. The loop polls the collection branch first, so a
-finished sample is never silently discarded — and a discarded *failure* would
-never have been counted, leaving the daemon to exit reporting readiness the
-collector had contradicted. Reaching the shutdown arm therefore means the cycle
-did not finish: readiness and the last snapshot are left untouched and keep
-serving per the stale policy.
-
-## Scheduled maintenance
-
-Optional `[[jobs]]` entries in the daemon TOML run five-field local cron
-schedules as direct argv commands. The scheduler uses cached load averages on
-Unix, defers high-load work for at most 24 hours by default, coalesces missed
-occurrences, and runs one Gregg-managed child globally at a time. It does not
-replay work missed while the daemon was stopped. Civil time is re-read at
-least once per minute, so large wall-clock adjustments reconcile within
-about a minute (forward jumps coalesce, backward jumps never launch early)
-while load retry and maximum wait stay monotonic. A schedule that no Gregorian
-date can satisfy (`0 0 31 2 *`) is rejected as a configuration violation
-before the daemon starts, rather than failing later during scheduling.
-
-Commands always run as greggd's current OS principal. The Linux system service
-runs as `greggd` with `ProtectHome=true`, so it generally cannot access a
-developer home directory; use a rootless user-local daemon for that work. Jobs
-under a Unix euid-0 daemon require `allow_privileged_jobs = true`, including
-the macOS system LaunchDaemon. Windows supports time-only jobs; load gates are
-rejected because load averages are unsupported. Command arguments are visible
-in the readable config and are not a secret store. Gregg invokes no implicit
-shell; a shell must be an explicit argv executable.
-
-### Scheduler observability
-
-Two read-only routes expose the scheduler's own state. They are additive and
-deliberately separate from `/v2/status`, so an ordinary metrics poll never
-carries command output:
-
-| Route | Body |
-| --- | --- |
-| `GET/HEAD /v2/scheduler` | per-job live state, next occurrence, load decision, and the most recent terminal result |
-| `GET/HEAD /v2/scheduler/history` | the retained terminal records with bounded stdout/stderr tails |
-
-Both accept `GET` and `HEAD` only; any other method is `405`, and anything under
-a scheduler path that is not one of these two routes is `404`. There is no
-control plane: nothing here can create, edit, start, or cancel a job. A daemon
-with no configured jobs answers `200` with a valid empty document, never `404`,
-and a pre-feature daemon that answers `404` means "scheduler observability
-unsupported" rather than "host offline".
-
-Live state is an explicit enum: `idle`, `waiting_for_slot`, `load_high`,
-`load_unavailable`, or `running`. `load_unavailable` is distinct from
-`load_high`, so missing load telemetry is never rendered as a low or zero load.
-Terminal outcomes are equally explicit: `success`, `failed`, `spawn_failed`,
-`wait_failed`, `load_expired`, and the reserved `cancelled`. A job that could
-not even be created, or whose occurrence expired waiting for load, is a
-terminal record with no exit code, start time, or duration, because fabricating
-those would misrepresent an occurrence that never ran a child.
-
-History is **memory-only**. A daemon restart clears it; there is no history
-file, database, journal, or log spool, and nothing is written to disk when a job
-runs. `scheduler_history_limit` sets the retained records per job, defaults to
-`5`, and is capped at `10`; `0` keeps the live state but retains no records.
-The value is validated before the listener binds.
-
-Child stdout and stderr are captured only while history is enabled, drained
-concurrently with the child so a noisy job cannot block, and retained only as a
-fixed-size tail (1024 raw bytes per stream, published as at most 512
-JSON-escaped bytes). Both streams truncate independently, so a noisy stdout
-cannot hide the only useful stderr diagnostic. Invalid UTF-8 is replaced
-lossily after the byte bound is applied.
-
-The tail belongs to the child, not to the drain future. A job that outlives the
-60-second civil-clock reconciliation wake has its drain cancelled and rebuilt,
-so a tail owned by the future would lose everything read before that wake — and
-report `truncated: false` while doing so. What survives a wake is the read, not
-the capture. The frozen exit and its settle deadline live on the child for the
-same reason.
-
-**The direct child is the boundary, not pipe EOF.** A command may spawn a
-descendant that inherits stdout or stderr and then exit; greggd did not schedule
-that descendant, so it must not be allowed to keep the one global child slot
-occupied. The child's exit is the completion event: finish time and duration are
-recorded there, then capture continues for at most a fixed 250 ms while bytes in
-flight land in the tails. After that the read handles close, the record is
-finalized, and the slot is free. `greggd` never kills a descendant to shorten
-this, and never reports output a descendant writes after the boundary.
-
-Those two streams progress **independently** inside the one settle budget. A
-stream whose only writer is an idle descendant stays open and unreadable, so it
-must not stall the other: each step selects among the frozen deadline and one
-pending read per unfinished stream. Bytes already buffered on the busy stream are
-therefore still captured even while the other is open, and the preferred stream
-alternates so neither can starve the other. Only bytes from a completed read are
-retained, so cancelling a losing read loses nothing.
-
-That independence lasts **only until the frozen deadline fires**, and the deadline
-is the first branch of the biased select — which is what makes the 250 ms bound real
-rather than decorative. A descendant that keeps writing leaves a read ready on every
-poll, so ordering the reads ahead of the timer would let one inherited writer extend
-the settle indefinitely and hold the global child slot. Once the deadline is ready
-it wins over both streams and no further byte is read, however ready that read is.
-
-> **Output is visible to anything that can reach this listener.** Scheduler
-> output is more sensitive than CPU or memory telemetry. The configured
-> `greggd` HTTP listener is unauthenticated, so any principal that can reach it
-> can read job output through `/v2/scheduler/history`. Command `argv` and
-> working directory are never published — only the operator-facing job name and
-> schedule — but keep the listener on a trusted network. This line adds no
-> authentication, TLS, or access control.
-
-See [daemon configuration](../../docs/daemon.md#scheduled-maintenance) for the
-complete example and bounds.
-
-Ensure the daemon is running. `croncheck` is a watchdog for cron, Task
-Scheduler, and other supervisors without built-in readiness monitoring. It
-probes `/v2/healthz` with bounded raw HTTP on the configured local endpoint,
-normalizing wildcard binds to loopback. Valid Gregg Ready, Warming, and Failed
-responses all mean the daemon is running. Only a refused connection proves the
-endpoint absent and permits spawning `greggd run` as a detached child; unrelated,
-malformed, silent, or ambiguous peers return nonzero without spawning. No service
-manager is invoked.
-
-When a non-root bootstrap rerun replaces a same-scope user-local `greggd`, it
-records the default-config daemon's valid health before replacement. A healthy
-daemon is reactivated through the new binary's config-specific `stop` followed
-by `croncheck`; a stopped daemon and a first install remain stopped. Prebuilt
-and staged-Cargo candidates use this same finalization path. If activation
-fails after the binary is replaced, the installer returns nonzero and prints
-an exact retry command.
-
-```sh
-greggd croncheck
-greggd configprint
 greggd status
-greggd version
+greggd configprint
 ```
 
-On Windows, the service entry point is `greggd service` (internal, used by the SCM). Install via the provided PowerShell scripts in `packaging/`; uninstall via `greggd uninstall` (the legacy `packaging/uninstall-windows.ps1` is a thin wrapper around it and no longer deletes directories recursively). For startup, the PowerShell installer remains the canonical SCM registration; `startup install` on Windows reports service state and `startup instructions` prints SCM commands.
+`greggd run` stays in the foreground. Use `greggd run --config PATH` to select
+a configuration file. The default config paths and service setup are described
+in the [daemon guide](https://github.com/eggstack/gregg/blob/main/docs/daemon.md).
 
-## Configuration
+For automatic startup on Unix, use `greggd startup install`. On Windows, the
+PowerShell installer registers the service when run as Administrator. The
+Windows `greggd startup install` command reports service state but does not
+create the registration.
 
-Default config path:
+## Scheduled jobs
 
-- **Linux:** `/etc/gregg/greggd.toml`
-- **macOS:** `/Library/Application Support/gregg/greggd.toml`
-- **Windows:** `%ProgramData%\gregg\greggd.toml`
+Optional `[[jobs]]` entries run local commands on five-field cron schedules.
+Commands are argv arrays and run without an implicit shell. Jobs run as the
+daemon's OS user, one at a time. Load gates are supported on Unix; Windows
+supports time-based jobs only.
 
-Override the default with `--config PATH`.
+Scheduler history is kept in memory and may include bounded command output. The
+HTTP listener is unauthenticated, so any host that can reach it can read that
+output. Keep the listener on a trusted network and do not include credentials
+in command arguments or output. See the
+[daemon guide](https://github.com/eggstack/gregg/blob/main/docs/daemon.md#scheduled-maintenance)
+for configuration and limits.
 
-`configprint` is read-only and prints the configured bind address as a
-canonical socket address, with bind wildcards resolved to the host's primary
-local IP so the output is a usable address a remote client can dial. A
-specific configured host is preserved unchanged, and a wildcard is preserved
-verbatim if the local IP cannot be resolved. The output looks like
-`192.168.182.143:11310` or `[fd00::10]:11310`. The command does not probe
-the network, bind a listener, start, stop, or modify the daemon; wildcard
-resolution uses a transient UDP `connect()` that performs a local route
-lookup only and transmits no packets.
+## API and security
 
-`status` is read-only local diagnostics: it prints the binary version,
-resolved config path, canonical bind address, the bounded `/v2/healthz`
-classification (`ready`, `warming`, `failed`, `unreachable`, or `not-gregg`
-for a peer that answered but is not a valid Gregg endpoint), and the
-detected startup-manager state. Exit `0` only when a valid Gregg endpoint
-answered; the report is still printed otherwise. It never starts, stops,
-restarts, installs, mutates config, or invokes `sudo`.
-
-## Network
-
-This daemon is designed for private networks only. It exposes a read-only
-HTTP/1 JSON API through EggServe's direct H1 runtime on the configured port
-(default 11310) and is not hardened
-for public internet exposure. No firewall rules are created automatically.
-LAN exposure is operator-controlled and the daemon has no TLS or authentication.
-GET request bodies are ignored up to 64 KiB; larger bodies are rejected by the
-bounded transport policy. The application API supports GET and HEAD on its five
-documented routes.
-
-Successful v1/v2 status bodies are serialized once when a typed snapshot is
-published and then served from shared immutable response bytes. Typed snapshot
-and health getters remain available; stale age/failure policy is evaluated on
-each request, so an old cached body can never make a stale request return 200.
-Failure-threshold responses preserve the latest collector-failure diagnostic,
-while age-only staleness reports `cached snapshot is stale`.
-
-`/v2/status` is the universal status endpoint and may include bounded `drives`
-capacity records plus additive live telemetry: current CPU frequency in raw
-Hz, daemon-selected disk read/write bytes per second, and directional network
-receive/transmit bytes per second with optional link capacities in bits per
-second. CPU frequency is current OS-reported frequency, not a base or maximum
-clock; macOS omits it because Gregg uses no privileged or undocumented source.
-Missing or `null` optional data means unavailable/legacy; an empty list means
-successful enumeration with no eligible records. Disk capacity (`used / total`)
-and disk I/O are separate accounting domains, and `R/s`/`W/s` are byte rates.
-Disk/network aggregates are separate from detail records and are not inferred
-from display rows. Network utilization is directional and full-duplex-safe:
-the maximum valid Rx or Tx percentage is used rather than summing both.
-Collection is best-effort and does not model physical disks or storage
-topology; loopback may appear in network detail but cannot contribute to
-aggregate capacity. Older clients and daemons remain compatible by ignoring or
-omitting these additive fields; daemon-version transport is not part of the
-wire contract. Linux and macOS retain `/v1/status`; Windows is v2-only for
-status semantics.
-
-Live rates use cumulative native counters and the actual monotonic elapsed time
-between observations. Counter reset, daemon restart, device hotplug, and link
-disappearance re-establish a baseline before a rate is published. Linux uses
-CPUFreq policy files, `/sys/block/*/stat`, `/proc/net/dev`, and sysfs link
-metadata; macOS uses `NET_RT_IFLIST2` 64-bit interface counters with a
-correctly typed `getifaddrs` fallback and IOKit storage statistics; and
-Windows uses `CallNtPowerInformation`, `IOCTL_DISK_PERFORMANCE`, and IP Helper.
-Optional source failures never make an otherwise valid core sample unready.
-
-The configured daemon display name must be non-empty, at most 128 bytes, and
-contain no control characters. If identity collection fails, the daemon does
-not publish a blank identity; it remains warming or failed and preserves any
-previous valid snapshot.
-
-When writing configuration, the temp file is created `0600` and the final
-file is relaxed to `0644`: the daemon config carries no secrets and
-read-only `croncheck`/`status`/`configprint` must work for unprivileged
-operators and cron. A newly created parent directory is restricted to mode
-`0700`; an existing operator-managed directory keeps its current
-permissions. Systemd/launchd installs normalize an older `0600` system
-config to `0644` with a traversable (`0755`) parent. Metadata errors while
-loading a default config are reported instead of silently falling back to
-defaults. If an existing install still shows
-`Permission denied (os error 13)`, rerun
-`sudo greggd startup install --method systemd` (or `launchd` on macOS).
-
-On Unix, `greggd stop` uses the config-specific local control socket. The
-socket path is reserved by the kernel before its restrictive permissions are
-verified, so a concurrent path occupant is never replaced; the temp-directory
-fallback remains best effort when the config-adjacent directory is unavailable.
-
-If the system clock moves backward, a future-dated cached snapshot is treated
-as stale while age-based staleness is enabled because its age cannot be
-verified against the current clock.
-
-## Links
-
-- Repository: <https://github.com/eggstack/gregg>
-- Project: <https://github.com/eggstack/gregg>
+The API is read-only. See the
+[HTTP API guide](https://github.com/eggstack/gregg/blob/main/docs/api.md) for
+routes and optional telemetry. The daemon has no TLS or authentication and is
+not intended for public Internet exposure. See the project's
+[security guidance](https://github.com/eggstack/gregg/blob/main/SECURITY.md).
 
 ## License
 

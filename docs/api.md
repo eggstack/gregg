@@ -1,41 +1,50 @@
 # HTTP API
 
-The daemon serves cached immutable snapshots on its configured port
-(default `11310`):
+`greggd` serves cached JSON documents on its configured port, `11310` by
+default.
 
-```text
-GET /           # root
-GET /v1/status  # v1 status (Linux/macOS only; Windows returns 503)
-GET /v2/status  # v2 status (all platforms)
-GET /healthz    # v1 health
-GET /v2/healthz # v2 health
-```
+| Method | Route | Description |
+| --- | --- | --- |
+| `GET`, `HEAD` | `/` | Service root |
+| `GET`, `HEAD` | `/v1/status` | Legacy status schema on Linux and macOS |
+| `GET`, `HEAD` | `/v2/status` | Current status schema on all supported platforms |
+| `GET`, `HEAD` | `/healthz` | Legacy health |
+| `GET`, `HEAD` | `/v2/healthz` | Current health |
+| `GET`, `HEAD` | `/v2/scheduler` | Optional scheduler summary |
+| `GET`, `HEAD` | `/v2/scheduler/history` | Optional retained job history |
 
-Clients request `/v2/status` first and fall back to `/v1/status` only on
-404. `/v2/status` is the universal cross-platform endpoint.
+The Gregg client requests `/v2/status` first and falls back to `/v1/status` only
+when the v2 route returns 404. `/v2/status` is the cross-platform status route.
+Scheduler routes are available on newer daemons. Older daemons return 404 for
+them; this does not affect system reachability.
 
-The HTTP/1 API supports GET and HEAD on the documented routes. Other methods on
-known routes return 405 with `Allow: GET,HEAD`; unknown routes return 404.
-Request bodies are ignored up to 64 KiB and larger bodies are rejected.
+Known routes accept only `GET` and `HEAD`. Other methods return `405` with an
+`Allow: GET,HEAD` header. Unknown routes return `404`. Request bodies are
+bounded at 64 KiB; larger bodies are rejected.
 
-If the system clock moves backward, a snapshot timestamp that is temporarily
-in the future is treated as fresh rather than stale; age-based staleness
-resumes once the clock catches up.
+The daemon serves cached snapshots and evaluates freshness on each request. If
+the system clock moves backward and a snapshot timestamp is now in the future,
+the daemon treats that snapshot as stale while age-based staleness is enabled.
+It becomes eligible as fresh again when the clock catches up.
 
-Wire-format details (schema versions, capabilities, validation) live in
-`architecture/protocol.md`.
+## Optional v2 telemetry
 
-Schema-v2 status may add optional `cpu_frequency_hz` (current host frequency
-in Hz), `disk_io` (daemon-selected aggregate and bounded device byte rates),
-and `network` (directional aggregate/interface byte rates and optional link
-capacities in bits per second). Older daemons omit these fields and clients
-normalize them as unavailable. Network utilization uses the larger valid
-receive/transmit directional percentage, so simultaneous full-duplex traffic
-does not double-count; missing capacity leaves throughput available but no
-utilization percentage.
+The v2 status schema may include:
 
-The daemon derives live rates from cumulative native counters using monotonic
-elapsed time. The first observation and any reset or hotplug observation warms
-the corresponding identity. The aggregate disk set is independent of mounted
-filesystem rows and excludes obvious parent/child duplication; network detail
-may include loopback, but loopback never contributes aggregate capacity.
+- `cpu_frequency_hz`: current OS-reported CPU frequency in hertz, not base or
+  maximum frequency.
+- `disk_io`: daemon-selected aggregate and device read/write byte rates.
+- `network`: aggregate and interface receive/transmit byte rates, with optional
+  link capacities in bits per second.
+
+These fields are optional. Older daemons omit them, and clients treat missing
+data as unavailable. Rates use cumulative native counters and monotonic elapsed
+time. A reset, restart, or device change establishes a new baseline before a
+rate is reported. Missing capacity leaves network throughput available but
+utilization unavailable. Network utilization uses the larger valid receive or
+transmit percentage, not their sum. Loopback may appear in interface details,
+but does not contribute to aggregate capacity.
+
+Wire schemas, capabilities, and validation rules are documented in
+[Protocol architecture](../architecture/protocol.md). For scheduler job
+configuration and output security, see [Daemon](daemon.md#scheduled-maintenance).

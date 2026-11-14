@@ -5,247 +5,167 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Downloads](https://img.shields.io/crates/d/gregg.svg)](https://crates.io/crates/gregg)
 
-A compact terminal monitor for CPU, memory, swap, load, disk, and optional
-live throughput across multiple machines over LAN.
+Gregg is a keyboard-driven terminal monitor for CPU, memory, swap, load, disks,
+and optional live I/O across multiple machines.
 
-A lightweight daemon (`greggd`) runs on each monitored machine and serves a
-read-only JSON API on port `11310`. A per-user `gregg` client daemon polls your
-fleet once per configuration and feeds the TUI, which only renders.
+Each monitored machine runs `greggd`, which serves a read-only JSON API. Your
+workstation runs `gregg`, the terminal interface, and a per-user client daemon
+that polls your configured machines. Multiple TUI windows share that polling.
 
 ## Quickstart
 
-### 1. Install the daemon on each machine
+### 1. Install `greggd` on each machine to monitor
 
-Linux / macOS:
-
-```bash
-curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo bash -s -- greggd
-```
-
-Without `sudo` for a user-local install (no system service):
+Linux or macOS, for a system install with automatic startup:
 
 ```bash
-curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | bash -s -- greggd
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh \
+  | sudo bash -s -- greggd
 ```
 
-Windows (PowerShell, Administrator for service registration):
+Windows PowerShell, run as Administrator to register the Windows service:
 
 ```powershell
-irm https://github.com/eggstack/gregg/releases/latest/download/install.ps1 | iex
-.\install.ps1 -Component Greggd
+$installer = Join-Path $env:TEMP 'gregg-install.ps1'
+Invoke-WebRequest 'https://github.com/eggstack/gregg/releases/latest/download/install.ps1' -OutFile $installer
+& $installer -Component Greggd
 ```
 
-Verify it is serving:
+A non-Administrator Windows install is user-local and does not register a
+system service. Check the daemon from its host:
 
 ```bash
 curl -fsS http://127.0.0.1:11310/v2/healthz
 ```
 
-### 2. Install the client on your workstation
+In Windows PowerShell, run:
 
-Linux / macOS:
+```powershell
+Invoke-RestMethod http://127.0.0.1:11310/v2/healthz
+```
+
+### 2. Install `gregg` on your workstation
+
+Linux or macOS:
 
 ```bash
 curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh \
-  | bash -s -- gregg \
-  && export PATH="$HOME/.local/bin:$PATH"
+  | bash -s -- gregg
 ```
 
-(Append the trailing `export` only when `~/.local/bin` is not yet on `PATH`.)
+If the installer says `~/.local/bin` is not on your current `PATH`, run the
+printed `export` command in that shell. The installer can also add the path to
+supported shell profiles for future shells.
 
-Windows (PowerShell):
+Windows PowerShell:
 
 ```powershell
-.\install.ps1 -Component Gregg
+$installer = Join-Path $env:TEMP 'gregg-install.ps1'
+Invoke-WebRequest 'https://github.com/eggstack/gregg/releases/latest/download/install.ps1' -OutFile $installer
+& $installer -Component Gregg
 ```
 
-No compiler needed. With Rust 1.89+ (or on source-only hosts such as ARMv7):
+Prebuilt installs need no compiler. Source installs require Rust 1.89 or newer:
 
 ```bash
 cargo install gregg --locked
 cargo install greggd --locked
 ```
 
-See [Installation](docs/installation.md) for pinned versions, direct
-downloads, PATH/profile behavior, and the Cargo fallback.
+See [Installation](docs/installation.md) for platform details, version pinning,
+direct downloads, and uninstall instructions.
 
-### 3. Add endpoints and launch
+### 3. Add monitored machines and open the TUI
 
 ```bash
 gregg add 192.168.1.10:11310
-gregg add 192.168.1.11:11310
-gregg add deadpool@192.168.1.10:11310     # `nickname@host:port` form
-gregg refresh 30
+gregg add deadpool@192.168.1.11:11310
 gregg
 ```
 
-`gregg add` requires an explicit port (`host:port`,
-`nickname@host:port`, or `http://host:port/`); host-only input is rejected
-and HTTPS is never accepted. `gregg remove` accepts host-only input, including
-a bare IPv6 literal: because `remove` takes a host on its own, the string in
-the config always removes it, where `add` still rejects the ambiguous
-`2001:db8::1:2` and asks for `[2001:db8::1:2]:11310`. See
-[Client](docs/client.md).
+`gregg add` requires an explicit port and accepts `host:port`, `[ipv6]:port`,
+`nickname@host:port`, or `http://host:port/`. HTTPS is not supported.
 
-## Supported targets
+## Navigation
 
-| Platform | Architecture | Rust target / asset suffix |
+- `j` / `k` or arrow keys: select a machine
+- `h` / `l`: switch panes
+- `v`: toggle normal and condensed layouts
+- `d`: expand drive details
+- `n`: expand network details
+- `c`: expand scheduled-job details when the daemon supports them
+- `Shift-J` / `Shift-K`: select a scheduled job
+- `PageDown` / `PageUp`, `f` / `b`, or `Ctrl-D` / `Ctrl-U`: page through the machine list
+- `Ctrl-R`: reload the Systems config, or refresh the active pane
+
+See [Display](docs/display.md) for metric rows, compact layout, offline status,
+and scheduled-job rendering.
+
+## Useful commands
+
+```text
+gregg list                         List configured machines
+gregg remove 192.168.1.10          Remove a machine by host
+gregg refresh 30                   Set the polling interval in seconds
+gregg edit                         Edit the client configuration
+gregg update                       Update this client
+gregg uninstall --dry-run          Preview removal
+
+greggd status                      Check local daemon health and startup state
+greggd startup install             Register Unix startup, report Windows service state
+greggd restart                     Restart the daemon
+greggd update                      Update the daemon
+greggd uninstall --dry-run         Preview removal
+```
+
+The client daemon starts automatically when you run `gregg`. To keep it running
+when no TUI is open, use `gregg daemon startup install`. Client startup is
+always per-user. The monitored `greggd` daemon can be installed as a system
+service. See [Client](docs/client.md) and [Daemon](docs/daemon.md).
+
+## Optional features
+
+The TUI can show best-effort CPU frequency, disk throughput, and network
+throughput when the host and daemon provide them. Missing telemetry is left
+unavailable rather than shown as zero. Older daemons remain usable.
+
+Optional `greggd` scheduled jobs run local maintenance commands from cron
+schedules. The client can display their state and recent output. Scheduler
+output is available to any client that can reach the unauthenticated daemon
+listener, so keep that listener on a trusted network. See [Daemon](docs/daemon.md).
+
+The optional EggPool pane displays periodized usage metrics and separate
+service-health information. See [Client](docs/client.md#eggpool).
+
+## Supported release targets
+
+| Platform | Architecture | Release asset target |
 | --- | --- | --- |
 | Linux | x86-64 | `x86_64-unknown-linux-gnu` |
-| Linux | ARM64 (Pi / Le Potato) | `aarch64-unknown-linux-gnu` |
-| macOS | Intel (x86-64) | `x86_64-apple-darwin` |
-| macOS | Apple Silicon (arm64) | `aarch64-apple-darwin` |
+| Linux | ARM64 | `aarch64-unknown-linux-gnu` |
+| macOS | Intel | `x86_64-apple-darwin` |
+| macOS | Apple Silicon | `aarch64-apple-darwin` |
 | Windows | x86-64 | `x86_64-pc-windows-msvc.exe` |
 
-Linux assets target glibc 2.17. macOS binaries are unsigned (approve via
-System Settings or `xattr -d com.apple.quarantine`). Linux ARMv7 is
-source-build only.
+Linux release binaries target glibc 2.17. macOS binaries are unsigned and may
+need Gatekeeper approval. Linux ARMv7 and Windows ARM64 use the Cargo fallback
+when Rust is available.
 
-## Essential commands
+## Documentation
 
-```bash
-greggd host 127.0.0.1              # restrict to localhost (SSH tunnel only)
-greggd port 11311                  # change the listen port
-greggd startup install             # register automatic startup (systemd / launchd / cron / SCM)
-greggd restart                     # manager-aware restart
-greggd update                      # update to the latest stable release
-greggd stop                        # stop the local daemon
-greggd configprint                 # print the configured bind address
-greggd status                      # read-only diagnostics: version, bind, health, startup state
-greggd uninstall --dry-run         # preview removal (mutates nothing)
-
-gregg list                         # list configured endpoints
-gregg remove 192.168.1.10          # host-only remove is supported
-gregg edit                         # open config in $EDITOR
-gregg update                       # update the client
-gregg uninstall --dry-run          # preview removal (mutates nothing)
-```
-
-Add `--purge` to either `uninstall` to also remove its config file
-(destructive); config is preserved by default. Reinstalling at the same scope
-replaces that component in place; `update` upgrades the exact invoked binary.
-See [Daemon](docs/daemon.md) and [Client](docs/client.md).
-
-## TUI navigation
-
-- `j` / `k` (or arrow keys): move between systems
-- `h` / `l`: cycle panes
-- `v`: toggle normal/condensed layout
-- `d`: expand/collapse drives for the selected system
-- `n`: expand/collapse network details for the selected system
-- `c`: expand/collapse cron details for the selected system
-- `Shift-J` / `Shift-K`: move between cron jobs in that block
-- `PageDown` / `PageUp` (or `f` / `b`, or `Ctrl-D` / `Ctrl-U`): page forward and
-  back through the system list
-- `Ctrl-R`: ask the client daemon to re-read the config and poll immediately
-
-## Cron observability
-
-When a monitored `greggd` serves the scheduler routes, `c` expands a read-only
-cron block for the selected system: every scheduled job, its state, its last
-result, and the run history of one job selected with `Shift-J` / `Shift-K`.
-
-The client daemon reads a compact summary on a 30-second cadence and downloads
-the larger history document only when it changes, so opening the pane in ten
-windows costs the fleet exactly what zero windows cost. The daemon keeps a
-deeper, memory-only cache than the remote retains, so closing and reopening the
-TUI does not reset what has been observed; nothing is written to disk.
-
-Reading it honestly: schedules are the remote host's own local civil cron, while
-each record's clock is labelled UTC (`10-05 07:00Z`) because the daemon does not
-report the remote's timezone — so the two columns are deliberately not in the
-same time base. A load gate names the relation it actually means
-(`load15m 9.24 > 8.00`, `start load15m 1.20 <= 8.00`, `load15m unavailable`), and
-a missing reading is never rendered as zero. `Shift-J` / `Shift-K` keep the
-selected job visible however many jobs exist, and anything the terminal is too
-short to show is marked as such rather than quietly dropped.
-
-An older `greggd` that does not serve the routes is reported as *unsupported*,
-which is the normal case in a mixed fleet and never marks the system offline.
-Remote command output is escaped rather than stripped, so a hostile build script
-cannot clear your screen or retitle your terminal. See
-[Display](docs/display.md) and [Client](docs/client.md).
-
-## The client daemon
-
-`gregg` is a frontend. A separate, same-user process — the *client daemon* —
-owns all remote polling for one configuration file and serves TUI windows over a
-local endpoint, so a second window costs a socket instead of a second copy of
-the fleet's polling, and closing the last window does not stop observation.
-
-```text
-gregg                    # the TUI; starts the daemon if it is not already up
-gregg daemon run         # run it in the foreground (it never self-daemonizes)
-gregg daemon status      # is one running for this config?
-gregg daemon stop        # stop it
-gregg daemon restart     # stop and start it again, then confirm it is serving
-```
-
-Each configuration gets its own daemon on its own `0600` endpoint. The TUI
-attaches to it, reads no config file, and opens no network connection; if the
-daemon is not there it says so instead of quietly polling behind its back.
-
-You do not normally have to start the daemon yourself — bare `gregg` does it, and
-only when the endpoint is genuinely empty, under a lock so two simultaneous
-launches still produce one daemon. To keep it running when no TUI is open:
-
-```text
-gregg daemon startup install        # user-scoped: systemd --user, LaunchAgent, or Startup folder
-gregg daemon startup instructions   # print it without changing anything
-gregg daemon startup status         # what is registered
-gregg daemon startup remove         # remove only Gregg's own entry
-```
-
-That is always a **user** registration. Gregg never installs a system service or
-a `LocalService` SCM entry for the client daemon, never runs `sudo` internally,
-and a root install registers nothing on anyone's behalf — each user registers
-their own, or relies on lazy activation.
-
-Where that registration is a managed user crontab (Linux without user systemd),
-Gregg rewrites only its own marked block and nothing else. Because `crontab -`
-replaces the whole table, it never rewrites a table it did not read successfully:
-if `crontab -l` times out, fails to start, or returns something that is not
-readable text, the install stops and tells you to run `gregg daemon startup
-instructions` and add the line yourself, rather than risk your other jobs.
-
-`gregg update` prepares and verifies the replacement before it touches a running
-daemon, then relaunches it on the new binary and says so if that relaunch
-fails. `gregg uninstall` stops an identified daemon and removes only a startup
-entry that is provably Gregg's, leaving foreign ones alone; a daemon it cannot
-confidently stop blocks the deletion rather than leaving a stale endpoint
-behind. See [Client](docs/client.md).
-
-## Live metrics and compatibility
-
-Beyond the core CPU/memory/load/swap/drive gauges, v2 daemons may report
-best-effort live telemetry: current CPU frequency, disk `R/s`/`W/s` byte
-rates, and directional network `Rx/s`/`Tx/s` with link capacities. Values are
-omitted (never fabricated) when the host API cannot provide them, and older
-daemons stay online with their historical metrics intact. See
-[Display](docs/display.md) for row and width policies.
-
-`greggd` can also run optional local maintenance commands from five-field cron
-schedules. Jobs execute directly as the daemon's OS user, one at a time, and
-can defer against cached Unix load averages. See [Daemon](docs/daemon.md) for
-the TOML schema, identity restrictions, and deferral behavior.
-
-## Docs
-
-- [Installation](docs/installation.md) — installer behavior, pinned versions, direct downloads, Cargo fallback
-- [Daemon](docs/daemon.md) — config, startup, `croncheck`, `stop`, updates, platform notes
-- [Client](docs/client.md) — endpoint forms, offline polling, TUI details, EggPool
-- [Display](docs/display.md) — metric rows, compact mode, offline rendering
-- [API](docs/api.md) — HTTP endpoints
-- [Development](docs/development.md) — local builds and operator-managed installs
+- [Installation](docs/installation.md): install, update, and uninstall
+- [Client](docs/client.md): endpoints, client daemon, EggPool, and scheduler views
+- [Daemon](docs/daemon.md): configuration, startup, scheduled jobs, and security
+- [Display](docs/display.md): TUI behavior and layout
+- [HTTP API](docs/api.md): daemon endpoints and telemetry
+- [Development](docs/development.md): local builds and packaging helpers
 
 ## Security
 
-The daemon is designed for **private-network** use only. It has no TLS, authentication, rate limiting, or public-internet hardening. See [SECURITY.md](SECURITY.md).
+The daemon is intended for private networks. It has no TLS or authentication and
+is not hardened for public Internet exposure. See [Security](SECURITY.md).
 
-## Contributing
+## Contributing and license
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## License
-
-[MIT](LICENSE)
+See [CONTRIBUTING.md](CONTRIBUTING.md). Gregg is licensed under the [MIT
+License](LICENSE).
