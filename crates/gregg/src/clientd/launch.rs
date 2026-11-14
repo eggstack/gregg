@@ -793,10 +793,8 @@ mod tests {
 
     /// Two concurrent `ensure_running` calls, both racing to start a daemon.
     ///
-    /// Exactly one may spawn. This is the test the plan asks for, and it is
-    /// deterministic in the sense that matters: the *decision* is serialized by
-    /// the OS lock, and the assertion is on the outcome (one daemon serving
-    /// both callers) rather than on which process won.
+    /// Exactly one may spawn. The OS lock serializes the decision; the test
+    /// checks one daemon serves both callers, not which caller wins.
     #[test]
     fn two_concurrent_launches_produce_exactly_one_daemon() {
         let dir = TempDir::new("race");

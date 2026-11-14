@@ -1,8 +1,8 @@
-//! Plan 133 compatibility characterization and boundary freeze.
+//! Collector compatibility characterization and boundary freeze.
 //!
-//! This module inventories the collector contract that Plans 134-135 must
-//! preserve and pins it with deterministic sequence, wire, and public-path
-//! tests. It introduces no behavioral change: every test asserts current
+//! This module inventories the collector contract and pins it with deterministic
+//! sequence, wire, and public-path tests. It introduces no behavioral change:
+//! every test asserts current
 //! behavior at the existing boundary (no clock injection, no cadence change,
 //! no worker redesign, no protocol change).
 //!

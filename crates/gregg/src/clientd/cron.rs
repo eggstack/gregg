@@ -2056,8 +2056,8 @@ mod tests {
         endpoints
     }
 
-    /// The plan's core regression: an accepted reload interrupts the *active*
-    /// round instead of waiting out the superseded fleet's request deadlines.
+    /// An accepted reload interrupts the active round instead of waiting for
+    /// the superseded fleet's request deadlines.
     #[tokio::test]
     async fn a_reload_interrupts_an_active_round_before_its_requests_time_out() {
         let meter = RequestMeter::default();

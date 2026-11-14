@@ -29,14 +29,12 @@ pub enum Event {
     Signal(SignalKind),
     /// A poll batch arrived from the scheduler.
     ///
-    /// Reserved: production receives batches on a dedicated channel, never
-    /// via `Event`. Retained for tests and future unified sources. `Ctrl-R`
-    /// is the only config-reload boundary by design (no watcher).
+    /// Reserved: production receives batches on a dedicated channel; tests
+    /// may still construct this event.
     BatchReceived(PollBatch),
     /// The configuration file changed on disk.
     ///
-    /// Reserved: reloads are explicit via `Ctrl-R` only. Retained for
-    /// symmetry and future watcher integration.
+    /// Reserved; reloads are explicit via `Ctrl-R` (no file watcher).
     ConfigChanged,
 }
 

@@ -1,4 +1,4 @@
-//! Plan 162: validation for the scheduler-observability wire documents.
+//! Validation for scheduler-observability wire documents.
 //!
 //! These checks reject impossible or out-of-bound wire documents while leaving
 //! *absence* alone: a pre-feature daemon answering `404` is a compatibility
@@ -1006,10 +1006,8 @@ mod tests {
             "frozen maximum must stay under the published client cap"
         );
         let measured = serde_json::to_vec(&document).unwrap().len();
-        // Plan 162 recorded this exact figure (832,022 bytes for the
-        // pathological shape) as the derived history maximum. Pinning it means
-        // widening any of the frozen constants, or changing serialization,
-        // fails here instead of silently invalidating the published cap.
+        // Pin the 832,022-byte pathological maximum so changes to the caps or
+        // serialization cannot silently invalidate the published body limit.
         assert_eq!(measured, 832_022, "derived history maximum changed");
         assert!(!history_body_exceeds_budget(&document));
     }

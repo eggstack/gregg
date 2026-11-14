@@ -656,7 +656,7 @@ unknown_field = "oops"
 
     // --- Default path ---
 
-    // --- Plan 166: cron observability depths ---
+    // --- Cron observability depths ---
     #[test]
     fn cron_defaults_to_five_displayed_and_a_deeper_cache() {
         // The display window matches the remote's own retention so the common

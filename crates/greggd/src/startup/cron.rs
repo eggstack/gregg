@@ -472,7 +472,7 @@ pub fn install_cron(exe: &Path, config: &Path, explicit: bool) -> Result<(), Ins
     println!("Verify with: crontab -l");
     Ok(())
 }
-// ── Cron uninstall (Plan 112) ─────────────────────────────────────────────────
+// ── Cron uninstall ───────────────────────────────────────────────────────────
 
 /// Pure helper: stripped crontab after Gregg managed-block removal, or
 /// `None` when the crontab has no Gregg block and must be left untouched.

@@ -1,4 +1,4 @@
-//! Component-safe uninstall for the `greggd` daemon (Plan 112).
+//! Component-safe uninstall for the `greggd` daemon.
 //!
 //! `greggd uninstall` removes only the exact invoked daemon executable
 //! plus the Gregg-owned startup integration actually present for it.

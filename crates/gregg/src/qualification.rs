@@ -1,9 +1,7 @@
-//! Plan 167: measured resource qualification for the 161 line.
+//! Resource qualification for scheduler observability and the client daemon.
 //!
-//! These are not prose claims. Every number the plan asks to be "recorded" is
-//! **derived here from the same constants the implementation uses**, and the
-//! derivation is asserted, so a future change to a bound fails a test instead of
-//! silently invalidating a recorded figure.
+//! Each bound is derived from implementation constants and asserted, so a
+//! future change fails a test instead of silently invalidating the qualification.
 //!
 //! # Why derived, not measured
 //!
@@ -12,9 +10,8 @@
 //! count of RSS would be asserting the allocator. What can be bounded exactly
 //! is the *allocation the design permits*, which is a property of the code and
 //! is therefore worth locking. The figures are the upper bounds the design
-//! guarantees; actual RSS is below them or, after ring eviction, temporarily
-//! above while the allocator reuses pages — which is why the plan asks for
-//! measured RSS only "if practical".
+//! guarantees; actual RSS may temporarily exceed them while the allocator
+//! reuses pages after eviction, so RSS is an optional observation, not a bound.
 
 use gregg_protocol::{
     DEFAULT_SCHEDULER_HISTORY_LIMIT, MAX_SCHEDULER_HISTORY_BODY_BYTES, MAX_SCHEDULER_HISTORY_LIMIT,
@@ -159,11 +156,8 @@ mod tests {
 
     #[test]
     fn the_daemon_history_default_is_half_its_maximum() {
-        // The default depth is 5 against a hard maximum of 10, so the default
-        // retained-output allocation must be exactly half the maximum. Recorded
-        // separately because the plan asks for both figures and they are not
-        // interchangeable: quoting the maximum as the default would overstate
-        // what an unconfigured daemon holds.
+        // The default retains half the maximum; keep it distinct from the
+        // unconfigured daemon's allocation.
         assert_eq!(
             DEFAULT_SCHEDULER_HISTORY_LIMIT * 2,
             MAX_SCHEDULER_HISTORY_LIMIT
@@ -197,9 +191,8 @@ mod tests {
 
     #[test]
     fn the_global_cache_ceiling_stays_within_a_small_monitors_budget() {
-        // 4096 records x 1,280 B = 5,242,880 B, i.e. ~5 MiB. This is the number
-        // the plan asks to be recorded, and the one that has to stay
-        // proportionate to a lightweight client.
+        // 4096 records x 1,280 B = 5,242,880 B (~5 MiB), within the
+        // lightweight client's 8 MiB budget.
         assert_eq!(client_cache_ceiling_bytes(), 5_242_880);
         assert!(
             client_cache_ceiling_bytes() <= 8 * 1024 * 1024,

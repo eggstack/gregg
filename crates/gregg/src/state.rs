@@ -5703,7 +5703,7 @@ mod tests {
         assert_eq!(entry_height(&state, 0), 2);
     }
 
-    // ===== Plan 143: changed-result reducer seams =====
+    // ===== Changed-result reducer seams =====
 
     fn plan143_online_batch(state: &AppState, generation: u64) -> PollBatch {
         let now = Instant::now();

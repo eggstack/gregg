@@ -5,7 +5,7 @@
 //! services, rendering cron entries, and restarting through the appropriate
 //! manager. No collector, sampler, or HTTP code depends on this module.
 //!
-//! Ownership split (Plan 105, behavior-preserving):
+//! Ownership split:
 //!
 //! - [`method`] — method identity, standard paths, detection, selection;
 //! - [`process`] — bounded child-process execution shared by probes/commands;

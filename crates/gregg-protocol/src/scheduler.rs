@@ -1,7 +1,7 @@
-//! Plan 162: scheduler-observability wire contract for schema version 2.
+//! Scheduler-observability wire contract for schema version 2.
 //!
-//! These types are the *frozen* remote contract (Plan 162 questions 1-7) served
-//! on the additive read-only routes:
+//! These types define the frozen remote contract served on additive read-only
+//! routes:
 //!
 //! - `GET/HEAD /v2/scheduler` — [`SchedulerSummaryV2`]
 //! - `GET/HEAD /v2/scheduler/history` — [`SchedulerHistoryV2`]
@@ -14,9 +14,7 @@
 //!
 //! # Frozen resource constants
 //!
-//! Every number below was fixed by Plan 162 and must not be widened by later
-//! implementation judgment. The derivation and the measured footprint rule live
-//! in `plans/162-scheduler-observability-contract-and-resource-qualification.md`.
+//! These are wire-contract bounds; changing them requires protocol review.
 //!
 //! | Constant | Value | Role |
 //! | --- | --- | --- |
@@ -60,7 +58,7 @@ pub const DEFAULT_SCHEDULER_HISTORY_LIMIT: usize = 5;
 
 /// Hard maximum number of retained terminal records per job.
 ///
-/// Chosen (Plan 162 question 4) so the pathological worst case — 64 jobs at
+/// Keeps the pathological worst case — 64 jobs at
 /// this depth — retains at most `64 * 10 * 2 * 512` = 655,360 bytes of
 /// published text plus bounded per-record metadata, which stays proportionate
 /// to Gregg's lightweight daemon target.
@@ -68,7 +66,7 @@ pub const MAX_SCHEDULER_HISTORY_LIMIT: usize = 10;
 
 /// Raw captured output tail retained per stream, in bytes.
 ///
-/// Selected over 256 and 4096 (Plan 162 question 5): 256 truncates ordinary
+/// Selected over 256 and 4096: 256 truncates ordinary
 /// multi-line diagnostics too aggressively, while 4096 doubles the worst-case
 /// retained bytes for no diagnostic benefit once the published text is capped
 /// at [`MAX_SCHEDULER_OUTPUT_TEXT_BYTES`].

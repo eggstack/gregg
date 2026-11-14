@@ -2160,7 +2160,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    // --- Inline nickname parsing (Phase 083) ---
+    // --- Inline nickname parsing ---
 
     #[test]
     fn parse_add_target_extracts_nickname_and_endpoint() {

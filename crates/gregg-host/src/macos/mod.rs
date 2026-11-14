@@ -1,8 +1,7 @@
 //! macOS collector entry point.
 //!
 //! Gathers identity, CPU, memory, swap, and load-average samples from
-//! Mach host statistics and sysctl APIs. Moved without semantic change
-//! from `greggd::collector::macos` (Plan 134); types are protocol-neutral.
+//! Mach host statistics and sysctl APIs. Types are protocol-neutral.
 
 use std::time::Instant;
 

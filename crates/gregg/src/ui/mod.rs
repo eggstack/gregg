@@ -3277,7 +3277,7 @@ mod tests {
         );
     }
 
-    // ===== Plan 143: cross-render condensed reuse and aggregate sharing =====
+    // ===== Cross-render condensed reuse and aggregate sharing =====
 
     fn plan143_condensed_state() -> AppState {
         let mut config = Config::default();

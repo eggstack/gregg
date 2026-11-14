@@ -1,6 +1,6 @@
 //! FreeBSD collector entry point.
 //!
-//! First post-extraction native backend for `gregg-host` (Plan 136).
+//! Native FreeBSD backend for `gregg-host`.
 //! Gathers identity, CPU, load, memory, and local filesystems from FreeBSD
 //! sysctl/libc interfaces, with disk I/O from base `libdevstat` and network
 //! from `ifmib(4)`. No shell commands, no privilege escalation, no generic

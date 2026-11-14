@@ -1,6 +1,6 @@
 //! Supported-target mapping and release asset naming.
 //!
-//! The public asset contract (Plan 099, unchanged by Plan 104):
+//! The public asset contract:
 //!
 //! ```text
 //! tag: vX.Y.Z
@@ -16,7 +16,7 @@
 /// GitHub repository owning the releases, without URL scheme.
 pub const GITHUB_REPO: &str = "eggstack/gregg";
 
-/// Supported binary targets (Plan 099 public contract).
+/// Supported binary targets.
 pub const SUPPORTED_TARGETS: &[&str] = &[
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
@@ -166,7 +166,7 @@ mod tests {
         );
     }
 
-    /// Drift prevention (Plan 104): the Rust target table must match the
+    /// The Rust target table must match the
     /// machine-readable release table consumed by the release scripts and
     /// installers. A new target must be added in both places at once.
     #[test]

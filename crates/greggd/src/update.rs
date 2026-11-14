@@ -1,19 +1,19 @@
 //! Binary-first self-update for `greggd`.
 //!
-//! Lifecycle coordinator over the shared [`gregg_update`] mechanism
-//! (Plan 104): crates.io is the version authority, the exact tagged GitHub
+//! Lifecycle coordinator over the shared [`gregg_update`] mechanism:
+//! crates.io is the version authority, the exact tagged GitHub
 //! Release asset is the binary candidate, and Cargo is the fallback only
 //! when the asset is absent (HTTP 404). Checksum and candidate `version`
 //! are verified before any replacement.
 //!
-//! Update lifecycle is exact-executable-aware (Plan 116): the coordinator
+//! Update lifecycle is exact-executable-aware: the coordinator
 //! never uses host-global `startup_state()` as mutation authority. Unix
 //! intent comes from systemd/launchd exact-executable ownership plus the
 //! selected config's bounded health probe; Windows intent comes from
 //! `query_registration()` plus exact path equivalence. The final manager
 //! mutation stays behind ownership-aware `restart_daemon()`.
 //!
-//! Transaction rule (Plan 102, preserved): the candidate is fully prepared
+//! The candidate is fully prepared
 //! and verified before a running daemon service is quiesced where required.
 //! Lifecycle intent is observed after preparation and immediately before
 //! mutation. All transport/staging/replacement mechanics live in
@@ -34,7 +34,7 @@ use crate::service::{ServiceRegistration, ServiceState};
 use crate::startup::ArtifactOwnership;
 
 /// Update-specific lifecycle disposition, relative to the exact invoked
-/// executable and the selected config (Plan 116).
+/// executable and the selected config.
 ///
 /// This is deliberately small: it answers only what `greggd update` may
 /// mutate and whether a post-replacement restart is required. It is not a

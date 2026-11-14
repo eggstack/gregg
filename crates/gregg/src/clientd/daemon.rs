@@ -2055,10 +2055,8 @@ mod tests {
     // would hide exactly the shape these tests are asserting against.
     #[allow(clippy::too_many_lines)]
     ///
-    /// `/v2/status` is deliberately not served, so the metrics plane reports
-    /// the system offline while the cron plane is fully healthy. That is the
-    /// exact independence the plan requires, and it is far easier to assert
-    /// from a real end-to-end run than from a unit test on a reducer.
+    /// `/v2/status` is absent, so metrics report offline while cron stays
+    /// healthy, verifying the polling planes remain independent.
     struct CountingRemote {
         port: u16,
         summary_hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -3538,12 +3536,9 @@ mod windows_tests {
         running.shutdown().await;
     }
 
-    /// The transport-level echo of the plan's conditional request-count check.
-    ///
-    /// Plan 167 proved one polling plane on Unix. This repeats the count on the
-    /// named-pipe transport so the claim is not carried across platforms by
-    /// argument alone. The metrics bound is deliberately loose — the point is
-    /// to catch a *second poll plane* (a 2x jump), not to measure the cadence.
+    /// Verify on the named-pipe transport that a second frontend does not add
+    /// a polling plane. The loose metrics bound catches a second poller, not
+    /// cadence.
     #[tokio::test]
     async fn a_second_windows_frontend_does_not_add_a_second_polling_plane() {
         let remote = spawn_counting_greggd().await;

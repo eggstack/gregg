@@ -1,6 +1,5 @@
 //! Host Linux collector tests.
 //!
-//! Fixture-driven coverage moved with the implementation (Plan 134).
 //! Asserts on [`HostSample`](crate::model::HostSample) directly; wire
 //! validation stays in `greggd`.
 

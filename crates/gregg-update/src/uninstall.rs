@@ -1,7 +1,7 @@
 //! Generic executable-uninstall primitives shared by `gregg` and `greggd`.
 //!
 //! This module owns only generic executable operations and stays
-//! service-manager-free (Plan 112):
+//! service-manager-free:
 //!
 //! ```text
 //! current executable resolution

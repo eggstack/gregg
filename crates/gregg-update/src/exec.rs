@@ -226,10 +226,9 @@ pub fn probe_http_code(curl: &str, url: &str) -> Option<u16> {
 /// non-prerelease version. One bounded HTTPS request with a
 /// program-specific User-Agent.
 ///
-/// Plan 126 experiment closed RETAIN CURL: the external-`curl` transport
-/// below is the production path. Response parsing lives in the
-/// transport-neutral [`parse_stable_version_response`] helper so it stays
-/// unit-tested without network access.
+/// Keep `curl` as the production transport; the in-process alternative
+/// increased stripped `greggd` size by 105%. Response parsing stays
+/// transport-neutral and unit-tested without network access.
 pub fn fetch_latest_stable_version(
     crate_name: &str,
     program: &str,
@@ -1290,12 +1289,9 @@ mod tests {
         assert!(output.status.success());
     }
 
-    // Plan 126 closed RETAIN CURL and kept these end-to-end fixtures for
-    // the retained external-curl transport: they drive the real `curl`
-    // binary against local deterministic servers and lock the redirect,
-    // exact-final-404, hard-failure, and metadata-capture contract that
-    // stub-`curl`-script tests cannot prove (those fake curl's output).
-    // Skipped when curl is absent.
+    // These fixtures drive real `curl` against local servers to cover
+    // redirects, final-404 classification, hard failures, and metadata capture.
+    // Stub-curl tests cannot verify the real binary's behavior. Skipped without curl.
     #[cfg(test)]
     mod curl_baseline {
         use super::*;

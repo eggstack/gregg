@@ -1,8 +1,7 @@
 //! Linux collector entry point.
 //!
 //! Gathers identity, CPU, memory, swap, and load-average samples from
-//! procfs and kernel interfaces. Moved without semantic change from
-//! `greggd::collector::linux` (Plan 134); types are protocol-neutral.
+//! procfs and kernel interfaces. Types are protocol-neutral.
 
 use std::time::Instant;
 

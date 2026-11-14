@@ -1,10 +1,9 @@
 //! Slow drive/filesystem refresh isolation.
 //!
-//! Moved without behavioral change from `greggd::collector::DriveRefreshCache`
-//! (Plan 134): one worker per cache, immediate first request, 30-second
-//! steady refresh, bounded channels, last-good retention, panic
-//! containment/backoff, nonblocking poll, and drop that never joins a worker
-//! blocked in an uninterruptible native filesystem call.
+//! One worker per cache, immediate first request, 30-second steady refresh,
+//! bounded channels, last-good retention, panic containment/backoff,
+//! nonblocking poll, and drop that never joins a worker blocked in an
+//! uninterruptible native filesystem call.
 
 use crate::error::{CollectError, CollectErrorKind};
 use crate::model::DriveMetrics;

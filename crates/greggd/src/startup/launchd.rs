@@ -193,11 +193,6 @@ pub fn launchd_artifact_ownership(exe: &Path) -> (ArtifactOwnership, bool, Optio
     (ownership, loaded, config)
 }
 
-/// Detect the current startup state for restart/update dispatch.
-///
-/// This is the small helper required by Plan 100 §6 "Manager detection".
-/// It answers enough for both `restart` and Plan 101 `update` without building
-/// a generalized discovery database.
 // ── Launchd installation ──────────────────────────────────────────────────
 #[allow(clippy::too_many_lines)]
 ///
@@ -388,7 +383,7 @@ pub(crate) fn restart_launchd(exe: &Path) -> Result<(), InstallError> {
         }),
     }
 }
-// ── launchd uninstall (Plan 112) ────────────────────────────────────────────
+// ── launchd uninstall ──────────────────────────────────────────────────────
 
 /// One teardown step of the canonical Gregg launchd uninstall, in
 /// execution order.

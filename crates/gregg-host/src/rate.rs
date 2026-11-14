@@ -1,6 +1,5 @@
 //! Monotonic cumulative-counter baselines used by live telemetry.
 //!
-//! Moved without behavioral change from `greggd::collector::rate` (Plan 134).
 //! Identity-keyed baselines divide by actual monotonic elapsed time; first
 //! observations, counter decreases, zero/backward elapsed time, and identity
 //! disappearance/reappearance all establish a fresh baseline.

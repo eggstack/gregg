@@ -644,7 +644,7 @@ fn wait_for_endpoint_absence(target: std::net::SocketAddr) -> Result<(), Install
     }
 }
 
-/// Manager-aware restart, factoring for Plan 101 reuse.
+/// Manager-aware restart route.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_os = "windows", allow(dead_code))]
 enum RestartRoute {

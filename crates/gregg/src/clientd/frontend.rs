@@ -141,8 +141,7 @@ pub struct FrontendSender {
 impl FrontendSender {
     /// Ask the daemon to re-read its configuration file.
     ///
-    /// This is `Ctrl-R`, and the plan's only config-reload boundary. There is
-    /// no filesystem watcher, so nothing else can produce a reload.
+    /// Reloads are explicit (`Ctrl-R`); there is no filesystem watcher.
     ///
     /// # Errors
     ///

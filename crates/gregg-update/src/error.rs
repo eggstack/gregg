@@ -1,7 +1,7 @@
 //! Shared update error taxonomy.
 //!
 //! One authoritative error classification for `gregg update` and
-//! `greggd update` (Plan 104). The `RestartFailed` variant is produced only
+//! `greggd update`. The `RestartFailed` variant is produced only
 //! by daemon lifecycle coordination in `greggd`; the shared mechanism never
 //! constructs it and knows nothing about service managers — the payload is
 //! an opaque message string.

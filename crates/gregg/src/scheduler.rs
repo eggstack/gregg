@@ -1521,7 +1521,7 @@ mod tests {
         cancel.cancel();
     }
 
-    // ===== Plan 140: prepared targets and index-based recovery =====
+    // ===== Prepared targets and index-based recovery =====
 
     #[test]
     fn plan140_prepared_urls_match_helpers_and_share_allocation() {

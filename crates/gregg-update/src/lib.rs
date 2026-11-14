@@ -1,6 +1,6 @@
 //! Shared binary-first self-update mechanics for `gregg` and `greggd`.
 //!
-//! This crate is workspace-internal infrastructure (Plan 104), not a
+//! This crate is workspace-internal infrastructure, not a
 //! user-facing product. It owns cross-program update mechanics only:
 //!
 //! ```text
@@ -21,7 +21,7 @@
 //! policy stays in `greggd`, CLI presentation stays in each application
 //! crate, and the wire contract stays in `gregg-protocol`.
 //!
-//! Update contract (unchanged from Plans 099-102):
+//! Update contract:
 //!
 //! - crates.io `max_stable_version` is the version authority;
 //! - the exact tagged GitHub Release asset is the binary candidate;
@@ -200,9 +200,8 @@ pub fn prepare_candidate(
         spec.program_name
     );
 
-    // Plan 126 experiment closed RETAIN CURL: the external-curl transport
-    // below is the production path. The measured eggfetch candidate
-    // (+105% stripped `greggd`) was reverted; see the plan closure record.
+    // Keep the external-curl transport: the in-process alternative increased
+    // stripped `greggd` size by 105%.
     let curl = exec::find_curl()?;
     let temp_dir = stage::create_temp_dir(&format!("{}-update", spec.program_name))?;
 

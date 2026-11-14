@@ -1,9 +1,8 @@
 //! Windows collector entry point.
 //!
 //! Gathers identity, CPU, memory, and commit samples from native Windows
-//! APIs. Moved without semantic change from `greggd::collector::windows`
-//! (Plan 134); types are protocol-neutral. Windows has no Unix load
-//! average, Unix swap, or CPU I/O-wait state.
+//! APIs. Types are protocol-neutral. Windows has no Unix load average, Unix
+//! swap, or CPU I/O-wait state.
 
 use std::time::Instant;
 

@@ -829,12 +829,9 @@ mod imp {
 
     /// Owner-only DACL: full access for the object's owner and nobody else.
     ///
-    /// A null security descriptor would inherit the process token's default
-    /// DACL, which normally also admits `SYSTEM` and `Administrators`. The
-    /// client daemon is a per-user background process, so the narrower owner
-    /// DACL is both the plan's "current-user access only" rule and the smallest
-    /// surface that cannot be widened by a permissive process token. `P` marks
-    /// the DACL protected, so no parent ACEs are inherited.
+    /// A null descriptor inherits the process token's DACL, which may include
+    /// `SYSTEM` and `Administrators`. Owner-only access keeps this per-user
+    /// daemon private under a permissive token; `P` blocks inherited ACEs.
     const OWNER_ONLY_SDDL: &str = "D:P(A;;GA;;;OW)";
 
     /// Instances to keep pre-created for this name.

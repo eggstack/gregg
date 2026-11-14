@@ -1,6 +1,6 @@
 //! Binary-first self-update for `gregg`.
 //!
-//! Thin CLI adapter over the shared [`gregg_update`] mechanism (Plan 104):
+//! Thin CLI adapter over the shared [`gregg_update`] mechanism:
 //! crates.io is the version authority, the exact tagged GitHub Release
 //! asset is the binary candidate, and Cargo is the fallback only when the
 //! asset is absent (HTTP 404). Checksum and candidate `version` are

@@ -104,7 +104,7 @@ pub struct PollResult {
     /// The system ID of the endpoint that was polled.
     pub system_id: String,
     /// The endpoint that was polled.
-    #[allow(dead_code)] // Retained for diagnostics and future per-endpoint UI detail.
+    #[allow(dead_code)] // Used to reject results for a superseded endpoint.
     pub endpoint: Endpoint,
     /// The outcome of the poll.
     pub outcome: PollOutcome,

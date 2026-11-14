@@ -1369,7 +1369,7 @@ mod tests {
         raw
     }
 
-    // ===== Plan 141: source-call accounting and CPUFreq structural cache =====
+    // ===== Source-call accounting and CPUFreq structural cache =====
 
     #[test]
     fn plan141_source_call_accounting_covers_hot_paths() {
@@ -1572,7 +1572,7 @@ mod tests {
         assert_eq!(cell.get(), Some(&16_384));
     }
 
-    // ===== Plan 145: CPUFreq online-membership freshness =====
+    // ===== CPUFreq online-membership freshness =====
 
     fn cpufreq_two_policy_fixture() -> MemorySource {
         let mut mem = MemorySource::new().with_logical_cores(4);
@@ -1879,7 +1879,7 @@ mod tests {
         assert!(parse_cpu_list_ids("5-2").is_none());
     }
 
-    // ===== Plan 146: bounded CPU-set cardinality boundary =====
+    // ===== Bounded CPU-set cardinality boundary =====
 
     fn dense_range_list(start: u32, end: u32) -> String {
         (start..=end)

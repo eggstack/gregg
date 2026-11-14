@@ -322,10 +322,8 @@ impl FrontendSnapshot {
 /// *per frontend*, because two TUI windows on the same daemon have genuinely
 /// different selections.
 ///
-/// The bool count is inherent to the model rather than a design smell: three
-/// independent expansions (drives, network, cron) plus one transient highlight
-/// is exactly the state the plan requires, and collapsing them into an enum
-/// would make drive and network mutually exclusive, which they are not.
+/// The three expansions are independent booleans because drives, network,
+/// and cron may all be open together.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PresentationState {

@@ -2358,8 +2358,8 @@ mod observation_tests {
         ))
     }
 
-    /// The plan's core regression: a scheduled command that backgrounds a
-    /// descendant holding the inherited stdout must not keep greggd's one
+    /// A scheduled command that backgrounds a descendant holding inherited
+    /// stdout must not keep greggd's one
     /// global child slot after the direct child itself has exited.
     ///
     /// A completion that waits for pipe EOF would block for the whole
@@ -2595,8 +2595,7 @@ mod observation_tests {
         .is_ok()
     }
 
-    /// The plan's core regression at the helper level: stdout has three chunks
-    /// already buffered while stderr stays open and idle.
+    /// Stdout has three chunks buffered while stderr stays open and idle.
     ///
     /// Joining the two reads made stdout's second and third chunks unreachable:
     /// each joined iteration handed over one stdout chunk and then parked on

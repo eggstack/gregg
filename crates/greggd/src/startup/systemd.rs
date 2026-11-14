@@ -429,7 +429,7 @@ pub(crate) fn restart_systemd(exe: &Path) -> Result<(), InstallError> {
         }
     }
 }
-// ── systemd uninstall (Plan 112) ────────────────────────────────────────────
+// ── systemd uninstall ──────────────────────────────────────────────────────
 
 /// One teardown step of the canonical Gregg systemd uninstall, in
 /// execution order.

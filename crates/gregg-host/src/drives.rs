@@ -1,7 +1,6 @@
 //! Shared validation and bounding for native drive results.
 //!
-//! Moved without behavioral change from `greggd::collector::drives`
-//! (Plan 134). Bounds come from [`CollectionLimits`](crate::model::CollectionLimits)
+//! Bounds come from [`CollectionLimits`](crate::model::CollectionLimits)
 //! instead of `gregg-protocol` constants.
 
 use crate::model::{CollectionLimits, DriveMetrics};

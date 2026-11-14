@@ -1,4 +1,4 @@
-//! Read-only local diagnostic status for `greggd status` (Plan 106).
+//! Read-only local diagnostic status for `greggd status`.
 //!
 //! `status` composes information Gregg already computes: the resolved
 //! config path and bind address, the binary version, the authoritative
