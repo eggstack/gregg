@@ -30,6 +30,31 @@ CONFIGURED_MAX_CONCURRENT_POLLS = 4
 MIN_ENDPOINT_COUNT = 3
 
 
+def _test_binary_from_cargo_output(output: str) -> Path | None:
+    """Return gregg's library test harness from Cargo's JSON messages."""
+    for line in output.splitlines():
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if message.get("reason") != "compiler-artifact":
+            continue
+        target = message.get("target")
+        profile = message.get("profile")
+        executable = message.get("executable")
+        if (
+            isinstance(target, dict)
+            and target.get("name") == "gregg"
+            and isinstance(target.get("kind"), list)
+            and "lib" in target["kind"]
+            and isinstance(profile, dict)
+            and profile.get("test") is True
+            and isinstance(executable, str)
+        ):
+            return Path(executable)
+    return None
+
+
 class SustainedEvidenceError(ValueError):
     """The sustained workload produced evidence that violates its contract."""
 
@@ -224,6 +249,7 @@ def find_test_binary(profile: str) -> Path:
         "--all-targets",
         "--all-features",
         "--no-run",
+        "--message-format=json",
     ]
     if profile == "release":
         cmd.append("--release")
@@ -235,62 +261,21 @@ def find_test_binary(profile: str) -> Path:
         cwd=str(Path(__file__).resolve().parent.parent),
     )
     if result.returncode != 0:
-        print(f"cargo test --no-run failed:\n{result.stderr}", file=sys.stderr)
+        print(
+            f"cargo test --no-run failed:\n{result.stdout}\n{result.stderr}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    # Parse the output to find the test binary path.
-    # cargo test --no-run prints lines like:
-    #   Finished test [unoptimized + debuginfo] target(s) in 0.05s
-    #   Executable unittests src/main.rs (target/debug/deps/gregg-HASH)
-    #   Executable: path/to/binary (or just the path)
-    # Note: cargo may print to stdout or stderr depending on version.
-    combined_output = result.stdout + "\n" + result.stderr
-    for line in combined_output.splitlines():
-        line = line.strip()
-        if line.startswith("Executable:") or line.startswith("Running:"):
-            parts = line.split(None, 1)
-            if len(parts) >= 2:
-                return Path(parts[1])
-        # Handle "Executable unittests src/main.rs (path/to/binary)"
-        if line.startswith("Executable "):
-            idx = line.rfind("(")
-            if idx >= 0:
-                path_str = line[idx + 1 :].rstrip(")")
-                candidate = Path(path_str)
-                if candidate.exists() and candidate.is_file():
-                    return candidate
-        # Some cargo versions just print the path.
-        if line and not line.startswith(("Finished", "Compiling", "Downloading", "Downloaded")):
-            candidate = Path(line)
-            if candidate.exists() and candidate.is_file():
-                return candidate
+    test_binary = _test_binary_from_cargo_output(result.stdout)
+    if test_binary is not None and test_binary.is_file():
+        return test_binary
 
-    # Fallback: search in target directory for the test binary.
-    target_dir = Path(__file__).resolve().parent.parent / "target"
-    if profile == "release":
-        search_dir = target_dir / "release"
-    else:
-        search_dir = target_dir / "debug"
-
-    # Look for deps directory with test binaries.
-    deps_dir = search_dir / "deps"
-    if deps_dir.exists():
-        for f in sorted(deps_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
-            if f.name.startswith("gregg-") and f.is_file():
-                # Check if it's executable and contains the test.
-                try:
-                    check = subprocess.run(
-                        [str(f), "--list", "--exact", "sustained_workload::mixed_fleet_sustained_workload"],
-                        capture_output=True,
-                        text=True,
-                        timeout=10,
-                    )
-                    if "mixed_fleet_sustained_workload" in check.stdout:
-                        return f
-                except (subprocess.TimeoutExpired, OSError):
-                    continue
-
-    print("ERROR: could not locate sustained workload test binary", file=sys.stderr)
+    print(
+        "ERROR: Cargo did not report the gregg library test executable "
+        "in its compiler-artifact messages",
+        file=sys.stderr,
+    )
     sys.exit(1)
 
 

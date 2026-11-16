@@ -22,6 +22,50 @@ runner_mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner_mod)
 
 
+class CargoArtifactOutputTests(unittest.TestCase):
+    def test_selects_gregg_library_test_harness(self) -> None:
+        messages = [
+            {
+                "reason": "compiler-artifact",
+                "target": {"name": "gregg", "kind": ["lib"]},
+                "profile": {"test": False},
+                "executable": None,
+            },
+            {
+                "reason": "compiler-artifact",
+                "target": {"name": "gregg", "kind": ["bin"]},
+                "profile": {"test": True},
+                "executable": "/tmp/gregg-bin-test",
+            },
+            {
+                "reason": "compiler-artifact",
+                "target": {"name": "gregg", "kind": ["lib"]},
+                "profile": {"test": True},
+                "executable": "/tmp/gregg-lib-test",
+            },
+        ]
+        output = "Compiling gregg\n" + "\n".join(
+            json.dumps(message) for message in messages
+        )
+
+        self.assertEqual(
+            runner_mod._test_binary_from_cargo_output(output),
+            Path("/tmp/gregg-lib-test"),
+        )
+
+    def test_returns_none_without_a_library_test_harness(self) -> None:
+        output = json.dumps(
+            {
+                "reason": "compiler-artifact",
+                "target": {"name": "gregg", "kind": ["bin"]},
+                "profile": {"test": True},
+                "executable": "/tmp/gregg-bin-test",
+            },
+        )
+
+        self.assertIsNone(runner_mod._test_binary_from_cargo_output(output))
+
+
 class SampleProcStatusTests(unittest.TestCase):
     """Tests for sample_proc_status with mock /proc files."""
 
@@ -29,6 +73,9 @@ class SampleProcStatusTests(unittest.TestCase):
         result = runner_mod.sample_proc_status(999999)
         self.assertIsNone(result)
 
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"), "process sampling uses Linux /proc"
+    )
     def test_parses_status_fields(self) -> None:
         """Verify parse logic against synthetic /proc content."""
         # We can't easily mock /proc, but we can test the parsing logic
@@ -285,6 +332,9 @@ class EarlyExitDetectionTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
 
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"), "runner samples Linux /proc"
+    )
     def test_real_runner_smoke_reaches_success_path(self) -> None:
         import subprocess
 
