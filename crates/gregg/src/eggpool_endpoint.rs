@@ -3,7 +3,7 @@
 use std::fmt;
 use std::net::IpAddr;
 
-use crate::config::{EggpoolScheme, DEFAULT_EGGPOOL_PORT};
+use crate::config::{EggpoolEntry, EggpoolScheme, DEFAULT_EGGPOOL_PORT};
 
 /// A parsed `EggPool` endpoint before configuration persistence.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -215,6 +215,33 @@ pub fn display_address(host: &str, port: u16, scheme: EggpoolScheme) -> String {
     format!("{scheme}://{host}:{port}")
 }
 
+/// Whether a stored host names this machine.
+///
+/// Only a literal loopback address (`127.0.0.0/8`, `::1`) or the bare name
+/// `localhost` counts. A hostname that *resolves* to loopback is deliberately
+/// not exempt: configuration validation performs no DNS, and resolving here
+/// would put a network dependency on a security decision at startup.
+#[must_use]
+pub fn host_is_loopback(host: &str) -> bool {
+    host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+        || host.eq_ignore_ascii_case("localhost")
+}
+
+/// Whether this entry would put a bearer credential on the wire in cleartext.
+///
+/// The API key is read from the environment and never persisted, so transport
+/// is the only way it can leak. HTTP on loopback is a normal local dashboard;
+/// HTTP to any other host sends `Authorization: Bearer …` unencrypted across
+/// the network it traverses.
+///
+/// One policy function so the CLI gate and the runtime gate cannot disagree.
+#[must_use]
+pub fn credential_transport_is_insecure(entry: &EggpoolEntry) -> bool {
+    entry.api_key_env.is_some()
+        && entry.scheme == EggpoolScheme::Http
+        && !host_is_loopback(&entry.host)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,5 +322,86 @@ mod tests {
             display_address("2001:db8::1", 443, EggpoolScheme::Https),
             "https://[2001:db8::1]:443"
         );
+    }
+
+    #[test]
+    fn loopback_hosts_are_recognized() {
+        for host in ["127.0.0.1", "127.10.20.30", "::1", "localhost", "LOCALHOST"] {
+            assert!(host_is_loopback(host), "{host} must count as loopback");
+        }
+    }
+
+    #[test]
+    fn non_loopback_hosts_are_not() {
+        // `::` is unspecified, not loopback; `[::1]` is never the stored form
+        // because parsing strips the brackets; an empty host is not loopback.
+        for host in [
+            "pool.local",
+            "192.168.1.10",
+            "fd00::10",
+            "0.0.0.0",
+            "::",
+            "[::1]",
+            "",
+        ] {
+            assert!(!host_is_loopback(host), "{host} must not count as loopback");
+        }
+    }
+
+    /// A hostname that resolves to loopback is not exempt: configuration does no
+    /// DNS, and this decision must not acquire a network dependency.
+    #[test]
+    fn a_resolvable_name_is_not_treated_as_loopback() {
+        assert!(!host_is_loopback("ip6-localhost"));
+        assert!(!host_is_loopback("localhost.localdomain"));
+    }
+
+    fn entry(host: &str, scheme: EggpoolScheme, api_key_env: Option<&str>) -> EggpoolEntry {
+        EggpoolEntry {
+            id: "id".into(),
+            host: host.into(),
+            port: 11300,
+            scheme,
+            name: None,
+            api_key_env: api_key_env.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn insecure_policy_truth_table() {
+        // http + key + remote: the only unsafe combination.
+        assert!(credential_transport_is_insecure(&entry(
+            "pool.local",
+            EggpoolScheme::Http,
+            Some("KEY")
+        )));
+        // http + key on loopback is a local dashboard.
+        assert!(!credential_transport_is_insecure(&entry(
+            "127.0.0.1",
+            EggpoolScheme::Http,
+            Some("KEY")
+        )));
+        assert!(!credential_transport_is_insecure(&entry(
+            "localhost",
+            EggpoolScheme::Http,
+            Some("KEY")
+        )));
+        // TLS anywhere is fine.
+        assert!(!credential_transport_is_insecure(&entry(
+            "pool.local",
+            EggpoolScheme::Https,
+            Some("KEY")
+        )));
+        // No key means nothing to leak, so the default scheme stays usable.
+        assert!(!credential_transport_is_insecure(&entry(
+            "pool.local",
+            EggpoolScheme::Http,
+            None
+        )));
+        assert!(!credential_transport_is_insecure(&entry(
+            "pool.local",
+            EggpoolScheme::Https,
+            None
+        )));
     }
 }

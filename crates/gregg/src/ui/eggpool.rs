@@ -284,6 +284,7 @@ fn health_error_text(outcome: &EggpoolHealthFetchOutcome) -> &'static str {
         EggpoolHealthFetchOutcome::UnsupportedSchema => "schema unsupported",
         EggpoolHealthFetchOutcome::InvalidStatus => "invalid status",
         EggpoolHealthFetchOutcome::InvalidEndpoint => "invalid endpoint",
+        EggpoolHealthFetchOutcome::InsecureCredentialTransport => "insecure credential transport",
         EggpoolHealthFetchOutcome::HttpStatus(_) => "unavailable",
         EggpoolHealthFetchOutcome::Online(_) => "unknown",
     }
@@ -309,6 +310,13 @@ fn outcome_text(outcome: &EggpoolFetchOutcome) -> String {
         EggpoolFetchOutcome::InvalidSummary => "invalid summary response".into(),
         EggpoolFetchOutcome::Cancelled => "refresh cancelled".into(),
         EggpoolFetchOutcome::InvalidEndpoint => "invalid endpoint".into(),
+        // The credential is never echoed, and the host goes through the same
+        // single-line sanitizer as every other rendered value so a configured
+        // control character cannot reach a cell.
+        EggpoolFetchOutcome::InsecureCredentialTransport { host } => format!(
+            "insecure credential transport to {}; enable https",
+            crate::sanitize::sanitize_single_line(host).text
+        ),
         EggpoolFetchOutcome::Online(_) => String::new(),
     }
 }

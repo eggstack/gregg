@@ -23,7 +23,7 @@ use tokio::sync::{broadcast, watch};
 use tracing::{info, warn};
 
 use crate::collector::SystemCollector;
-use crate::config::Config;
+use crate::config::{bind_exposure_warning, Config};
 use crate::sampler::{RealClock, Sampler};
 use crate::scheduler::observation::SchedulerPublisher;
 use crate::scheduler::{self, LoadGateState};
@@ -255,6 +255,14 @@ where
         stale_after_ms = config.stale_after_ms(),
         "effective configuration"
     );
+
+    // One warning per process, emitted before the listener binds. The default
+    // is loopback, so a non-loopback address is always an explicit operator
+    // choice — but the API is unauthenticated, and the consequence belongs in
+    // the log rather than only in the documentation.
+    if let Some(warning) = bind_exposure_warning(server_config.host) {
+        warn!(host = %server_config.host, "{warning}");
+    }
 
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
 

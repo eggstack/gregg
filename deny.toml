@@ -1,10 +1,22 @@
 [advisories]
 unmaintained = "workspace"
 yanked = "warn"
-# The only remaining advisory is in eggfetch-core's disabled optional HTTP/3
-# dependency. The feature is not enabled by any workspace crate, so the
-# ignore stands regardless of the workspace MSRV (now Rust 1.89).
-ignore = ["RUSTSEC-2026-0185"]
+ignore = [
+    # RUSTSEC-2026-0543: chrono 0.4.45 is unmaintained. It is a direct greggd
+    # dependency for civil-time schedule math (`crates/greggd/src/scheduler/`);
+    # no patched release exists and the advisory affects every version, so the
+    # only fix is adopting a maintained successor (jiff/time). Review trigger:
+    # that successor adoption, a new chrono vulnerability advisory (this ignore
+    # must not be extended for one), or the next major release planning.
+    "RUSTSEC-2026-0543",
+    # RUSTSEC-2026-0555: chrono-tz 0.10.4 is unmaintained. It is a greggd
+    # dev-dependency for time-zone conversion in scheduler tests; no patched
+    # release exists and the advisory affects every version. Review trigger: a
+    # maintained successor adoption, a new chrono-tz vulnerability advisory
+    # (this ignore must not be extended for one), or the next major release
+    # planning.
+    "RUSTSEC-2026-0555",
+]
 
 [licenses]
 unused-allowed-license = "warn"

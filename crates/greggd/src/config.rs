@@ -89,6 +89,13 @@ pub struct Config {
     /// Human-readable display name for this host.
     pub name: String,
     /// IPv4 or IPv6 address to bind the HTTP server to.
+    ///
+    /// Defaults to loopback (`127.0.0.1`). The HTTP API has no authentication
+    /// and no TLS, so a wildcard (`0.0.0.0`, `::`) or a concrete non-loopback
+    /// address exposes fleet metrics and scheduled job output to every host
+    /// that can reach the port. That is a supported deployment for LAN
+    /// monitoring, but it is an explicit choice: such a bind logs one startup
+    /// warning and is never a default.
     pub host: IpAddr,
     /// TCP port to listen on.
     pub port: u16,
@@ -170,7 +177,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             name: String::from("greggd"),
-            host: IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+            host: IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
             port: 11310,
             sample_interval_ms: 1000,
             stale_after_ms: 10_000,
@@ -179,6 +186,31 @@ impl Default for Config {
             scheduler_history_limit: None,
         }
     }
+}
+
+/// Startup warning for a bind address that exposes the unauthenticated API.
+///
+/// The listener has no authentication and no TLS, so every address that is not
+/// loopback (`127.0.0.0/8`, `::1`) is reachable by other hosts. Wildcard and
+/// concrete LAN binds stay supported — that is how a fleet is monitored — so
+/// this is a warning rather than a validation error: the operator chose the
+/// address, and the message states the consequence once at startup.
+///
+/// Returning a static message keeps the two cases distinguishable in logs while
+/// the caller attaches the actual address as a structured field.
+pub(crate) fn bind_exposure_warning(host: IpAddr) -> Option<&'static str> {
+    if host.is_loopback() {
+        return None;
+    }
+    Some(if host.is_unspecified() {
+        "binding every interface: the HTTP API has no authentication or TLS, so any host that \
+         can reach this machine can read fleet metrics and scheduled job output. Firewall the \
+         port or set `host` to a loopback address unless LAN exposure is intended"
+    } else {
+        "binding a non-loopback address: the HTTP API has no authentication or TLS, so any host \
+         that can reach this address can read fleet metrics and scheduled job output. Firewall \
+         the port or set `host` to a loopback address unless LAN exposure is intended"
+    })
 }
 
 /// Whether a temp file is old enough to be treated as abandoned.
@@ -983,6 +1015,67 @@ mod tests {
         let toml = config.to_toml().unwrap();
         let parsed = Config::parse(&toml, None).unwrap();
         assert_eq!(config, parsed);
+    }
+
+    /// Plan 187: the wildcard is no longer a default. A machine that joins an
+    /// untrusted network must not serve an unauthenticated API without the
+    /// operator choosing that.
+    #[test]
+    fn default_config_binds_loopback() {
+        let config = Config::default();
+        assert!(config.host.is_loopback(), "host was {}", config.host);
+        assert_eq!(config.host, IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+    }
+
+    #[test]
+    fn default_config_serializes_loopback() {
+        let config = Config::default();
+        let toml = config.to_toml().unwrap();
+        assert!(
+            toml.contains("host = \"127.0.0.1\""),
+            "serialized default was {toml}"
+        );
+        assert_eq!(Config::parse(&toml, None).unwrap(), config);
+    }
+
+    #[test]
+    fn exposure_warning_is_silent_for_loopback() {
+        for host in ["127.0.0.1", "127.10.20.30", "::1"] {
+            let addr: IpAddr = host.parse().unwrap();
+            assert!(
+                bind_exposure_warning(addr).is_none(),
+                "{host} must not warn"
+            );
+        }
+    }
+
+    #[test]
+    fn exposure_warning_fires_for_unspecified_and_lan() {
+        for host in ["0.0.0.0", "::", "192.168.1.10", "fd00::10"] {
+            let addr: IpAddr = host.parse().unwrap();
+            let warning = bind_exposure_warning(addr).unwrap_or_else(|| panic!("{host} must warn"));
+            assert!(
+                warning.contains("no authentication or TLS"),
+                "{host} warning did not state the exposure: {warning}"
+            );
+        }
+        // The wildcard and a concrete address are distinguishable, because the
+        // operator's next action differs: remove a default versus narrow a bind.
+        let wildcard = bind_exposure_warning("0.0.0.0".parse().unwrap()).unwrap();
+        let concrete = bind_exposure_warning("192.168.1.10".parse().unwrap()).unwrap();
+        assert_ne!(wildcard, concrete);
+    }
+
+    /// Plan 187: an existing explicit wildcard configuration keeps working.
+    #[test]
+    fn explicit_wildcard_config_still_parses() {
+        let config = Config::parse(
+            "name = 'greggd'\nhost = '0.0.0.0'\nport = 11310\nsample_interval_ms = 1000\nstale_after_ms = 10000\n",
+            None,
+        )
+        .unwrap();
+        assert!(config.host.is_unspecified());
+        assert!(config.is_valid());
     }
 
     fn test_job(name: &str) -> ScheduledJobConfig {

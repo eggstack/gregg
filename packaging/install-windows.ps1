@@ -101,7 +101,7 @@ if ($ConfigPath) {
     Write-Host "Creating default config: $DefaultConfigPath"
     $DefaultConfig = @"
 name = "greggd"
-host = "0.0.0.0"
+host = "127.0.0.1"
 port = 11310
 sample_interval_ms = 1000
 stale_after_ms = 10000

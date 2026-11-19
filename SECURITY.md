@@ -33,6 +33,12 @@ design intent and security model. Users who deploy greggd on accessible
 networks are responsible for network-level controls (firewalls, VPNs,
 reverse proxies).
 
+The default bind address is loopback (`127.0.0.1`), so a default install is not
+reachable from other hosts. A wildcard (`0.0.0.0`, `::`) or concrete non-loopback
+address is a supported configuration for LAN monitoring, is never a default, and
+logs one startup warning naming the address and the fact that the API is
+unauthenticated.
+
 ## Response timeline
 
 We will acknowledge receipt of a report within 72 hours and aim to provide

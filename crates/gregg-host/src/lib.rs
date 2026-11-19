@@ -99,3 +99,52 @@ pub trait HostCollector: Send {
     /// Per-platform capability flags.
     fn capabilities(&self) -> HostCapabilities;
 }
+
+#[cfg(test)]
+mod tests {
+    /// The Windows collector must never form a place expression (and therefore
+    /// a reference) to still-uninitialised `MaybeUninit` storage just to set an
+    /// API-required size member. The sanctioned form is a raw-pointer write
+    /// through `std::ptr::addr_of_mut!(...).write(...)`.
+    ///
+    /// This test lives here rather than in `windows/source.rs` so it runs on
+    /// every platform; `include_str!` does not compile the Windows FFI.
+    #[test]
+    fn windows_ffi_does_not_write_fields_through_place_expressions() {
+        // Built from parts so this assertion does not match its own needle.
+        let projection = ["as_mut_ptr", "())."].concat();
+        let source = include_str!("windows/source.rs");
+        // The sanctioned form projects the field through `addr_of_mut!` and
+        // writes it with `write(...)`, so its statement begins with
+        // `std::ptr::addr_of_mut!`, never with `(*`. The forbidden form is a
+        // place-expression assignment statement:
+        //
+        //     (*buf.as_mut_ptr()).field = value;
+        //
+        // which forms a reference to not-yet-initialised storage. A
+        // legitimate read that happens to project through `as_mut_ptr` (for
+        // example `let value = (*info.as_mut_ptr()).field;`) does not begin a
+        // statement with `(*`, so it cannot match this predicate.
+        let is_forbidden_write = |line: &str| {
+            let trimmed = line.trim_start();
+            trimmed.starts_with("(*")
+                && trimmed
+                    .find(&projection)
+                    .is_some_and(|at| trimmed[at + projection.len()..].contains('='))
+        };
+        // Positive control, also built from parts: a predicate that silently
+        // stopped matching would make the scan vacuous.
+        let regression = ["(*mem_info.as_mut", "_ptr()).dw_length = 64;"].concat();
+        assert!(
+            is_forbidden_write(&regression),
+            "the source scan no longer detects the forbidden write form"
+        );
+        let offender = source.lines().find(|line| is_forbidden_write(line));
+        assert!(
+            offender.is_none(),
+            "windows/source.rs assigns through the `{projection}` place \
+             expression: {offender:?}; write the field with \
+             std::ptr::addr_of_mut!(...).write(...) instead"
+        );
+    }
+}

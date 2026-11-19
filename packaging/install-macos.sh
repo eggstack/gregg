@@ -7,10 +7,12 @@
 #
 # This script:
 # 1. Validates the binary exists and is executable.
-# 2. Creates the configuration directory and default config.
-# 3. Installs the binary to /usr/local/bin.
-# 4. Installs the launchd plist.
-# 5. Bootstraps the service.
+# 2. Creates the hidden `_greggd` service account the daemon runs as.
+# 3. Creates the configuration directory and default config (root-owned).
+# 4. Installs the binary to /usr/local/bin.
+# 5. Installs the launchd plist.
+# 6. Creates the log file owned by `_greggd`.
+# 7. Bootstraps the service.
 #
 # Idempotent: safe to rerun. Preserves existing configuration.
 
@@ -25,6 +27,10 @@ PLIST_DIR="/Library/LaunchDaemons"
 PLIST_FILE="${PLIST_DIR}/${PLIST_NAME}.plist"
 PLIST_SOURCE="$(dirname "$0")/launchd/${PLIST_NAME}.plist"
 LOG_FILE="/var/log/greggd.log"
+SERVICE_USER="_greggd"
+SERVICE_GROUP="_greggd"
+# Fixed so a rerun is idempotent and ownership survives an upgrade.
+SERVICE_ID=391
 
 # --- Functions ---
 
@@ -41,6 +47,39 @@ usage() {
 die() {
     echo "error: $*" >&2
     exit 1
+}
+
+# launchd runs a job as root when the plist names no user. The plist names
+# `_greggd`, so the account must exist before the job is bootstrapped.
+ensure_service_account() {
+    if dscl . -read "/Users/${SERVICE_USER}" >/dev/null 2>&1; then
+        echo "  Service account exists: ${SERVICE_USER}"
+        return 0
+    fi
+    # Never adopt an id that already belongs to someone else: that would hand
+    # the daemon another account's access.
+    local users groups conflict
+    users="$(dscl . -search /Users UniqueID "$SERVICE_ID" 2>/dev/null || true)"
+    groups="$(dscl . -search /Groups PrimaryGroupID "$SERVICE_ID" 2>/dev/null || true)"
+    conflict=""
+    if [[ -n "$users" ]] && [[ "${users%%[[:space:]]*}" != "$SERVICE_USER" ]]; then
+        conflict="$users"
+    fi
+    if [[ -n "$groups" ]] && [[ "${groups%%[[:space:]]*}" != "$SERVICE_GROUP" ]]; then
+        conflict="${conflict}${groups}"
+    fi
+    [[ -z "$conflict" ]] || die "service id ${SERVICE_ID} is already in use (${conflict}); free it and rerun"
+    dscl . -create "/Groups/${SERVICE_GROUP}"
+    dscl . -create "/Groups/${SERVICE_GROUP}" PrimaryGroupID "$SERVICE_ID"
+    dscl . -create "/Users/${SERVICE_USER}"
+    dscl . -create "/Users/${SERVICE_USER}" UniqueID "$SERVICE_ID"
+    dscl . -create "/Users/${SERVICE_USER}" PrimaryGroupID "$SERVICE_ID"
+    dscl . -create "/Users/${SERVICE_USER}" NFSHomeDirectory /var/empty
+    dscl . -create "/Users/${SERVICE_USER}" UserShell /usr/bin/false
+    dscl . -create "/Users/${SERVICE_USER}" RealName "Gregg daemon"
+    dscl . -create "/Users/${SERVICE_USER}" IsHidden 1
+    dscl . -create "/Users/${SERVICE_USER}" Password '*'
+    echo "  Created service account: ${SERVICE_USER} (uid/gid ${SERVICE_ID})"
 }
 
 # --- Pre-flight checks ---
@@ -84,6 +123,9 @@ fi
 
 echo "Installing greggd..."
 
+# The service account must exist before the plist names it.
+ensure_service_account
+
 # Stop existing service if running.
 if launchctl list | grep -q "$PLIST_NAME" 2>/dev/null; then
     echo "  Stopping existing service..."
@@ -94,12 +136,11 @@ fi
 # Create configuration directory.
 mkdir -p "$CONFIG_DIR"
 echo "  Created $CONFIG_DIR"
-
 # Install default config if it doesn't exist.
 if [[ ! -f "$CONFIG_FILE" ]]; then
     cat > "$CONFIG_FILE" <<'EOF'
 name = "greggd"
-host = "0.0.0.0"
+host = "127.0.0.1"
 port = 11310
 sample_interval_ms = 1000
 stale_after_ms = 10000
@@ -108,6 +149,12 @@ EOF
 else
     echo "  Preserved existing config: $CONFIG_FILE"
 fi
+
+# The daemon reads this file but must not own it: a root-owned 0644 config is
+# what stops a compromised daemon from editing its own job set.
+chown root:wheel "$CONFIG_FILE"
+chmod 644 "$CONFIG_FILE"
+chmod 755 "$CONFIG_DIR"
 
 # Install binary.
 install -m 755 "$BINARY_PATH" "${BIN_DIR}/greggd"
@@ -122,10 +169,11 @@ else
     die "launchd plist not found: $PLIST_SOURCE"
 fi
 
-# Create log file.
+# Create log file owned by the job's user.
 touch "$LOG_FILE"
-chmod 644 "$LOG_FILE"
-echo "  Created log file: $LOG_FILE"
+chown "${SERVICE_USER}:${SERVICE_GROUP}" "$LOG_FILE"
+chmod 640 "$LOG_FILE"
+echo "  Created log file: $LOG_FILE (${SERVICE_USER}:${SERVICE_GROUP} 0640)"
 
 # Bootstrap the service.
 # The service is NOT auto-bootstrapped. Use explicit intent:
@@ -142,4 +190,5 @@ echo "  sudo launchctl kickstart -k system/${PLIST_NAME}"
 echo "  sudo launchctl bootout system/${PLIST_NAME}"
 echo ""
 echo "Configuration: $CONFIG_FILE"
+echo "Service user:  ${SERVICE_USER} (uid/gid ${SERVICE_ID})"
 echo "Logs:          log show --predicate 'process == \"greggd\"' --last 5m"

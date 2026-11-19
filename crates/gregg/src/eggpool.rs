@@ -11,6 +11,7 @@ use url::Url;
 
 use crate::clock::{Clock, RealClock};
 use crate::config::EggpoolEntry;
+use crate::eggpool_endpoint::credential_transport_is_insecure;
 
 /// Summary decoded-body ceiling. The compact four-value payload stays far
 /// below this bound.
@@ -153,6 +154,12 @@ pub enum EggpoolFetchOutcome {
     Cancelled,
     /// The configured endpoint cannot be represented as a valid request URL.
     InvalidEndpoint,
+    /// A configured API key would be sent over cleartext HTTP to a remote host,
+    /// so no request was made and no `Authorization` header was built.
+    InsecureCredentialTransport {
+        /// The configured host, for the operator-facing diagnostic.
+        host: String,
+    },
 }
 
 /// `EggPool`'s server-reported proxy health, independent of Gregg's local
@@ -338,6 +345,12 @@ pub enum EggpoolHealthFetchOutcome {
     InvalidStatus,
     /// The configured endpoint cannot be represented as a valid request URL.
     InvalidEndpoint,
+    /// A configured API key would be sent over cleartext HTTP to a remote host,
+    /// so the status route was not requested either.
+    ///
+    /// This carries no host: the health diagnostic is a fixed, bounded word by
+    /// design, and the pane already names the endpoint.
+    InsecureCredentialTransport,
 }
 
 /// One completed or superseded worker request.
@@ -428,6 +441,16 @@ impl EggpoolClient {
         endpoint: &EggpoolEntry,
         period: EggpoolPeriod,
     ) -> EggpoolFetchOutcome {
+        // Fail closed before the credential is even read. Building the
+        // `Authorization` header is the leak, so no header and no connection may
+        // exist for this entry. Existing configs keep working — the rest of the
+        // fleet and the rest of the pane are unaffected — and the diagnostic
+        // says why.
+        if credential_transport_is_insecure(endpoint) {
+            return EggpoolFetchOutcome::InsecureCredentialTransport {
+                host: endpoint.host.clone(),
+            };
+        }
         let auth = match self.credential(endpoint) {
             Ok(auth) => auth,
             // A present-but-unencodable secret is surfaced as an invalid
@@ -484,6 +507,11 @@ impl EggpoolClient {
     /// metric meaning, and no outbound provider probe, quota use, or mutation
     /// is triggered: only `EggPool`'s own read-only status route is read.
     pub async fn fetch_health(&self, endpoint: &EggpoolEntry) -> EggpoolHealthFetchOutcome {
+        // The status route is authenticated too, so the same cleartext rule
+        // applies: no key on the wire, no request.
+        if credential_transport_is_insecure(endpoint) {
+            return EggpoolHealthFetchOutcome::InsecureCredentialTransport;
+        }
         // Unlike the summary route, an absent key still sends the request:
         // `EggPool` keeps `/api/status` authenticated even when dashboard
         // pages are public, and the server's own answer is authoritative.
@@ -1296,6 +1324,75 @@ mod tests {
         let request = task.await.unwrap();
         assert!(request.starts_with("GET /api/stats/summary?period=1h HTTP/1.1"));
         assert!(!request.to_ascii_lowercase().contains("authorization:"));
+    }
+
+    /// The gate is the *first* thing `fetch` does, so no header is built and no
+    /// connection is attempted for an entry whose key would cross the network in
+    /// cleartext. `192.0.2.1` is TEST-NET-1: unroutable, so an ungated call would
+    /// have to run to the client timeout instead of returning at once.
+    #[tokio::test]
+    async fn remote_http_key_never_reaches_the_wire() {
+        let mut entry = endpoint(9, Some("KEY"));
+        entry.host = "192.0.2.1".into();
+        let client = EggpoolClient::with_env_lookup(
+            Duration::from_secs(2),
+            Arc::new(|_| Some(OsString::from("secret-value"))),
+        );
+
+        let started = Instant::now();
+        let result = client.fetch(&entry, EggpoolPeriod::Hour).await;
+        assert!(
+            matches!(
+                result,
+                EggpoolFetchOutcome::InsecureCredentialTransport { .. }
+            ),
+            "{result:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(1500),
+            "the refusal must happen before any connection attempt"
+        );
+        assert!(!format!("{result:?}").contains("secret-value"));
+
+        let health = client.fetch_health(&entry).await;
+        assert!(
+            matches!(
+                health,
+                EggpoolHealthFetchOutcome::InsecureCredentialTransport
+            ),
+            "the status route is authenticated too: {health:?}"
+        );
+    }
+
+    /// The mirror case is already the live proof above: `endpoint()` is
+    /// `127.0.0.1` over http with a key, and that request *does* carry the
+    /// bearer. This asserts it explicitly so the exemption cannot be lost.
+    #[tokio::test]
+    async fn loopback_http_key_still_sends_bearer() {
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+            body("1h").len(),
+            body("1h")
+        );
+        let (port, task) = server(response).await;
+        let client = EggpoolClient::with_env_lookup(
+            Duration::from_secs(2),
+            Arc::new(|_| Some(OsString::from("secret-value"))),
+        );
+        let result = client
+            .fetch(&endpoint(port, Some("KEY")), EggpoolPeriod::Hour)
+            .await;
+        assert!(
+            matches!(result, EggpoolFetchOutcome::Online(_)),
+            "{result:?}"
+        );
+        let request = task.await.unwrap();
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer secret-value"),
+            "a loopback dashboard must keep working: {request}"
+        );
     }
 
     #[tokio::test]

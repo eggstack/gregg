@@ -86,6 +86,10 @@ An empty diff means the lock file is current.
 
 This runs the short default fmt-and-workspace-test loop, then adds Clippy,
 documentation, package-content checks, and the installed-binary loopback smoke.
+When `cargo-deny` is installed the preflight also runs `cargo deny check
+advisories` and fails on findings, printing a skip notice instead when the tool
+is absent (`cargo install cargo-deny --locked`); the only current exceptions are
+the two unmaintained-crate advisories recorded in `deny.toml`.
 The smoke
 installs the current checkout with `cargo install --path crates/greggd
 --locked` and uses `scripts/verify-installed-daemon.sh` to start the

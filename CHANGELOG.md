@@ -53,6 +53,45 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The privileged config-permission repair follows no links and no foreign
+  file (Plan 188).** `startup install` relaxes an old `0600` system config so
+  unprivileged `status`/`croncheck` work, and it did so with `metadata`/
+  `set_permissions`, both of which follow symlinks, as root. A `--config` aimed
+  at a symlink could therefore make an unrelated root-owned file world-readable.
+  The repair now stats with `symlink_metadata`, skips a symlinked or
+  non-directory parent, only touches regular files, and only relaxes a path that
+  is the default config path or parses as a `Config` — evaluated before the
+  parent is touched, so an unrelated file and its directory are left exactly as
+  they were. Operator-managed `0640`/`0750` modes are still preserved.
+
+- **Installer cleanup, HTTPS downloads, and CI action pins are enforced by
+  construct (Plan 190).** `packaging/install.sh` built its EXIT trap by
+  interpolating `mktemp` output into a double-quoted string, which the shell
+  re-parses at exit, so a `TMPDIR` containing `$(...)` ran as a command under
+  `sudo`. Cleanup is now a fixed `cleanup_paths` trap over a registered path
+  list. Every `curl` that pinned `--proto '=https'` now also passes
+  `--proto-redir '=https'`, so a redirect cannot downgrade the checksum or asset
+  download; the plain-HTTP fixture path is unchanged. All 35 workflow `uses:`
+  references are pinned to 40-hex commit SHAs with a trailing tag comment, and a
+  new `scripts/tests/test_security_contracts.py` fails CI if any of the four
+  packaging properties (including the loopback default) is reverted.
+
+- **The Windows collector initializes its API size fields without forming a
+  reference to uninitialized memory (Plan 193).** `physical_memory`, `commit`,
+  and `get_os_info` wrote `(*as_mut_ptr()).field` through a place expression on
+  `MaybeUninit`, which is undefined behavior by the `MaybeUninit` contract even
+  for POD. They now use `std::ptr::addr_of_mut!(...).write(...)`, and a
+  source-scan test runs on every platform to keep the idiom from returning.
+
+- **The advisory policy is truthful and the release preflight runs it
+  (Plan 194).** `deny.toml` ignored an advisory that no longer matched the tree
+  and did not record the two unmaintained crates it actually reports, so
+  `cargo deny check advisories` exited 1. The stale ignore is gone, `chrono` and
+  `chrono-tz` are recorded as reasoned exceptions with a review trigger, and
+  `./scripts/check-local.sh --release` now runs the advisory check when
+  `cargo-deny` is installed (and prints a skip notice when it is not, keeping the
+  tool optional and out of ordinary CI).
+
 - **The CI Clippy gate was red on `main`** (`crates/gregg/src/startup_support.rs`):
   `assert!(bytes.is_empty())` tripped `clippy::assert_is_empty` under the current
   stable toolchain (1.99.0), so `cargo clippy --workspace --all-targets
@@ -998,6 +1037,48 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   documents. Publications are now stored unconditionally.
 
 ### Changed
+
+- **`greggd` binds loopback by default (Plan 187).** `host` defaults to
+  `127.0.0.1` instead of `0.0.0.0`, and all four installers write that value, so
+  a fresh install answers only on the machine it runs on. The API has no
+  authentication and no TLS, so a wildcard or LAN bind remains supported but is
+  now an explicit choice: set `host = "0.0.0.0"` (or a concrete interface
+  address) and restart, and the daemon logs exactly one startup warning naming
+  the address. Existing configuration files are never rewritten — an operator who
+  already set `0.0.0.0` keeps it.
+
+  **A fleet reached over the LAN needs that edit on each daemon.** A daemon
+  installed with no configuration file will otherwise refuse the connection;
+  the one-line fix is `host = "0.0.0.0"` plus a restart.
+
+- **The macOS daemon runs as `_greggd`, not root (Plan 189).** The LaunchDaemon
+  plist now names `UserName`/`GroupName`, and the install creates the hidden
+  `_greggd` user and group (fixed uid/gid 391) if it does not exist. A taken id
+  fails the install with the conflicting record named instead of adopting another
+  account. The configuration stays root-owned `0644`, so the daemon cannot
+  rewrite its own job set, and `/var/log/greggd.log` becomes
+  `_greggd:_greggd` `0640`. Existing installs keep running as root until they
+  are reinstalled.
+
+- **`gregg daemon startup install` refuses to run as root/Administrator
+  (Plan 188).** Client-daemon startup is user-scoped, and the verb now enforces
+  that rather than only documenting it. `uninstall`, `status`, and `instructions`
+  still work at any privilege level, so a root operator can inspect and clean up.
+
+- **Startup registration refuses paths containing control characters
+  (Plan 191).** A newline in an executable or config path would become a second
+  scheduled command in the user crontab (cron splits physical lines before the
+  shell sees the quoting) and is illegal in the LaunchAgent plist. Every method
+  now returns a typed error before writing or printing anything; rename the path
+  to install. Uninstall of a legacy artifact is unaffected.
+
+- **An `EggPool` API key is never sent over cleartext to a remote host
+  (Plan 192).** `gregg eggpool add host:port --api-key-env NAME` now requires
+  `--https` for a non-loopback host, and the documented example includes it.
+  Cleartext HTTP is still accepted for `127.0.0.1`, `::1`, and `localhost`. A
+  configuration that already contains the insecure combination still loads and
+  `gregg eggpool remove` still works; that entry simply never sends the key and
+  the pane reports insecure credential transport instead.
 
 - **Windows-only Rust is now linted in CI (Plan 169):** the Windows job installs
   the `clippy` component and runs the same full-workspace

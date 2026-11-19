@@ -87,6 +87,29 @@ die() {
   exit 1
 }
 
+# --- exit cleanup ----------------------------------------------------------
+
+# The EXIT trap body is a fixed command, never an interpolated string: a
+# double-quoted trap definition is parsed again by the shell at exit, so a
+# TMPDIR carrying `$(...)` would run as a command when the installer runs as
+# root. Here the trap body is the constant function name and every registered
+# path is data the function reads at exit time.
+#
+# The count guard is required on bash 3.2 (macOS): under `set -u` an empty
+# `"${CLEANUP_PATHS[@]}"` is an unbound-variable error there.
+CLEANUP_PATHS=()
+cleanup_paths() {
+  if [ "${#CLEANUP_PATHS[@]}" -gt 0 ]; then
+    local path
+    for path in "${CLEANUP_PATHS[@]}"; do
+      if [ -n "$path" ]; then
+        rm -rf -- "$path" || true
+      fi
+    done
+  fi
+}
+trap cleanup_paths EXIT
+
 # --- argument parsing ------------------------------------------------------
 
 while [[ $# -gt 0 ]]; do
@@ -749,10 +772,11 @@ cargo_fallback() {
   local stage_root
   stage_root="$(mktemp -d)"
   # Remove the staging root on every exit path, including a `die` inside
-  # candidate verification. `install_program` clears its own download trap
-  # before delegating here, so this trap owns cleanup for the rest of the run.
-  # shellcheck disable=SC2064
-  trap "rm -rf \"$stage_root\"" EXIT
+  # candidate verification. `install_program` clears its own download entry
+  # before delegating here, so this registration owns cleanup for the rest of
+  # the run. The trap body is a fixed command and `$stage_root` is data.
+  CLEANUP_PATHS+=("$stage_root")
+  trap cleanup_paths EXIT
   local cargo_root="${stage_root}/cargo-root"
 
   local -a args=(install --locked)
@@ -785,6 +809,9 @@ cargo_fallback() {
     chmod 755 "${DEST_DIR}/${program}"
   fi
   rm -rf "$stage_root"
+  # Ownership of cleanup ends here; drop the registration before disarming so
+  # the handoff is explicit rather than a stale path cleaned at exit.
+  CLEANUP_PATHS=()
   trap - EXIT
 
   if [[ "$scope" == "replace" ]]; then
@@ -907,20 +934,24 @@ install_program() {
   fi
 
   tmpdir="$(mktemp -d)"
-  # cleanup on success or failure; expand now so trap sees value
-  # shellcheck disable=SC2064
-  trap "rm -rf \"$tmpdir\"" EXIT
+  # Clean up the owner-private download directory on success or failure. The
+  # trap body is a fixed command; `$tmpdir` is registered as data, so it is
+  # never re-parsed as shell source at exit.
+  CLEANUP_PATHS+=("$tmpdir")
+  trap cleanup_paths EXIT
 
   echo "Downloading $program from $url ..." >&2
 
   # Attempt to download executable; classify 404 as Cargo-fallback trigger, other errors as hard failure.
-  # Bounded like the Rust updater (`exec.rs`): --proto '=https', --tlsv1.2,
-  # --max-time, --max-filesize (64 MiB), and a program User-Agent so a
-  # mirror cannot hang, downgrade, or fill disk. The HTTP code comes from
-  # this same invocation (`-w %{http_code}`), so no second probe request
-  # is issued on failure.
+  # Bounded like the Rust updater (`exec.rs`): `--proto '=https'` plus
+  # `--proto-redir '=https'` make the initial request and every redirect
+  # HTTPS-only, `--tlsv1.2` forbids older TLS, and `--max-time`,
+  # `--max-filesize` (64 MiB), and a program User-Agent stop a mirror from
+  # hanging, downgrading, or filling disk. The HTTP code comes from this same
+  # invocation (`-w %{http_code}`), so no second probe request is issued on
+  # failure.
   set +e
-  http_code="$(curl --proto '=https' --tlsv1.2 -fsSL --max-time 100 --max-filesize 67108864 -H "User-Agent: ${program}/installer (https://github.com/eggstack/gregg)" -o "${tmpdir}/${asset}" -w "%{http_code}" "$url" 2>/dev/null)"
+  http_code="$(curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --max-time 100 --max-filesize 67108864 -H "User-Agent: ${program}/installer (https://github.com/eggstack/gregg)" -o "${tmpdir}/${asset}" -w "%{http_code}" "$url" 2>/dev/null)"
   curl_status=$?
   set -e
   http_code="${http_code:-000}"
@@ -929,6 +960,9 @@ install_program() {
     if [[ "$http_code" == "404" ]]; then
       echo "No prebuilt $program asset at $url (HTTP 404); trying Cargo fallback..." >&2
       rm -rf "$tmpdir"
+      # Hand cleanup to `cargo_fallback` explicitly: this call owns nothing
+      # once the download directory is gone.
+      CLEANUP_PATHS=()
       trap - EXIT
       cargo_fallback "$program" "$scope" "$existing_version"
       finalize_greggd_install "$program"
@@ -954,7 +988,7 @@ install_program() {
   fi
 
   echo "Downloading checksum ${sha_url} ..." >&2
-  if ! curl --proto '=https' --tlsv1.2 -fsSL --max-time 30 --max-filesize 4096 -H "User-Agent: ${program}/installer (https://github.com/eggstack/gregg)" -o "${tmpdir}/${asset}.sha256" "$sha_url"; then
+  if ! curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --max-time 30 --max-filesize 4096 -H "User-Agent: ${program}/installer (https://github.com/eggstack/gregg)" -o "${tmpdir}/${asset}.sha256" "$sha_url"; then
     die "failed to download checksum for $asset from $sha_url"
   fi
 
@@ -982,6 +1016,8 @@ install_program() {
   fi
 
   rm -rf "$tmpdir"
+  # The download directory is gone and cleanup moves to the finalize steps.
+  CLEANUP_PATHS=()
   trap - EXIT
 
   finalize_greggd_install "$program"

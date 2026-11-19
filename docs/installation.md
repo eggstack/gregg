@@ -22,9 +22,12 @@ curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh
 
 The client installs to `$HOME/.local/bin`; the privileged daemon install uses
 `/usr/local/bin` and registers startup with the detected service manager. The
-user installer can add `$HOME/.local/bin` to supported shell profiles. If it is
-not on the current shell's `PATH`, run the `export` command printed by the
-installer. Use `--no-shell-profile` to skip profile changes.
+daemon runs as a dedicated service account, not as root: `greggd` on Linux and a
+hidden `_greggd` user on macOS (created by the install if it does not exist).
+See [Service account](daemon.md#service-account). The user installer can add
+`$HOME/.local/bin` to supported shell profiles. If it is not on the current
+shell's `PATH`, run the `export` command printed by the installer. Use
+`--no-shell-profile` to skip profile changes.
 
 To pin an install to a published version, replace `1.2.3` below with that
 release's version number:

@@ -959,7 +959,12 @@ mod native_tests {
 
     #[test]
     fn config_address_preserves_wildcards_and_formats_ipv6() {
-        let mut config = Config::default();
+        // The wildcard is this test's subject, so it is set explicitly. The
+        // default is loopback (Plan 187) and is not what this asserts.
+        let mut config = Config {
+            host: "0.0.0.0".parse().unwrap(),
+            ..Config::default()
+        };
         assert_eq!(config_address(&config).to_string(), "0.0.0.0:11310");
         config.host = "fd00::10".parse().unwrap();
         config.port = 11320;

@@ -1,5 +1,7 @@
 name: release-binaries
 
+# Actions are pinned to commit SHAs; update the SHA and the trailing tag comment together.
+
 # Release-only pipeline that builds, verifies, and attaches prebuilt gregg/greggd
 # executables for the supported OS/architecture matrix. Ordinary CI remains in
 # ci.yml and never builds release artifacts.
@@ -48,7 +50,7 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
     steps:
       - name: Check out sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -76,15 +78,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           fetch-tags: true
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
+          toolchain: stable
           targets: x86_64-unknown-linux-gnu
 
       - name: Install Zig and cargo-zigbuild
@@ -173,7 +176,7 @@ jobs:
           sha256sum -c greggd-x86_64-unknown-linux-gnu.sha256
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: linux-x86_64
           path: dist/*
@@ -185,15 +188,16 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - name: Check out sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           fetch-tags: true
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
+          toolchain: stable
           targets: aarch64-unknown-linux-gnu
 
       - name: Install Zig and cargo-zigbuild
@@ -280,7 +284,7 @@ jobs:
           sha256sum -c greggd-aarch64-unknown-linux-gnu.sha256
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: linux-aarch64
           path: dist/*
@@ -292,15 +296,16 @@ jobs:
     runs-on: macos-15-intel
     steps:
       - name: Check out sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           fetch-tags: true
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
+          toolchain: stable
           targets: x86_64-apple-darwin
 
       - name: Build gregg and greggd
@@ -378,7 +383,7 @@ jobs:
           shasum -a 256 -c greggd-x86_64-apple-darwin.sha256
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: macos-x86_64
           path: dist/*
@@ -390,15 +395,16 @@ jobs:
     runs-on: macos-15
     steps:
       - name: Check out sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           fetch-tags: true
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
+          toolchain: stable
           targets: aarch64-apple-darwin
 
       - name: Build gregg and greggd
@@ -476,7 +482,7 @@ jobs:
           shasum -a 256 -c greggd-aarch64-apple-darwin.sha256
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: macos-aarch64
           path: dist/*
@@ -488,15 +494,16 @@ jobs:
     runs-on: windows-2022
     steps:
       - name: Check out sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           fetch-tags: true
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
+          toolchain: stable
           targets: x86_64-pc-windows-msvc
 
       - name: Build gregg and greggd
@@ -583,7 +590,7 @@ jobs:
           if ($check2 -ne $listed2) { throw "greggd checksum mismatch" }
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-x86_64
           path: dist/*
@@ -601,14 +608,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           fetch-tags: true
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Download all build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
           merge-multiple: true

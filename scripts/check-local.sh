@@ -20,15 +20,17 @@ usage() {
 Usage: scripts/check-local.sh [OPTIONS]
 
 Options:
-  --release    Run the release preflight tier (adds clean-tree, version
-               consistency, package lists, installed-binary smoke, and the
-               protocol publish dry-run).
+  --release    Run the release preflight tier (adds the advisory policy check
+               when cargo-deny is installed, clean-tree, version consistency,
+               package lists, installed-binary smoke, and the protocol publish
+               dry-run).
   --help       Show this help message and exit.
 
 Modes:
   (default)    fmt and workspace tests.
-  --release    Default checks plus clippy, docs, clean-tree, version/package checks,
-               source installation, v2 loopback smoke, and protocol dry-run.
+  --release    Default checks plus clippy, docs, advisory policy, clean-tree,
+               version/package checks, source installation, v2 loopback smoke,
+               and protocol dry-run.
 
 Examples:
   ./scripts/check-local.sh                  # fast developer check
@@ -179,6 +181,13 @@ if [[ "${MODE}" == "release" ]]; then
 
     step "version consistency check"
     run_or_fail check_version_consistency
+
+    if command -v cargo-deny >/dev/null 2>&1; then
+        step "cargo deny check advisories"
+        run_or_fail cargo deny check advisories
+    else
+        echo "skip: cargo-deny not installed; advisory check not run" >&2
+    fi
 
     step "cargo package --list (gregg-protocol)"
     run_or_fail cargo package --list -p gregg-protocol

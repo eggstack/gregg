@@ -93,7 +93,10 @@ The entry is per-user. Linux uses user systemd when available and otherwise a
 managed user crontab; macOS uses a LaunchAgent; Windows uses the current user's
 Startup folder. A root or Administrator install does not register startup for
 another user. Startup registration is optional because running `gregg` starts
-the daemon on demand.
+the daemon on demand. An executable or config path containing a control
+character (a newline in particular) is refused before anything is written: no
+unit, plist, `.cmd`, crontab line, or printed instruction can carry one safely,
+so rename the path first.
 
 `gregg update` updates the exact executable you invoked. It prepares and
 verifies the replacement before stopping a running client daemon, replaces the
@@ -111,12 +114,19 @@ The optional EggPool pane uses one configured endpoint:
 
 ```text
 gregg eggpool add pool.local:11300
-gregg eggpool add pool.local:11300 --api-key-env EGGPOOL_API_KEY
+gregg eggpool add pool.local:11300 --https --api-key-env EGGPOOL_API_KEY
 ```
 
 Use `--https` for TLS and `--replace` to change an existing endpoint. The
 configuration stores the environment variable name, not the API key. Omit the
 `[eggpool]` configuration to disable the pane and its network activity.
+
+With an API key configured, cleartext HTTP is accepted only for a loopback
+endpoint (`127.0.0.1`, `::1`, or `localhost`); `gregg eggpool add` refuses a
+remote HTTP entry, and a configuration that already contains one never sends the
+key — the pane reports insecure credential transport and the rest of the client
+keeps working. Use `--https` for a remote EggPool, or reach it through a local
+tunnel.
 
 The pane reads periodized metrics from `/api/stats/summary` and service health
 separately from EggPool's schema-version-1 `/api/status`. Statistics include

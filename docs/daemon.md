@@ -19,17 +19,31 @@ A minimal configuration is:
 
 ```toml
 name = "greggd"
-host = "0.0.0.0"
+host = "127.0.0.1"
 port = 11310
 sample_interval_ms = 1000
 stale_after_ms = 10000
 ```
 
 Override the file path with `greggd run --config PATH`. The default bind address
-accepts connections from reachable network interfaces. Use
-`greggd host 127.0.0.1` to restrict the listener to this machine, for example
-when access is through an SSH tunnel. Config changes apply after the daemon is
-restarted.
+is loopback, so a fresh install answers only on this machine. Config changes
+apply after the daemon is restarted.
+
+### LAN monitoring
+
+To collect from one `gregg` client across several machines, set `host` to a
+reachable address on each daemon — `host = "0.0.0.0"` (or `::`) for every
+interface, or a concrete interface address to narrow the bind:
+
+```toml
+host = "0.0.0.0"
+```
+
+This is an explicit opt-in, not a default. The API has no authentication and no
+TLS, so anything that can route to the port can read fleet metrics and scheduled
+job output; firewall it to the client hosts. A non-loopback bind logs one
+startup warning naming the address. Use `greggd host 127.0.0.1` to return a
+daemon to loopback, for example when access is through an SSH tunnel.
 
 ## Scheduled maintenance
 
@@ -148,6 +162,31 @@ commands for your host. On Windows, the PowerShell installer registers the SCM
 service when run as Administrator. `greggd startup install` on Windows reports
 service state and does not create the registration. Gregg does not invoke
 `sudo` itself.
+
+## Service account
+
+The daemon runs as a dedicated, non-login account, never as `root`/`SYSTEM`:
+
+| Platform | Account | Configured by |
+| --- | --- | --- |
+| Linux | `greggd` system user | `systemd` unit `User=greggd` |
+| macOS | hidden `_greggd` user and group (uid/gid 391) | plist `UserName`/`GroupName` |
+| Windows | `NT AUTHORITY\LocalService` | the SCM registration |
+
+The ids are fixed rather than generated, so a reinstall is idempotent and file
+ownership survives an upgrade. If that id already belongs to another record, the
+macOS install stops and names the conflict instead of adopting the account.
+
+The configuration file stays owned by `root` (`0644`) on Linux and macOS: the
+daemon can read its configuration but cannot rewrite its own job set. On macOS
+the log `/var/log/greggd.log` is owned by `_greggd` at `0640`, because launchd
+redirects the job's output into it.
+
+Uninstall removes the startup registration and the binary and **keeps** the
+service account, which is inert without the job. Because the macOS configuration
+directory is root-owned, `_greggd` cannot bind the config-adjacent control
+socket, so `greggd stop` falls back to the `0600` temp socket
+`<temp dir>/greggd-<id>.control.sock`; `stop` tries both paths.
 
 ## Updating and uninstalling
 

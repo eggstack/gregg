@@ -153,7 +153,9 @@ if [[ "$CHECK_REGISTRY" -eq 1 ]]; then
   for crate in gregg-protocol gregg-update gregg-host gregg greggd; do
     echo "Checking crates.io for $crate $VERSION..."
     # crates.io API: https://crates.io/api/v1/crates/<name>/<version>
-    HTTP_CODE="$(curl --proto '=https' --tlsv1.2 -s --max-time 15 --connect-timeout 5 -o "$CRATE_JSON" -w "%{http_code}" \
+    # `--proto '=https'` plus `--proto-redir '=https'`: the initial request
+    # and every redirect are HTTPS-only (`--tlsv1.2` forbids older TLS).
+    HTTP_CODE="$(curl --proto '=https' --proto-redir '=https' --tlsv1.2 -s --max-time 15 --connect-timeout 5 -o "$CRATE_JSON" -w "%{http_code}" \
       -H "User-Agent: gregg-release-ci (eggstack/gregg)" \
       "https://crates.io/api/v1/crates/${crate}/${VERSION}" || true)"
     if [[ "$HTTP_CODE" == "200" ]]; then

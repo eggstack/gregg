@@ -31,7 +31,9 @@ fi
 ZIG_SHA256="${ZIG_SHA256:-$ZIG_SHA256_DEFAULT}"
 ZIG_TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$ZIG_TMPDIR"' EXIT
-curl --proto '=https' --tlsv1.2 -fsSL --max-time 120 "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}.tar.xz" -o "$ZIG_TMPDIR/zig.tar.xz"
+# `--proto '=https'` plus `--proto-redir '=https'` keep the initial request and
+# every redirect HTTPS-only; `--tlsv1.2` forbids older TLS.
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --max-time 120 "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}.tar.xz" -o "$ZIG_TMPDIR/zig.tar.xz"
 echo "${ZIG_SHA256}  $ZIG_TMPDIR/zig.tar.xz" | sha256sum -c -
 mkdir -p "$HOME/.local/zig"
 tar -xf "$ZIG_TMPDIR/zig.tar.xz" -C "$HOME/.local/zig" --strip-components=1

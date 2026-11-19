@@ -109,6 +109,61 @@ impl StartupTarget {
     pub fn artifact_name(&self, suffix: &str) -> String {
         format!("gregg-client-{}{suffix}", self.identity)
     }
+
+    /// Reject a target whose paths cannot be represented safely.
+    ///
+    /// Only registration renders these paths into an artifact; uninstall and
+    /// ownership classification deliberately stay permissive, because they must
+    /// still be able to inspect and remove something written before this guard
+    /// existed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StartupError::UnsafePath`] naming the offending path.
+    pub fn validate_for_registration(&self) -> Result<(), StartupError> {
+        validate_registration_path(&self.executable)?;
+        validate_registration_path(&self.config)
+    }
+}
+
+/// Reject a path that no registration format can carry safely.
+///
+/// The decisive case is cron: it splits physical lines before the shell ever
+/// sees quoting, so a newline inside a single-quoted path closes the `@reboot`
+/// line and starts a second scheduled command that persists and runs as the
+/// invoking user. The same character is illegal XML in the `LaunchAgent`, at best
+/// noise in a systemd unit, and a metacharacter problem in a `.cmd`.
+///
+/// The check names the first offending character so the operator can rename the
+/// path rather than guess.
+fn validate_registration_path(path: &Path) -> Result<(), StartupError> {
+    let reason = if let Some(bad) = path.to_string_lossy().chars().find(|c| c.is_control()) {
+        Some(match bad {
+            '\n' => "the path contains a newline, which cron would run as a second command",
+            '\r' => "the path contains a carriage return, which cron treats as a line break",
+            '\0' => "the path contains a NUL byte",
+            '\t' => "the path contains a tab",
+            _ => "the path contains a control character",
+        })
+    } else if path
+        .as_os_str()
+        .as_encoded_bytes()
+        .iter()
+        .any(|byte| *byte == b'\n' || *byte == b'\r')
+    {
+        // A non-UTF-8 path could carry a raw newline byte that the lossy
+        // conversion above replaced, so the encoded bytes are checked too.
+        Some("the path contains a newline byte")
+    } else {
+        None
+    };
+    match reason {
+        Some(reason) => Err(StartupError::UnsafePath {
+            path: path.to_path_buf(),
+            reason,
+        }),
+        None => Ok(()),
+    }
 }
 
 /// Why a startup registration could not be performed.
@@ -137,6 +192,22 @@ pub enum StartupError {
     /// A manager binary is not on this host.
     #[error("{0} is not installed on this system")]
     MissingManager(&'static str),
+    /// A registration artifact was refused because the path is unsafe.
+    #[error("refusing to write the startup entry at {path}: {reason}")]
+    UnsafeArtifact {
+        /// The path that was rejected.
+        path: PathBuf,
+        /// Why it was rejected, in operator terms.
+        reason: &'static str,
+    },
+    /// A registration path cannot be represented safely in the artifact format.
+    #[error("refusing to register startup for {path}: {reason}")]
+    UnsafePath {
+        /// The path that was rejected.
+        path: PathBuf,
+        /// Why it was rejected, in operator terms.
+        reason: &'static str,
+    },
 }
 
 /// How many manager invocations may block.
@@ -282,14 +353,20 @@ pub fn systemd_unit_ownership(text: &str, executable: &Path, config: &Path) -> A
 // ── Linux fallback: managed user crontab ─────────────────────────────────
 
 /// The `@reboot` line that starts the client daemon for this config.
-#[must_use]
-pub fn render_cron_watchdog(target: &StartupTarget) -> String {
-    format!(
+///
+/// # Errors
+///
+/// Returns [`StartupError::UnsafePath`] when a path contains a control
+/// character. The validation lives here as well as at the install/instructions
+/// boundary so a direct caller cannot format an unsafe line either.
+pub fn render_cron_watchdog(target: &StartupTarget) -> Result<String, StartupError> {
+    target.validate_for_registration()?;
+    Ok(format!(
         "# gregg-client-daemon {}\n@reboot {} --config {} daemon run >> /dev/null 2>&1\n",
         target.identity,
         shell_quote(&target.executable.to_string_lossy()),
         shell_quote(&target.config.to_string_lossy()),
-    )
+    ))
 }
 
 /// Single-quote one path for a POSIX shell command line.
@@ -554,11 +631,20 @@ pub fn windows_entry_ownership(text: &str, executable: &Path, config: &Path) -> 
 ///
 /// Always actionable and never privileged: it is the fallback the installer
 /// points at when its own registration attempt could not be completed.
-#[must_use]
-pub fn render_instructions(method: StartupMethod, target: &StartupTarget) -> String {
+///
+/// # Errors
+///
+/// Returns [`StartupError::UnsafePath`] for a path that no artifact format can
+/// carry safely. Printing instructions that embed an injected cron line would
+/// be the same defect as writing one.
+pub fn render_instructions(
+    method: StartupMethod,
+    target: &StartupTarget,
+) -> Result<String, StartupError> {
+    target.validate_for_registration()?;
     let exe = target.executable.display();
     let config = target.config.display();
-    match method {
+    Ok(match method {
         StartupMethod::SystemdUser => format!(
             "Register a user-scoped systemd unit (no root, no system service):\n\n\
              \x20 gregg daemon startup install\n\n\
@@ -615,9 +701,9 @@ pub fn render_instructions(method: StartupMethod, target: &StartupTarget) -> Str
              That runs:\n\
              \x20 {exe} --config {config} daemon run\n\n\
              Verify with: gregg daemon status\n",
-            line = render_cron_watchdog(target).trim_end(),
+            line = render_cron_watchdog(target)?.trim_end(),
         ),
-    }
+    })
 }
 
 // ── Environment probes ───────────────────────────────────────────────────
@@ -716,6 +802,9 @@ pub fn install_with(
     target: &StartupTarget,
     method: StartupMethod,
 ) -> Result<Installed, StartupError> {
+    // One boundary for all four methods: no artifact is rendered, no manager is
+    // called, and nothing is written before this check passes.
+    target.validate_for_registration()?;
     match method {
         StartupMethod::SystemdUser => install_systemd_user(target),
         StartupMethod::LaunchdUser => install_launchagent(target),
@@ -731,7 +820,43 @@ fn write_artifact(path: &Path, contents: &str) -> Result<(), StartupError> {
             source,
         })?;
     }
-    std::fs::write(path, contents).map_err(|source| StartupError::Io {
+    // Parent directories may legitimately be symlinks (a dotfile-managed
+    // `~/.config`, for example), but the final component must not be: both
+    // `fs::write` and `File::create` follow an existing link, so a link planted
+    // at the artifact path turns a privileged-enough registration into a
+    // write-through primitive against any file the invoking user can reach.
+    //
+    // Uninstall stays permissive on purpose: it must still be able to classify
+    // and remove an artifact registered before this guard existed.
+    if let Ok(metadata) = std::fs::symlink_metadata(path) {
+        if metadata.file_type().is_symlink() {
+            return Err(StartupError::UnsafeArtifact {
+                path: path.to_path_buf(),
+                reason: "the path is an existing symlink",
+            });
+        }
+    }
+    // `O_NOFOLLOW` also closes the window between the check above and the open,
+    // so the guarantee does not depend on the check being race-free.
+    #[cfg(unix)]
+    let result = {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+            .and_then(|mut file| file.write_all(contents.as_bytes()))
+    };
+    // Creating a symlink on Windows requires a privilege an ordinary user does
+    // not hold, and the artifact is confined to that user's own profile, so the
+    // pre-check above is the whole guard there.
+    #[cfg(not(unix))]
+    let result = std::fs::write(path, contents);
+    result.map_err(|source| StartupError::Io {
         path: path.to_path_buf(),
         source,
     })
@@ -887,7 +1012,7 @@ fn install_cron(target: &StartupTarget) -> Result<Installed, StartupError> {
         }
         ArtifactOwnership::Owned | ArtifactOwnership::Absent => {}
     }
-    let merged = merge_cron_block(&existing, &render_cron_watchdog(target));
+    let merged = merge_cron_block(&existing, &render_cron_watchdog(target)?);
     write_crontab(&merged)?;
     Ok(Installed {
         method: StartupMethod::Cron,
@@ -1499,7 +1624,7 @@ mod tests {
     fn the_cron_watchdog_merges_without_disturbing_other_jobs() {
         let target = target("0123456789abcdef");
         let existing = "0 5 * * * /usr/bin/backup --nightly\n";
-        let merged = merge_cron_block(existing, &render_cron_watchdog(&target));
+        let merged = merge_cron_block(existing, &render_cron_watchdog(&target).unwrap());
         assert!(
             merged.contains("/usr/bin/backup --nightly"),
             "an unrelated job must survive: {merged}"
@@ -1516,10 +1641,10 @@ mod tests {
         let target = target("0123456789abcdef");
         let mut merged = merge_cron_block(
             "0 5 * * * /usr/bin/backup\n",
-            &render_cron_watchdog(&target),
+            &render_cron_watchdog(&target).unwrap(),
         );
         let once = merged.matches("daemon run").count();
-        merged = merge_cron_block(&merged, &render_cron_watchdog(&target));
+        merged = merge_cron_block(&merged, &render_cron_watchdog(&target).unwrap());
         assert_eq!(
             merged.matches("daemon run").count(),
             once,
@@ -1533,7 +1658,7 @@ mod tests {
         let target = target("0123456789abcdef");
         let merged = merge_cron_block(
             "0 5 * * * /usr/bin/backup\n30 1 * * * /usr/bin/rotate\n",
-            &render_cron_watchdog(&target),
+            &render_cron_watchdog(&target).unwrap(),
         );
         let (removed, changed) = remove_cron_block(&merged, &target.identity);
         assert!(changed);
@@ -1548,7 +1673,7 @@ mod tests {
     fn a_user_job_added_after_our_block_survives_a_rerun_and_an_uninstall() {
         let target = target("0123456789abcdef");
         let before = "0 3 * * * /usr/bin/backup.sh\n";
-        let merged = merge_cron_block(before, &render_cron_watchdog(&target));
+        let merged = merge_cron_block(before, &render_cron_watchdog(&target).unwrap());
         // `crontab -e` after install: the operator's own job lands after the
         // block, and the managed block is the tail with no blank line after it.
         let edited = format!("{merged}*/5 * * * * /usr/bin/my-own-job.sh\n");
@@ -1558,7 +1683,7 @@ mod tests {
             "the edited table is still ours to rewrite"
         );
 
-        let rerun = merge_cron_block(&edited, &render_cron_watchdog(&target));
+        let rerun = merge_cron_block(&edited, &render_cron_watchdog(&target).unwrap());
         assert!(
             rerun.contains("/usr/bin/my-own-job.sh"),
             "a rerun must not destroy a job added after the block: {rerun}"
@@ -1586,7 +1711,7 @@ mod tests {
         // accident.
         let mut b = target("fedcba9876543210");
         b.config = PathBuf::from("/home/ann/other.toml");
-        let block = render_cron_watchdog(&a);
+        let block = render_cron_watchdog(&a).unwrap();
         assert_eq!(
             cron_block_ownership(&block, &b.executable, &b.config),
             ArtifactOwnership::Foreign,
@@ -1625,6 +1750,135 @@ mod tests {
         assert!(!quoted[1..quoted.len() - 1].contains("';'"));
     }
 
+    // ── Registration path validation (Plan 191) ───────────────────────
+
+    /// A config path shaped exactly like the injection: the newline closes the
+    /// `@reboot` line and the rest becomes a second scheduled command. Cron
+    /// splits physical lines before the shell ever sees the single quotes.
+    const INJECTING_CONFIG: &str = "/tmp/x\n* * * * * touch /tmp/pwned";
+
+    fn target_with_config(config: &str) -> StartupTarget {
+        StartupTarget::new(
+            Path::new("/home/ann/bin/gregg"),
+            Path::new(config),
+            "0123456789abcdef",
+        )
+    }
+
+    #[test]
+    fn cron_path_with_newline_is_refused() {
+        let target = target_with_config(INJECTING_CONFIG);
+        // `install_with` validates before any manager call, so reaching
+        // `install_cron` (and the real crontab) is impossible here.
+        let error = install_with(&target, StartupMethod::Cron)
+            .expect_err("a newline in a registration path must be refused");
+        match error {
+            StartupError::UnsafePath { path, reason } => {
+                assert_eq!(path, target.config);
+                assert!(reason.contains("newline"), "{reason}");
+            }
+            other => panic!("expected UnsafePath, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_cron_watchdog_rejects_newline() {
+        let target = target_with_config(INJECTING_CONFIG);
+        assert!(
+            matches!(
+                render_cron_watchdog(&target),
+                Err(StartupError::UnsafePath { .. })
+            ),
+            "the renderer must not format an injectable line for a direct caller"
+        );
+    }
+
+    #[test]
+    fn every_registration_method_refuses_a_newline_path() {
+        for method in [
+            StartupMethod::SystemdUser,
+            StartupMethod::LaunchdUser,
+            StartupMethod::WindowsStartupFolder,
+            StartupMethod::Cron,
+        ] {
+            let target = target_with_config(INJECTING_CONFIG);
+            let error =
+                install_with(&target, method).expect_err("no method may register a newline path");
+            assert!(
+                matches!(error, StartupError::UnsafePath { .. }),
+                "{method} returned {error:?} instead of a typed refusal"
+            );
+        }
+    }
+
+    #[test]
+    fn instructions_refuse_a_newline_path() {
+        for method in [
+            StartupMethod::SystemdUser,
+            StartupMethod::LaunchdUser,
+            StartupMethod::WindowsStartupFolder,
+            StartupMethod::Cron,
+        ] {
+            let target = target_with_config(INJECTING_CONFIG);
+            assert!(
+                matches!(
+                    render_instructions(method, &target),
+                    Err(StartupError::UnsafePath { .. })
+                ),
+                "{method} printed an injectable instruction block"
+            );
+        }
+    }
+
+    #[test]
+    fn carriage_return_and_other_controls_are_refused() {
+        for bad in ['\r', '\u{1b}', '\t', '\0'] {
+            let config = format!("/tmp/x{bad}y.toml");
+            assert!(
+                target_with_config(&config)
+                    .validate_for_registration()
+                    .is_err(),
+                "config path with {bad:?} must be refused"
+            );
+            let executable = format!("/home/ann/bin/x{bad}y");
+            let target = StartupTarget::new(
+                Path::new(&executable),
+                Path::new("/home/ann/config.toml"),
+                "0123456789abcdef",
+            );
+            assert!(
+                target.validate_for_registration().is_err(),
+                "executable path with {bad:?} must be refused"
+            );
+        }
+    }
+
+    /// Ordinary awkward paths stay registerable: the validator rejects control
+    /// characters, not every character that needs quoting.
+    #[test]
+    fn spaces_and_quotes_still_register_and_round_trip() {
+        let target = StartupTarget::new(
+            Path::new("/home/ann/My Tools/gregg"),
+            Path::new("/home/ann/it's here/gregg.toml"),
+            "0123456789abcdef",
+        );
+        assert!(target.validate_for_registration().is_ok());
+
+        let block = render_cron_watchdog(&target).expect("a space and a quote are safe");
+        assert_eq!(
+            block
+                .lines()
+                .filter(|line| line.starts_with("@reboot"))
+                .count(),
+            1,
+            "a safe path must still render exactly one job line: {block:?}"
+        );
+        assert_eq!(
+            cron_block_ownership(&block, &target.executable, &target.config),
+            ArtifactOwnership::Owned
+        );
+    }
+
     // ── Inspection and removal decisions ──────────────────────────────
 
     #[test]
@@ -1660,7 +1914,7 @@ mod tests {
             StartupMethod::WindowsStartupFolder,
             StartupMethod::Cron,
         ] {
-            let text = render_instructions(method, &target);
+            let text = render_instructions(method, &target).unwrap();
             assert!(
                 !text.contains("sudo"),
                 "{method} instructions must never suggest elevation: {text}"
@@ -1675,8 +1929,79 @@ mod tests {
             );
         }
         // The systemd text must be scoped to the user manager.
-        let systemd = render_instructions(StartupMethod::SystemdUser, &target);
+        let systemd = render_instructions(StartupMethod::SystemdUser, &target).unwrap();
         assert!(systemd.contains("systemctl --user"));
         assert!(!systemd.contains("sudo systemctl"));
+    }
+
+    /// A link planted at the artifact path must not turn registration into a
+    /// write-through primitive: the write is refused and the target is untouched.
+    ///
+    /// The final component is the boundary; a symlinked *parent* stays legal
+    /// because a dotfile-managed `~/.config` is a normal setup.
+    #[test]
+    #[cfg(unix)]
+    fn write_artifact_refuses_a_planted_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = crate::config::test_helpers::unique_tmp_dir("gregg_startup_test", "symlink");
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, "untouched").unwrap();
+        let artifact = dir.join("com.eggstack.gregg-client.plist");
+        symlink(&victim, &artifact).unwrap();
+
+        let error = write_artifact(&artifact, "planted")
+            .expect_err("a symlinked artifact path must be refused");
+        match &error {
+            StartupError::UnsafeArtifact { path, .. } => assert_eq!(path, &artifact),
+            other => panic!("expected UnsafeArtifact, got {other:?}"),
+        }
+        assert_eq!(
+            std::fs::read_to_string(&victim).unwrap(),
+            "untouched",
+            "the link target must not be written through"
+        );
+        assert!(
+            std::fs::symlink_metadata(&artifact)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the planted link is left for the operator to remove"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn write_artifact_refuses_a_dangling_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = crate::config::test_helpers::unique_tmp_dir("gregg_startup_test", "dangling");
+        let artifact = dir.join("gregg-client.service");
+        symlink(dir.join("nowhere"), &artifact).unwrap();
+
+        let error = write_artifact(&artifact, "planted")
+            .expect_err("a dangling symlink must be refused rather than created through");
+        assert!(matches!(error, StartupError::UnsafeArtifact { .. }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The guard must not break the ordinary cases: creating a missing artifact
+    /// and replacing an existing regular one.
+    #[test]
+    fn write_artifact_creates_and_replaces_regular_files() {
+        let dir = crate::config::test_helpers::unique_tmp_dir("gregg_startup_test", "regular");
+        let nested = dir.join("a").join("b").join("artifact.service");
+
+        write_artifact(&nested, "first").unwrap();
+        assert_eq!(std::fs::read_to_string(&nested).unwrap(), "first");
+
+        write_artifact(&nested, "second").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&nested).unwrap(),
+            "second",
+            "an existing regular artifact is replaced, not appended"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

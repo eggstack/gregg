@@ -1099,10 +1099,15 @@ fn physical_memory() -> Result<RawPhysicalMemory, CollectError> {
 
         unsafe {
             let mut mem_info = MaybeUninit::<ffi::MemoryStatusEx>::uninit();
+            // SAFETY: `mem_info` is a live `MaybeUninit`, and `addr_of_mut!`
+            // takes a raw field projection inside that allocation instead of
+            // forming a reference to still-uninitialised memory. `dw_length` is
+            // the API-required size member and must be set before the call; the
+            // call's success is checked before `assume_init` below.
             #[allow(clippy::cast_possible_truncation)]
             {
-                (*mem_info.as_mut_ptr()).dw_length =
-                    std::mem::size_of::<ffi::MemoryStatusEx>() as u32;
+                std::ptr::addr_of_mut!((*mem_info.as_mut_ptr()).dw_length)
+                    .write(std::mem::size_of::<ffi::MemoryStatusEx>() as u32);
             }
 
             let success = ffi::GlobalMemoryStatusEx(mem_info.as_mut_ptr());
@@ -1149,7 +1154,12 @@ fn commit() -> Result<RawCommit, CollectError> {
         // written by the call, since `success != 0` means the write happened.
         unsafe {
             let mut perf_info = MaybeUninit::<ffi::PerformanceInformation>::zeroed();
-            (*perf_info.as_mut_ptr()).cb = cb;
+            // SAFETY: `perf_info` is a live `MaybeUninit`, and `addr_of_mut!`
+            // takes a raw field projection inside that allocation instead of
+            // forming a reference to still-uninitialised memory. `cb` is the
+            // API-required size member and must be set before the call; the
+            // call's success is checked before `assume_init` below.
+            std::ptr::addr_of_mut!((*perf_info.as_mut_ptr()).cb).write(cb);
             let success = ffi::GetPerformanceInfo(perf_info.as_mut_ptr(), cb);
 
             if success == 0 {
@@ -1487,10 +1497,16 @@ fn get_os_info() -> Result<(String, u32), CollectError> {
         unsafe {
             // RtlGetVersion doesn't require manifest version lying.
             let mut version_ex = MaybeUninit::<ffi::OsVersionInfoW>::uninit();
+            // SAFETY: `version_ex` is a live `MaybeUninit`, and `addr_of_mut!`
+            // takes a raw field projection inside that allocation instead of
+            // forming a reference to still-uninitialised memory.
+            // `dw_os_version_info_size` is the API-required size member and
+            // must be set before the call; the call's status is checked before
+            // `assume_init` below.
             #[allow(clippy::cast_possible_truncation)]
             {
-                (*version_ex.as_mut_ptr()).dw_os_version_info_size =
-                    std::mem::size_of::<ffi::OsVersionInfoW>() as u32;
+                std::ptr::addr_of_mut!((*version_ex.as_mut_ptr()).dw_os_version_info_size)
+                    .write(std::mem::size_of::<ffi::OsVersionInfoW>() as u32);
             }
 
             let status = ffi::RtlGetVersion(version_ex.as_mut_ptr());

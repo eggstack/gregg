@@ -386,6 +386,21 @@ pub(crate) fn elevated_command(exe: &Path, method: StartupMethodArg) -> String {
         other => format!("sudo {exe_str} startup install --method {other}"),
     }
 }
+
+/// Copy-pasteable privileged uninstall hint.
+///
+/// Same contract as [`elevated_command`], and deliberately the same quoting
+/// helper: every `sudo ... uninstall` line this crate prints is a command the
+/// operator pastes into a shell, so a path containing a space, `$`, a quote,
+/// a semicolon, or a newline must re-parse as exactly one argument rather than
+/// as additional shell syntax. Only the operation word is a literal, and it
+/// cannot carry a metacharacter.
+pub(crate) fn sudo_uninstall_hint(exe: &Path) -> String {
+    format!(
+        "sudo {} uninstall",
+        gregg_update::stage::unix_shell_quote(exe)
+    )
+}
 pub(crate) fn ensure_config_preserved(config_path: &Path) -> io::Result<()> {
     if config_path.exists() {
         return Ok(());
@@ -399,6 +414,18 @@ pub(crate) fn ensure_config_preserved(config_path: &Path) -> io::Result<()> {
         .map_err(|e| io::Error::other(format!("failed to write default config: {e}")))?;
     Ok(())
 }
+/// Whether the permission repair may relax this path's mode.
+///
+/// The default config path is accepted unconditionally, so a packaged install
+/// keeps working even while the file momentarily fails to parse (an operator
+/// editing it, for example). Any other path must prove it *is* a Gregg config.
+/// The repair runs as root during an install and `--config` carries
+/// operator-supplied data, so without this gate a path aimed at an unrelated
+/// root-owned `0600` file would be made world-readable.
+fn permission_repair_target_is_trusted(config_path: &Path) -> bool {
+    config_path == Config::default_path() || Config::load(config_path).is_ok()
+}
+
 /// Repair an existing system config so read-only diagnostics work for
 /// unprivileged operators.
 ///
@@ -409,6 +436,17 @@ pub(crate) fn ensure_config_preserved(config_path: &Path) -> io::Result<()> {
 /// relaxes the mode to world-readable and ensures the parent directory is
 /// traversable. Best-effort for missing paths; hard errors for real I/O
 /// failures so install surfaces them.
+///
+/// The repair is deliberately link- and content-safe:
+///
+/// - `symlink_metadata` never follows the final component, so a symlinked
+///   `--config` cannot redirect a root-owned `chmod` at its target;
+/// - only regular files and regular directories are touched;
+/// - the file must be the platform default config or parse as one, which is
+///   what makes an unrelated root-owned `0600` file a no-op rather than a
+///   disclosure;
+/// - the content gate runs *before* the parent is relaxed, so an untrusted
+///   target leaves both the file and its directory exactly as they were.
 // Only the `unix` body can fail, but the signature is shared: `systemd.rs`
 // and `launchd.rs` compile on every platform and both map the failure into
 // `InstallError::Io`, so making the return type platform-dependent would
@@ -418,24 +456,66 @@ pub(crate) fn repair_system_config_permissions(config_path: &Path) -> io::Result
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
+
+        let metadata = match fs::symlink_metadata(config_path) {
+            Ok(metadata) => metadata,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        let file_type = metadata.file_type();
+        if file_type.is_symlink() {
+            // Best-effort repair, so this is not an install failure: the
+            // operator learns why unprivileged diagnostics may still fail.
+            tracing::warn!(
+                path = %config_path.display(),
+                "skipping config permission repair: path is a symlink"
+            );
+            return Ok(());
+        }
+        if !file_type.is_file() {
+            tracing::warn!(
+                path = %config_path.display(),
+                "skipping config permission repair: path is not a regular file"
+            );
+            return Ok(());
+        }
+        if !permission_repair_target_is_trusted(config_path) {
+            tracing::warn!(
+                path = %config_path.display(),
+                "skipping config permission repair: path is neither the default config path nor a valid greggd config"
+            );
+            return Ok(());
+        }
+
         // Only relax when an unprivileged open would actually fail (no
         // other-read on the file, or no other traverse+read on the parent).
         // Already-relaxed modes are never clobbered, preserving
         // operator-managed modes such as 0750/0640 — so this *adds* the missing
         // bits and leaves every other bit exactly as the operator set it.
         if let Some(parent) = config_path.parent() {
-            if parent.exists() {
-                let mode = fs::metadata(parent)?.permissions().mode() & 0o777;
-                if mode & 0o005 != 0o005 {
-                    fs::set_permissions(parent, fs::Permissions::from_mode(mode | 0o755))?;
+            // A symlinked or non-directory parent is not this repair's
+            // business: adding world-traverse through a link would widen an
+            // arbitrary target as root.
+            match fs::symlink_metadata(parent) {
+                Ok(meta) if meta.file_type().is_dir() => {
+                    let mode = meta.permissions().mode() & 0o777;
+                    if mode & 0o005 != 0o005 {
+                        fs::set_permissions(parent, fs::Permissions::from_mode(mode | 0o755))?;
+                    }
                 }
+                Ok(_) => {
+                    tracing::warn!(
+                        path = %parent.display(),
+                        "skipping config directory permission repair: not a regular directory"
+                    );
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
             }
         }
-        if config_path.exists() {
-            let mode = fs::metadata(config_path)?.permissions().mode() & 0o777;
-            if mode & 0o004 != 0o004 {
-                fs::set_permissions(config_path, fs::Permissions::from_mode(mode | 0o644))?;
-            }
+        let mode = metadata.permissions().mode() & 0o777;
+        if mode & 0o004 != 0o004 {
+            fs::set_permissions(config_path, fs::Permissions::from_mode(mode | 0o644))?;
         }
         Ok(())
     }
@@ -806,6 +886,31 @@ mod tests {
     use super::*;
     use crate::startup::ArtifactOwnership;
 
+    /// The permission repair only relaxes a file that *is* a Gregg config, so
+    /// fixtures that assert a mode change must be parseable. A minimal valid
+    /// document keeps them about permissions rather than about validation.
+    const VALID_TEST_CONFIG: &str =
+        "name = \"greggd\"\nhost = \"127.0.0.1\"\nport = 11310\nsample_interval_ms = 1000\nstale_after_ms = 10000\n";
+
+    /// A unique directory per test, so the suite can run in parallel.
+    #[cfg(unix)]
+    fn repair_test_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "greggd_test_{name}_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[cfg(unix)]
+    fn mode_of(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
     /// The remediation hint is the exact command the operator is told to run,
     /// so an executable path with shell metacharacters in it has to re-parse as
     /// one argument.
@@ -1143,7 +1248,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("greggd.toml");
-        fs::write(&path, "name = \"greggd\"\n").unwrap();
+        fs::write(&path, VALID_TEST_CONFIG).unwrap();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o750)).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
 
@@ -1175,7 +1280,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("greggd.toml");
-        fs::write(&path, "name = \"greggd\"\n").unwrap();
+        fs::write(&path, VALID_TEST_CONFIG).unwrap();
         // Deliberately unusual but already other-readable: the predicate must
         // not fire, so even the other-write bit survives.
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o757)).unwrap();
@@ -1192,5 +1297,150 @@ mod tests {
             0o757
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The repair runs as root during an install and `--config` is operator
+    /// data, so a symlinked path must never redirect a `chmod` at its target.
+    #[test]
+    #[cfg(unix)]
+    fn repair_refuses_a_symlinked_config_and_leaves_its_target_alone() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let dir = repair_test_dir("repair_symlink");
+        let target = dir.join("real.toml");
+        fs::write(&target, VALID_TEST_CONFIG).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+        let link = dir.join("greggd.toml");
+        symlink(&target, &link).unwrap();
+
+        repair_system_config_permissions(&link).unwrap();
+
+        assert_eq!(
+            mode_of(&target),
+            0o600,
+            "a symlinked --config must never chmod the link target"
+        );
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the symlink itself must be untouched"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A symlinked parent is skipped, but the file itself is still relaxed: the
+    /// config directory lookup must not become the reason diagnostics fail.
+    #[test]
+    #[cfg(unix)]
+    fn repair_skips_a_symlinked_parent_and_still_relaxes_the_file() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let dir = repair_test_dir("repair_symlink_parent");
+        let real = dir.join("real");
+        fs::create_dir_all(&real).unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o700)).unwrap();
+        let link = dir.join("linked");
+        symlink(&real, &link).unwrap();
+        let config = link.join("greggd.toml");
+        fs::write(&config, VALID_TEST_CONFIG).unwrap();
+        fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+
+        repair_system_config_permissions(&config).unwrap();
+
+        assert_eq!(
+            mode_of(&real),
+            0o700,
+            "adding world-traverse through a symlinked parent would widen an arbitrary target"
+        );
+        assert_eq!(
+            mode_of(&config),
+            0o644,
+            "the config itself is still made readable"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The content gate is what makes `/etc/shadow` a no-op: it is not a Gregg
+    /// config, so neither it nor its directory is touched.
+    #[test]
+    #[cfg(unix)]
+    fn repair_never_relaxes_a_file_that_is_not_a_gregg_config() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = repair_test_dir("repair_foreign");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        let path = dir.join("shadow");
+        fs::write(&path, "root:*:19000:0:99999:7:::\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        repair_system_config_permissions(&path).unwrap();
+
+        assert_eq!(mode_of(&path), 0o600, "an unrelated file stays private");
+        assert_eq!(
+            mode_of(&dir),
+            0o700,
+            "the directory is only relaxed after the content gate passes"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A directory (or anything else that is not a regular file) is skipped
+    /// rather than chmodded.
+    #[test]
+    #[cfg(unix)]
+    fn repair_skips_a_non_regular_config_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = repair_test_dir("repair_non_regular");
+        let path = dir.join("greggd.toml");
+        fs::create_dir_all(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+
+        repair_system_config_permissions(&path).unwrap();
+
+        assert_eq!(mode_of(&path), 0o700);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Every `sudo ... uninstall` hint is a command the operator pastes into a
+    /// shell, so a metacharacter path has to survive a real re-parse as exactly
+    /// three words: `sudo`, the path, `uninstall`.
+    #[cfg(unix)]
+    #[test]
+    fn the_uninstall_hint_quotes_a_metacharacter_path() {
+        for raw in [
+            "/usr/local/bin/greggd",
+            "/opt/My Tools/greggd",
+            "/opt/$HOME/greggd",
+            "/opt/it's greggd",
+            "/opt/a;touch owned/greggd",
+            "/opt/line\nbreak/greggd",
+        ] {
+            let hint = sudo_uninstall_hint(Path::new(raw));
+            assert!(
+                hint.starts_with("sudo '"),
+                "the executable must be quoted unconditionally: {hint:?}"
+            );
+            // `\037` (unit separator) keeps a newline inside an argument from
+            // splitting the field list.
+            let script = format!("set -- {hint}; printf '%s\\037' \"$#\" \"$@\"");
+            let output = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(&script)
+                .output()
+                .expect("a POSIX shell must be available");
+            let rendered = String::from_utf8_lossy(&output.stdout);
+            // `printf` ends every field with the separator, so drop the final
+            // empty one before comparing.
+            let body = rendered.strip_suffix('\u{1f}').unwrap_or(&rendered);
+            let fields: Vec<&str> = body.split('\u{1f}').collect();
+            assert_eq!(
+                fields,
+                ["3", "sudo", raw, "uninstall"],
+                "the hint re-parsed into the wrong words: {rendered:?}"
+            );
+        }
     }
 }

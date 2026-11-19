@@ -183,12 +183,15 @@ pub fn probe_http_code(curl: &str, url: &str) -> Option<u16> {
     #[cfg(not(windows))]
     let null_device = "/dev/null";
     let mut cmd = Command::new(curl);
-    // `--proto '=https'` pins production HTTPS fetches to TLS only;
-    // plain-http fixtures (local deterministic tests) keep `http,https`
-    // so the same helper stays testable without weakening production.
+    // `--proto '=https'` plus `--proto-redir '=https'` pin the initial
+    // request and every redirect to HTTPS for production fetches; plain-http
+    // fixtures (local deterministic tests) pass neither flag so the same
+    // helper stays testable without weakening production.
     if url.starts_with("https://") {
         cmd.args([
             "--proto",
+            "=https",
+            "--proto-redir",
             "=https",
             "--tlsv1.2",
             "-fsSL",
@@ -242,8 +245,12 @@ pub fn fetch_latest_stable_version(
     let curl = find_curl()?;
     let url = format!("https://crates.io/api/v1/crates/{crate_name}");
     let user_agent = format!("{program}/{current_version} (https://github.com/eggstack/gregg)");
+    // `--proto '=https'` plus `--proto-redir '=https'`: the initial request
+    // and every redirect a mirror could answer with are HTTPS-only.
     let args = [
         "--proto",
+        "=https",
+        "--proto-redir",
         "=https",
         "--tlsv1.2",
         "-fsSL",
@@ -340,12 +347,15 @@ pub enum DownloadOutcome {
 pub fn download_file(curl: &str, url: &str, dest: &std::path::Path) -> DownloadOutcome {
     let max_filesize = MAX_DOWNLOAD_BYTES.to_string();
     let mut cmd = Command::new(curl);
-    // `--proto '=https'` pins production HTTPS fetches to TLS only;
-    // plain-http fixtures (local deterministic tests) keep `http,https`
-    // so the same helper stays testable without weakening production.
+    // `--proto '=https'` plus `--proto-redir '=https'` pin the initial
+    // request and every redirect to HTTPS for production fetches; plain-http
+    // fixtures (local deterministic tests) pass neither flag so the same
+    // helper stays testable without weakening production.
     if url.starts_with("https://") {
         cmd.args([
             "--proto",
+            "=https",
+            "--proto-redir",
             "=https",
             "--tlsv1.2",
             "-fsSL",

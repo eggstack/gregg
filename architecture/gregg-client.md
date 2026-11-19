@@ -348,6 +348,19 @@ gregg
   never `sudo`; all manager execution goes through one allowlist with no shell
   and a bounded wait. A root install registers nothing, because there is no
   honest way to choose which human a shared binary should watch for.
+  `daemon startup install` **enforces** that instead of documenting it: the verb
+  refuses when the process is privileged (`geteuid() == 0`, or an elevated Windows
+  token, with an unreadable token treated as privileged), while `uninstall`,
+  `status`, and `instructions` stay available at any privilege level. A
+  registration path carrying a control character is refused for **every** method
+  before anything is written or printed: cron splits physical lines before the
+  shell sees the quoting, so a newline would become a second scheduled command,
+  and the same character is illegal in the plist and at best noise in a unit or
+  `.cmd`. Uninstall deliberately stays permissive so a legacy artifact can still
+  be classified and removed, and the artifact write itself refuses a symlink at
+  the final path component (`O_NOFOLLOW`) — a planted link would otherwise turn
+  registration into a write-through primitive — while symlinked *parents* stay
+  legal for a dotfile-managed `~/.config`.
 - **Ownership is proven by parsing what would be written**, then re-read after
   writing as a self-check. `Unknown` (unreadable) is treated exactly like
   `Foreign`: "I could not read it" is not a licence to delete it. Ownership is
@@ -867,6 +880,17 @@ Optional summary pane for EggPool API metrics. Separated from greggd polling.
   still sends the health request unauthenticated, because EggPool keeps
   `/api/status` authenticated even when the dashboard is public; the server's
   own 401/403 answer is authoritative
+- Credential transport is a **policy**, one function shared by the CLI and the
+  runtime: a configured key with `scheme = "http"` and a non-loopback host is
+  refused by `gregg eggpool add` (no config written) and, for an entry that
+  already exists, never reaches the wire — both planes return a dedicated
+  `InsecureCredentialTransport` outcome before `credential()` is called, so no
+  `Authorization` header is constructed and no connection is opened. Loopback
+  means a literal `127.0.0.0/8`, `::1`, or the bare name `localhost`; a hostname
+  that *resolves* to loopback is not exempt, because config validation performs
+  no DNS. This is deliberately not a `ConfigViolation`: `Config::parse` rejects
+  on load, which would make an existing config unloadable after upgrade and
+  would block `eggpool remove`
 
 **Health plane** (`/api/status`, Plan 152):
 - `EggpoolProxyHealth` (`Ready`/`Degraded`/`Unready`),

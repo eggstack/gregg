@@ -163,7 +163,9 @@ when Rust is available.
 ## Security
 
 The daemon is intended for private networks. It has no TLS or authentication and
-is not hardened for public Internet exposure. See [Security](SECURITY.md).
+is not hardened for public Internet exposure. It binds loopback (`127.0.0.1`) by
+default; binding a wildcard or LAN address is an explicit configuration choice
+that logs a startup warning. See [Security](SECURITY.md).
 
 ## Contributing and license
 

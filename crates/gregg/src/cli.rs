@@ -12,7 +12,9 @@ use crate::config::{
     Config, ConfigError, ConfigStore, EggpoolEntry, EggpoolScheme, MAX_EGGPOOL_NAME_LEN,
     MAX_ENV_NAME_LEN,
 };
-use crate::eggpool_endpoint::{EggpoolEndpointError, EggpoolEndpointSpec};
+use crate::eggpool_endpoint::{
+    credential_transport_is_insecure, EggpoolEndpointError, EggpoolEndpointSpec,
+};
 use crate::endpoint::{EndpointError, EndpointSpec};
 
 /// Compact keyboard-first terminal monitor for multiple remote systems.
@@ -572,7 +574,48 @@ fn dispatch_daemon_startup(
     command: &DaemonStartupCommand,
     store: &ConfigStore,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    dispatch_daemon_startup_with(crate::privilege::is_privileged(), command, store)
+}
+
+/// The testable core of [`dispatch_daemon_startup`].
+///
+/// `privileged` carries the effective-privilege decision instead of reading it,
+/// so the refusal is covered by a test that does not have to become root.
+///
+/// Client-daemon startup is user-scoped by contract: a root/Administrator
+/// invocation must register nothing, because the artifact would belong to a
+/// profile the daemon is not meant to occupy. `uninstall`, `instructions`, and
+/// `status` stay available at any privilege level, so a root operator can still
+/// inspect and clean up what an earlier install left behind.
+/// The privilege gate as a pure decision.
+///
+/// Split out so both answers are covered without writing into a real user
+/// profile: `Install` is the only registering verb, and it is the only one
+/// refused. `Remove`, `Instructions`, and `Status` stay available at any
+/// privilege level so a root operator can inspect and clean up.
+fn privileged_install_refusal(
+    privileged: bool,
+    command: &DaemonStartupCommand,
+) -> Option<&'static str> {
+    if privileged && matches!(command, DaemonStartupCommand::Install) {
+        Some(
+            "refusing to register user-scoped startup as root/Administrator; run gregg as the user who should own the daemon",
+        )
+    } else {
+        None
+    }
+}
+
+fn dispatch_daemon_startup_with(
+    privileged: bool,
+    command: &DaemonStartupCommand,
+    store: &ConfigStore,
+) -> Result<(), Box<dyn std::error::Error>> {
     use crate::clientd::startup;
+
+    if let Some(refusal) = privileged_install_refusal(privileged, command) {
+        return Err(refusal.into());
+    }
 
     let identity = crate::clientd::ClientDaemonIdentity::for_path(store.path());
     let executable = std::env::current_exe()?;
@@ -599,12 +642,16 @@ fn dispatch_daemon_startup(
                 // the exact next command, not a failed invocation.
                 eprintln!("warning: could not register user startup: {error}");
                 eprintln!();
-                eprint!("{}", startup::render_instructions(method, &target));
+                // Instructions embed the same paths, so an unsafe path fails
+                // here for the reason already printed above; do not repeat it.
+                if let Ok(text) = startup::render_instructions(method, &target) {
+                    eprint!("{text}");
+                }
                 Ok(())
             }
         },
         DaemonStartupCommand::Instructions => {
-            print!("{}", startup::render_instructions(method, &target));
+            print!("{}", startup::render_instructions(method, &target)?);
             Ok(())
         }
         DaemonStartupCommand::Status => {
@@ -735,6 +782,18 @@ fn cmd_eggpool_add(
         name: name.map(str::to_owned),
         api_key_env: api_key_env.map(str::to_owned),
     };
+    // Refuse to *create* a cleartext credential transport. This is deliberately
+    // not a `ConfigViolation`: `Config::parse` rejects on load, so a violation
+    // would make an existing config unloadable after upgrade and would block
+    // `gregg eggpool remove`. The runtime gate covers entries that already
+    // exist; this one keeps new ones out.
+    if credential_transport_is_insecure(&entry) {
+        return Err(format!(
+            "refusing to send an API key over http to {}; use --https or a loopback endpoint",
+            entry.host
+        )
+        .into());
+    }
     store.mutate(|config| {
         if config.eggpool.is_some() && !replace {
             return Err(ConfigError::Validation(vec![
@@ -1526,6 +1585,101 @@ mod tests {
             ConfigError::Validation(violations)
                 if violations == vec![crate::config::ConfigViolation::EggpoolAlreadyConfigured]
         ));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A new entry must not put a bearer credential on the wire in cleartext.
+    /// The refusal happens before `store.mutate`, so no config is written.
+    #[test]
+    fn eggpool_add_refuses_cleartext_key_to_remote() {
+        let dir = tmp_dir("eggpool_cleartext_remote");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path.clone());
+
+        let error = cmd_eggpool_add(
+            &store,
+            "pool.local:11300",
+            None,
+            false,
+            Some("EGGPOOL_API_KEY"),
+            false,
+        )
+        .expect_err("a remote cleartext key must be refused");
+        let message = error.to_string();
+        assert!(message.contains("--https"), "{message}");
+        assert!(message.contains("loopback"), "{message}");
+        assert!(message.contains("pool.local"), "{message}");
+        assert!(!path.exists(), "the refusal must not write a config");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Loopback HTTP with a key is the normal local-dashboard case and stays
+    /// allowed, as does TLS to a remote host.
+    #[test]
+    fn eggpool_add_allows_cleartext_key_on_loopback_and_https_anywhere() {
+        let dir = tmp_dir("eggpool_cleartext_loopback");
+        for (index, endpoint) in ["127.0.0.1:11300", "localhost:11300", "[::1]:11300"]
+            .into_iter()
+            .enumerate()
+        {
+            let path = dir.join(format!("config-{index}.toml"));
+            let _ = fs::remove_file(&path);
+            let store = ConfigStore::new(path);
+            cmd_eggpool_add(&store, endpoint, None, false, Some("EGGPOOL_API_KEY"), true)
+                .unwrap_or_else(|e| panic!("{endpoint} must be accepted: {e}"));
+            let config = store.load_existing().unwrap();
+            assert_eq!(
+                config.eggpool.map(|entry| entry.scheme),
+                Some(EggpoolScheme::Http)
+            );
+        }
+
+        let path = dir.join("https.toml");
+        let store = ConfigStore::new(path);
+        cmd_eggpool_add(
+            &store,
+            "pool.local:11300",
+            None,
+            true,
+            Some("EGGPOOL_API_KEY"),
+            false,
+        )
+        .expect("https to a remote host is allowed");
+        let config = store.load_existing().unwrap();
+        assert_eq!(
+            config.eggpool.map(|entry| entry.scheme),
+            Some(EggpoolScheme::Https)
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// An unsafe entry that already exists must still be removable: the guard is
+    /// a CLI-add gate, not a load-blocking validation.
+    #[test]
+    fn eggpool_remove_still_works_for_a_legacy_insecure_entry() {
+        let dir = tmp_dir("eggpool_legacy_remove");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+        // Write the legacy shape directly: `cmd_eggpool_add` would refuse it.
+        store
+            .mutate(|config| {
+                config.eggpool = Some(EggpoolEntry {
+                    id: "legacy".into(),
+                    host: "pool.local".into(),
+                    port: 11300,
+                    scheme: EggpoolScheme::Http,
+                    name: None,
+                    api_key_env: Some("EGGPOOL_API_KEY".into()),
+                });
+                Ok(())
+            })
+            .unwrap();
+
+        cmd_eggpool_remove(&store, "pool.local").expect("removal must not be blocked");
+        assert!(store.load_existing().unwrap().eggpool.is_none());
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -2333,6 +2487,68 @@ mod tests {
         assert_eq!(config.systems, []);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Client-daemon startup is user-scoped, so a root/Administrator install
+    /// registers nothing. The refusal carries the exact message and happens
+    /// before any artifact is written or any manager is called.
+    #[test]
+    fn privileged_install_is_refused_before_any_artifact_is_written() {
+        let dir = tmp_dir("privileged_startup_refusal");
+        let store = ConfigStore::new(dir.join("gregg.toml"));
+        let executable = std::env::current_exe().unwrap();
+        let identity = crate::clientd::ClientDaemonIdentity::for_path(store.path());
+        let target =
+            crate::clientd::startup::StartupTarget::new(&executable, store.path(), identity.id());
+
+        let error = dispatch_daemon_startup_with(true, &DaemonStartupCommand::Install, &store)
+            .expect_err("a privileged install must be refused");
+        let message = error.to_string();
+        assert!(
+            message.contains("refusing to register user-scoped startup"),
+            "the refusal must state what it refused: {message}"
+        );
+        assert!(
+            message.contains("root/Administrator"),
+            "the refusal must name the privilege level: {message}"
+        );
+        assert!(
+            message.contains("the user who should own the daemon"),
+            "the refusal must say what to do instead: {message}"
+        );
+
+        for path in [
+            crate::clientd::startup::systemd_user_unit_path(&target),
+            crate::clientd::startup::launchagent_path(&target),
+        ] {
+            assert!(!path.exists(), "the refusal wrote {}", path.display());
+        }
+        if let Some(path) = crate::clientd::startup::windows_startup_entry_path(&target) {
+            assert!(!path.exists(), "the refusal wrote {}", path.display());
+        }
+        assert!(
+            !store.path().exists(),
+            "the refusal must not create the config either"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The gate is install-only: inspection and cleanup keep working as root,
+    /// so a legacy artifact written by an old root install can still be removed.
+    #[test]
+    fn only_install_is_refused_when_privileged() {
+        for (name, command) in [
+            ("remove", DaemonStartupCommand::Remove),
+            ("status", DaemonStartupCommand::Status),
+            ("instructions", DaemonStartupCommand::Instructions),
+        ] {
+            assert!(
+                privileged_install_refusal(true, &command).is_none(),
+                "{name} must stay available at any privilege level"
+            );
+        }
+        assert!(privileged_install_refusal(false, &DaemonStartupCommand::Install).is_none());
+        assert!(privileged_install_refusal(true, &DaemonStartupCommand::Install).is_some());
     }
 
     #[test]

@@ -2,7 +2,8 @@
 
 use super::install::{
     elevated_command, ensure_config_preserved, ensure_standard_binary, is_privileged,
-    manager_error_is_permission, repair_system_config_permissions, write_atomic_text, InstallError,
+    manager_error_is_permission, repair_system_config_permissions, sudo_uninstall_hint,
+    write_atomic_text, InstallError,
 };
 #[cfg(test)]
 use super::method::standard_systemd_config;
@@ -507,9 +508,9 @@ pub fn uninstall_systemd(exe: &Path) -> Result<(), InstallError> {
                             // Quoted for the same reason as `elevated_command`:
                             // this is a command the operator copies verbatim.
                             message: format!(
-                                "permission denied removing {}: rerun as root: sudo {} uninstall",
+                                "permission denied removing {}: rerun as root: {}",
                                 unit_path.display(),
-                                gregg_update::stage::unix_shell_quote(exe)
+                                sudo_uninstall_hint(exe)
                             ),
                         });
                     }
@@ -539,9 +540,9 @@ fn systemd_manager_error_for(exe: &Path, args: &[&str], error: io::Error) -> Ins
     {
         InstallError::Permission {
             message: format!(
-                "systemctl {} was denied; rerun as root: sudo {} uninstall",
+                "systemctl {} was denied; rerun as root: {}",
                 args.join(" "),
-                exe.display()
+                sudo_uninstall_hint(exe)
             ),
         }
     } else {
