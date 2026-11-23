@@ -1778,7 +1778,8 @@ mod tests {
     fn a_config_inside_the_temp_directory_yields_one_location() {
         // Primary and fallback collapse to the same path; the candidate list is
         // deduplicated so a client never probes the same socket twice.
-        let candidates = socket_candidates(std::path::Path::new("/tmp/gregg-x.toml"));
+        let config_path = std::env::temp_dir().join("gregg-x.toml");
+        let candidates = socket_candidates(&config_path);
         assert_eq!(candidates.len(), 1);
     }
 }
