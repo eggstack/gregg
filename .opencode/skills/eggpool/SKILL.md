@@ -53,7 +53,7 @@ gregg eggpool remove <host>
 
 ## Client
 
-- Dedicated `eggfetch-core` client (lean `standard-http1` 0.2 + Rustls: redirect following not compiled, two idle per host, explicit whole-request deadline with absolute `total` through response-body EOF, no retry)
+- Dedicated `eggfetch-core` client (lean `standard-http1` 0.4 + Rustls: redirect following not compiled, two idle per host, explicit whole-request deadline with absolute `total` through response-body EOF, no retry)
 - Two independent read-only planes:
   - summary: `GET /api/stats/summary?period=...` with a per-request 16 KiB cap
   - health: `GET /api/status` (Plan 152) with a per-request 1 MiB cap, the same

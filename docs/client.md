@@ -124,7 +124,7 @@ configuration stores the environment variable name, not the API key. Omit the
 With an API key configured, cleartext HTTP is accepted only for a loopback
 endpoint (`127.0.0.1`, `::1`, or `localhost`); `gregg eggpool add` refuses a
 remote HTTP entry, and a configuration that already contains one never sends the
-key — the pane reports insecure credential transport and the rest of the client
+key; the pane reports insecure credential transport and the rest of the client
 keeps working. Use `--https` for a remote EggPool, or reach it through a local
 tunnel.
 
@@ -132,10 +132,11 @@ The pane reads periodized metrics from `/api/stats/summary` and service health
 separately from EggPool's schema-version-1 `/api/status`. Statistics include
 accounted tokens, provider cache-read share, output tokens per second, and
 average TTFT for `1h`, `24h`, `7d`, or `30d`. They require EggPool's dashboard
-routes. The health route remains authenticated even when the dashboard is
-public, so health may report authentication required while metrics remain
-available. Older EggPool versions without the health route still provide
-metrics when supported. `Ctrl-R` refreshes the active pane.
+routes. With those routes enabled and the dashboard set to public,
+`/api/stats/summary` may be available without credentials. `/api/status`
+remains authenticated, so Gregg may show `Health: auth required` while metrics
+remain available. Older EggPool versions without the health route still
+provide metrics when supported. `Ctrl-R` refreshes the active pane.
 
 ## Scheduled-job view
 

@@ -32,7 +32,7 @@ apply after the daemon is restarted.
 ### LAN monitoring
 
 To collect from one `gregg` client across several machines, set `host` to a
-reachable address on each daemon — `host = "0.0.0.0"` (or `::`) for every
+reachable address on each daemon: `host = "0.0.0.0"` (or `::`) for every
 interface, or a concrete interface address to narrow the bind:
 
 ```toml
@@ -165,7 +165,7 @@ service state and does not create the registration. Gregg does not invoke
 
 ## Service account
 
-The daemon runs as a dedicated, non-login account, never as `root`/`SYSTEM`:
+Packaged daemon services use restricted service accounts:
 
 | Platform | Account | Configured by |
 | --- | --- | --- |
@@ -173,20 +173,24 @@ The daemon runs as a dedicated, non-login account, never as `root`/`SYSTEM`:
 | macOS | hidden `_greggd` user and group (uid/gid 391) | plist `UserName`/`GroupName` |
 | Windows | `NT AUTHORITY\LocalService` | the SCM registration |
 
-The ids are fixed rather than generated, so a reinstall is idempotent and file
-ownership survives an upgrade. If that id already belongs to another record, the
-macOS install stops and names the conflict instead of adopting the account.
+These accounts apply to installed services. A foreground `greggd run` uses the
+account that starts it. If `greggd` runs as root on Unix, scheduled jobs require
+`allow_privileged_jobs = true`.
+
+On Linux, the installer creates the `greggd` system account if it is missing;
+the OS assigns its IDs. On macOS, UID/GID 391 are fixed to preserve file
+ownership across reruns. The installer stops if those IDs belong to another
+account.
 
 The configuration file stays owned by `root` (`0644`) on Linux and macOS: the
 daemon can read its configuration but cannot rewrite its own job set. On macOS
 the log `/var/log/greggd.log` is owned by `_greggd` at `0640`, because launchd
 redirects the job's output into it.
 
-Uninstall removes the startup registration and the binary and **keeps** the
-service account, which is inert without the job. Because the macOS configuration
-directory is root-owned, `_greggd` cannot bind the config-adjacent control
-socket, so `greggd stop` falls back to the `0600` temp socket
-`<temp dir>/greggd-<id>.control.sock`; `stop` tries both paths.
+Uninstall removes the startup registration and binary but keeps the service
+account. On macOS, the root-owned config directory prevents `_greggd` from
+creating a control socket beside the config, so `greggd stop` uses a protected
+temporary socket.
 
 ## Updating and uninstalling
 
@@ -205,9 +209,8 @@ cannot be confidently stopped, uninstall refuses to delete its executable.
 
 ## Network and telemetry
 
-The daemon's HTTP API is unauthenticated and has no TLS. Do not expose it to the
-public Internet. Restrict access with your network firewall or bind to localhost
-and use a secure tunnel. No firewall rules are created automatically.
+Gregg does not create firewall rules. See [LAN monitoring](#lan-monitoring) for
+bind and access guidance.
 
 Collectors use native operating-system interfaces. Optional CPU-frequency,
 disk-I/O, and network telemetry is best-effort. Missing or unsupported values

@@ -341,7 +341,6 @@ impl HttpClient {
 
         let start = clock.now();
 
-        // Try v2 first.
         let Ok(v2_url) = v2_status_url(&endpoint.host, endpoint.port) else {
             return Self::make_result(endpoint, PollOutcome::NetworkError, start, clock.now());
         };
@@ -350,7 +349,6 @@ impl HttpClient {
             .await;
 
         if matches!(&v2_result.outcome, PollOutcome::HttpStatus(404)) {
-            // v2 returned 404 - fall back to v1.
             let Ok(v1_url) = status_url(&endpoint.host, endpoint.port) else {
                 return Self::make_result(endpoint, PollOutcome::NetworkError, start, clock.now());
             };

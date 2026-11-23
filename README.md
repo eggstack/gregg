@@ -44,6 +44,10 @@ In Windows PowerShell, run:
 Invoke-RestMethod http://127.0.0.1:11310/v2/healthz
 ```
 
+Fresh installs bind to loopback, so remote `gregg` clients cannot reach the
+daemon yet. Before adding remote machines, configure a LAN-reachable bind and
+restrict it to your client hosts. See [LAN monitoring](docs/daemon.md#lan-monitoring).
+
 ### 2. Install `gregg` on your workstation
 
 Linux or macOS:

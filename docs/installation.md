@@ -92,7 +92,8 @@ greggd uninstall --dry-run
 ```
 
 Uninstall each component separately. Configuration is preserved by default;
-`--purge` also removes that component's configuration. The client and daemon
-may share an install directory, but uninstall removes only the selected
+`--purge` also removes that component's configuration. On macOS,
+`greggd uninstall --purge` also removes `/var/log/greggd.log`. The client and
+daemon may share an install directory, but uninstall removes only the selected
 component and its owned startup entry. Neither command invokes `sudo` itself.
 See [Client](client.md) and [Daemon](daemon.md) for platform-specific behavior.

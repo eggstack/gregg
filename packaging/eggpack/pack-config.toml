@@ -1,0 +1,53 @@
+# Producer policy mirrors the existing release workflow; planning only.
+# Native qualification does not independently prove the Linux glibc floor.
+schema_version = 1
+
+[[targets]]
+target = "x86_64-unknown-linux-gnu"
+strategy = "cargo_zigbuild"
+host_os = "linux"
+host_arch = "x86_64"
+toolchain = { rust = "stable", cargo_zigbuild = "0.23.4", zig = "0.14.0" }
+floor = { kind = "glibc", major = 2, minor = 17 }
+qualification = "native"
+support = "required"
+
+[[targets]]
+target = "aarch64-unknown-linux-gnu"
+strategy = "cargo_zigbuild"
+host_os = "linux"
+host_arch = "aarch64"
+toolchain = { rust = "stable", cargo_zigbuild = "0.23.4", zig = "0.14.0" }
+floor = { kind = "glibc", major = 2, minor = 17 }
+qualification = "native"
+support = "required"
+
+[[targets]]
+target = "x86_64-apple-darwin"
+strategy = "native_cargo"
+host_os = "macos"
+host_arch = "x86_64"
+toolchain = { rust = "stable" }
+floor = { kind = "none" }
+qualification = "native"
+support = "required"
+
+[[targets]]
+target = "aarch64-apple-darwin"
+strategy = "native_cargo"
+host_os = "macos"
+host_arch = "aarch64"
+toolchain = { rust = "stable" }
+floor = { kind = "none" }
+qualification = "native"
+support = "required"
+
+[[targets]]
+target = "x86_64-pc-windows-msvc"
+strategy = "native_cargo"
+host_os = "windows"
+host_arch = "x86_64"
+toolchain = { rust = "stable" }
+floor = { kind = "none" }
+qualification = "native"
+support = "required"

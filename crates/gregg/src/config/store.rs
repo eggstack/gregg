@@ -289,7 +289,6 @@ impl ConfigStore {
     fn acquire_lock(&self) -> Result<FileLockGuard, ConfigError> {
         let lock_path = self.lock_path();
 
-        // Ensure the parent directory exists.
         if let Some(parent) = lock_path.parent() {
             fs::create_dir_all(parent).map_err(|source| ConfigError::Io {
                 path: parent.to_path_buf(),

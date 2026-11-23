@@ -104,15 +104,20 @@ git tag -a "$TAG" -m "gregg $VERSION"
 git push origin "$TAG"
 ```
 
-The tag triggers `.github/workflows/release-binaries.yml` which verifies
-workspace/tag version equality and crates.io visibility, builds the five
-required targets (Linux x86_64/aarch64 with glibc 2.17 via cargo-zigbuild,
-macOS Intel/ARM64, Windows x86_64), runs `version`/`--help` and a loopback
-`greggd` smoke before hashing, and assembles a **draft** GitHub Release with
-`<program>-<target>[.exe]` assets plus `<asset>.sha256`, `install.sh`, and
-`install.ps1`. The workflow creates a draft or `--clobber`-updates an existing
-draft and hard-fails if the release is already published; it never calls
-`cargo publish`, `git tag`, or pushes commits, and never auto-publishes.
+The tag triggers `.github/workflows/release-binaries.yml`. After the existing
+authoritative workspace/tag/HEAD/crates.io preflight succeeds, the same job
+builds eggpack-cli from the immutable revision in
+`packaging/eggpack/revision.txt` with Rust 1.89 and the upstream lockfile, then
+runs Eggpack `check` and `plan` for separate direct contracts for `gregg` and
+`greggd`. It maps the validated `vX.Y.Z` tag to release ID `X.Y.Z`, passes the
+checked-out source revision, and selects targets from
+`scripts/release-targets.txt`; plans are temporary and never uploaded. This
+contract/planning check does not build binaries, publish a manifest, or replace
+any existing gate. The existing five-target builds, `version`/`--help` and
+loopback `greggd` smokes, checksum assets, and draft assembly remain unchanged.
+The workflow creates a draft or `--clobber`-updates an existing draft and
+hard-fails if the release is already published; it never calls `cargo publish`,
+creates tags, pushes commits, or auto-publishes.
 
 ### 9. Publish the GitHub Release (manual)
 

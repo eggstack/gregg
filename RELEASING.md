@@ -90,6 +90,18 @@ When `cargo-deny` is installed the preflight also runs `cargo deny check
 advisories` and fails on findings, printing a skip notice instead when the tool
 is absent (`cargo install cargo-deny --locked`); the only current exceptions are
 the two unmaintained-crate advisories recorded in `deny.toml`.
+
+The tagged/manual release workflow also runs a pinned Eggpack contract check,
+but only after its authoritative tag/version/HEAD/crates.io checks succeed. To
+reproduce that stage locally, the exact tag must exist and point at HEAD; Rust
+1.89 and network access to the pinned public Eggpack source are required:
+
+```bash
+bash scripts/release-eggpack-preflight.sh "$TAG" "$VERSION" "$(git rev-parse HEAD)"
+```
+
+This stage runs Eggpack `check`/`plan` only; it does not build release binaries
+or change the asset/checksum pipeline.
 The smoke
 installs the current checkout with `cargo install --path crates/greggd
 --locked` and uses `scripts/verify-installed-daemon.sh` to start the
@@ -277,11 +289,20 @@ after publication.
 
 Pushing the annotated tag triggers `.github/workflows/release-binaries.yml`.
 That release-only workflow (triggered only by `v*` tags or manual dispatch)
-runs a mandatory preflight (workspace/tag version equality, clean checkout,
-tag points at HEAD, and crates.io visibility for `gregg`/`greggd`), then
-builds both `gregg` and `greggd` for the five required targets, verifies each
-executable's `version`/`--help` and a loopback `greggd` health smoke, hashes
-the staged binaries into `<asset>.sha256`, and assembles a draft release.
+first runs the authoritative `scripts/release-preflight.sh` checks
+(workspace/tag version equality, clean checkout, tag points at HEAD, and
+crates.io visibility for all five crates). Only if those pass, the existing
+preflight job builds eggpack-cli from the immutable revision in
+`packaging/eggpack/revision.txt` using Rust 1.89 and the upstream lockfile
+(`--locked`), then runs Eggpack `check` and `plan` for separate direct
+`gregg`/`greggd` contracts. The validated `vX.Y.Z` tag maps to the unprefixed
+release ID `X.Y.Z`; the checked-out HEAD is the source revision; and the five
+targets come from `scripts/release-targets.txt`. Plans are temporary and never
+uploaded. This check does not build artifacts, write a public manifest, or
+replace any existing gate. The workflow then builds both binaries for the five
+required targets, verifies each executable's `version`/`--help` and loopback
+`greggd` health smoke, hashes the staged binaries into `<asset>.sha256`, and
+assembles a draft release.
 
 Linux GNU targets use a conservative glibc 2.17 floor via `cargo-zigbuild`
 + Zig targeting `x86_64-unknown-linux-gnu.2.17` /

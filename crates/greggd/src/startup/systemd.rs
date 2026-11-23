@@ -366,7 +366,7 @@ pub fn install_systemd(exe: &Path, config_path: &Path) -> Result<(), InstallErro
             }
         }
     })?;
-    // Ensure permissions 644
+    // Best-effort 0644.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

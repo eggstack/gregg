@@ -254,7 +254,9 @@ pull requests:
   that drives the TUI test drivers, so this job is the only thing standing
   between a shell/Python regression and a release. It installs the Rust
   toolchain because one pytest case shells out to the sustained runner, which
-  builds the gregg test binary first.
+  builds the gregg test binary first. This same job builds the pinned Eggpack CLI
+  with Rust 1.89 and exercises contract/plan fixtures against the canonical
+  target table; it adds no CI job and uploads no artifacts.
 - **macOS**: native workspace check + native macOS collector smoke (arm64 + Intel matrix)
 - **Windows** (`windows-2022`): all-target, all-feature workspace tests, release
   `greggd` **and** `gregg` builds (component-safety uninstall proof), and the bounded SCM lifecycle smoke
@@ -268,6 +270,16 @@ Release-only workflow (`.github/workflows/release-binaries.yml`) runs only on
   version equality (including the `gregg-update`/`gregg-host` internal dependencies),
   tag points at HEAD, clean checkout, crates.io visibility for
   `gregg-protocol`/`gregg-update`/`gregg-host`/`gregg`/`greggd`;
+- only after that gate succeeds, the same existing `preflight` job builds the
+  Eggpack CLI from the single immutable commit in
+  `packaging/eggpack/revision.txt` with Rust 1.89 and the upstream lockfile
+  (`--locked`); it runs `eggpack check` and `plan` for separate direct
+  `gregg`/`greggd` contracts, maps the validated `vX.Y.Z` tag to version
+  `X.Y.Z`, and passes the checked-out HEAD revision. It derives selected targets
+  from `scripts/release-targets.txt`, and keeps generated plans outside `dist/`.
+  This is validation/planning only: no binary build, qualification, public
+  manifest, asset, or existing gate changes. Linux 2.17 remains toolchain-bound;
+  native qualification does not independently prove that floor;
 - five jobs (Linux x86_64/aarch64 with glibc 2.17 via `cargo-zigbuild` + Zig
   installed by `scripts/release-install-zig.sh`, macOS Intel/ARM64 native,
   Windows x86_64 native) each build both binaries, run `version`/`--help`,

@@ -1,0 +1,62 @@
+# Eggpack schema-v1 direct-asset contract for the gregg executable.
+# Target identities are parity-tested against scripts/release-targets.txt.
+schema_version = 1
+
+[product]
+id = "gregg"
+display_name = "Gregg"
+
+[[targets]]
+triple = "x86_64-unknown-linux-gnu"
+
+[targets.asset]
+kind = "direct"
+asset = "{product}-{target}"
+install = "{product}"
+
+[targets.checksum]
+sidecar = "{asset}.sha256"
+
+[[targets]]
+triple = "aarch64-unknown-linux-gnu"
+
+[targets.asset]
+kind = "direct"
+asset = "{product}-{target}"
+install = "{product}"
+
+[targets.checksum]
+sidecar = "{asset}.sha256"
+
+[[targets]]
+triple = "x86_64-apple-darwin"
+
+[targets.asset]
+kind = "direct"
+asset = "{product}-{target}"
+install = "{product}"
+
+[targets.checksum]
+sidecar = "{asset}.sha256"
+
+[[targets]]
+triple = "aarch64-apple-darwin"
+
+[targets.asset]
+kind = "direct"
+asset = "{product}-{target}"
+install = "{product}"
+
+[targets.checksum]
+sidecar = "{asset}.sha256"
+
+[[targets]]
+triple = "x86_64-pc-windows-msvc"
+
+[targets.asset]
+kind = "direct"
+asset = "{product}-{target}.exe"
+install = "{product}"
+
+[targets.checksum]
+sidecar = "{asset}.sha256"

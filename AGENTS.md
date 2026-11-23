@@ -62,7 +62,7 @@ Cross-checking a `--target x86_64-pc-windows-gnu` Clippy run locally is a fast d
 - **No external commands for metrics.** Use `/proc`, Mach APIs, Windows native APIs.
 - **Live telemetry (freq, disk/network rates) is best-effort:** native cumulative counters + real monotonic elapsed time; reset/hotplug/unsupported re-baselines or omits that family without failing core readiness. Never fabricate zeroes; `R/s`/`W/s`/`Rx/s`/`Tx/s` are byte rates; freq is current OS-reported Hz (macOS may omit); network util is max(Rx,Tx) direction, loopback never in aggregate capacity.
 - **Config writes are atomic:** temp file → flush → rename → validate. Tests never sleep production intervals — inject clocks/short intervals.
-- **Deps are ordinary semver; crates.io only.** Don't re-add transitive guard pins (removed by Plan 117). `gregg` client HTTP is feature-minimal `eggfetch-core 0.2` (`standard-http1` + `tls-rustls`, no redirect/retry/Basic/proxy features) — never re-add `reqwest`/`axum`. `greggd` HTTP is EggServe 0.4 direct H1 (`eggserve-server 0.4` + `eggserve-primitives 0.2.2`, no core/static/TLS/H2/H3 compat crates).
+- **Deps are ordinary semver; crates.io only.** Don't re-add transitive guard pins (removed by Plan 117). `gregg` client HTTP is feature-minimal `eggfetch-core 0.4` (`standard-http1` + `tls-rustls`, no redirect/retry/Basic/proxy features) — never re-add `reqwest`/`axum`. `greggd` HTTP is EggServe 0.4 direct H1 (`eggserve-server 0.4` + `eggserve-primitives 0.2.2`, no core/static/TLS/H2/H3 compat crates).
 
 ### Client polling/state (`architecture/gregg-client.md`)
 

@@ -325,6 +325,13 @@ Plans 187 and 190 touch packaging and user-facing docs; Plans 188 and 189 both
 touch startup paths but own disjoint files. No plan adds a CI job, a release
 orchestration step, or a protocol change.
 
+Plan 195's implementation adds a pinned Eggpack contract/check-plan gate to the
+existing tagged/manual release preflight; its CLI pin is now the signed/tagged
+v0.1.2 source commit. Local contract and release-version checks pass; the
+modified workflow still needs a hosted native CI run. The five-target assets,
+manual draft-only policy, and runtime updater remain unchanged; no public
+manifest or new CI job was added.
+
 Plan 176 is complete: the Windows EggPool full-result-channel cancellation
 regression no longer synthesizes its own precondition. The worker already
 delivered inside a cancellation-biased select; the test asked four requests to
@@ -998,6 +1005,7 @@ excluded.
 | [`192-eggpool-credential-transport-guard.md`](192-eggpool-credential-transport-guard.md) | Stop sending an EggPool bearer key over cleartext HTTP to a non-loopback host | **complete** — `eggpool add` refuses a key without `--https` for non-loopback; runtime returns a typed `InsecureCredentialTransport` outcome and never builds the `Authorization` header; loopback (literal `127.0.0.0/8`, `::1`, `localhost`) is exempt; no load-blocking `ConfigViolation`, so an existing config still loads and `eggpool remove` still works; docs example uses `--https` |
 | [`193-windows-ffi-uninitialized-field-writes.md`](193-windows-ffi-uninitialized-field-writes.md) | Replace three uninitialized-field writes in the Windows collector FFI with raw-pointer writes | **complete** — `addr_of_mut!` at `GlobalMemoryStatusEx`, `GetPerformanceInfo`, and `RtlGetVersion`; one SAFETY comment per site; a source-scan test forbids the place-expression form; behavior, sizes, and return-code handling unchanged; native Windows CI is the platform authority |
 | [`194-advisory-policy-and-release-preflight.md`](194-advisory-policy-and-release-preflight.md) | Make `deny.toml` truthful and exercise the advisory policy in release preflight without adding CI | **complete** — remove the stale `RUSTSEC-2026-0185` ignore, record `RUSTSEC-2026-0543`/`0555` as reasoned unmaintained exceptions with a review trigger, and run `cargo deny check advisories` in `--release` when installed (skip notice otherwise); `cargo-deny` stays optional and absent from ordinary CI per Plan 046; chrono replacement is a separate plan |
+| [`195-eggpack-release-contract-adoption.md`](195-eggpack-release-contract-adoption.md) | Adopt Eggpack contract and release-plan validation in the existing five-target draft-release preflight without changing assets or runtime updating | implementation complete; local checks pass, existing native CI pending; depends on 099, 104, 190, 194, and current post-194 main |
 
 Dependency order:
 
@@ -1047,6 +1055,7 @@ current post-186 main -> 191
 current post-186 main -> 192
 current post-186 main -> 193
 current post-186 main -> 194
+099 + 104 + 190 + 194 + current post-194 main -> 195
 155 is the coordination roadmap for the load-aware maintenance scheduler and is independent of the remaining Plan 091 soak record; 156 qualified same-principal execution, local five-field cron semantics, process lifecycle, and prototype footprint; 157 implemented the scheduler and 158 reconciled its functional criteria and corrected validation/allocation; 159 closed the original line with the explicit re-baseline decision, so 155-159 remain complete. Plan 160 is a separate post-closure correctness hardening pass for civil-clock discontinuities and does not reopen those historical closures. None of 155-160 depends on the remaining Plan 091 soak record, and none adds a workflow, job, matrix, or artifact requirement.
 Plan 161 coordinated the cron-observability/client-daemon line and is now closed with all of 162-167 complete: 162 `42e2fc2` settled the remote scheduler wire/output/memory/footprint contract before 163 changed greggd; 164 `b25ca04` built the client-daemon split, independently justified by duplicate TUI polling; 165 `c8f2542`/`ee6ad7e` added per-user lifecycle on the Plan-164 boundary; 166 `53c06e5` added the bounded local cron cache and plain `c` view on top of the remote scheduler plus clientd core; 167 `154ab36` closed the line on measured multi-client, restart, memory, payload, security, and footprint evidence. Plans 161-167 were and remain independent of Plan 091, and added no workflow, job, or matrix requirement.
 Plan 168 is the post-closure corrective pass for the one gap Plans 161 and 167 both flagged honestly: the Windows job had not been run. Running it showed the Windows half of the client daemon had been written but never compiled, so the Windows CI job had been red since Plan 164 landed. 168 corrected the transport (stream ownership, the owner-only SDDL descriptor, `PIPE_REJECT_REMOTE_CLIENTS` placement, the `windows-sys` feature gates, the `\\.\pipe\` endpoint name, a blocking-pool accept, and a `PeekNamedPipe` read), added a `WaitNamedPipeW` liveness probe so the `stop` confirmation stops answering "not running" for a running daemon, and added four Windows tests that execute the pipe path for the first time. Those tests then found a second, pre-existing defect: `FrontendFrame::ProtocolError(String)` can never be serialized because the enum is internally tagged, so every "here is why you were refused" frame had always been silently discarded. Plan 168 depends on 161-167 and remains independent of Plan 091, and adds no workflow, job, or matrix requirement.

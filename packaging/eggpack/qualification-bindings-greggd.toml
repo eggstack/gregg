@@ -1,0 +1,38 @@
+# The existing release workflow retains its version and --help smokes.
+# This bounded version command records the same executable identity in the plan.
+schema_version = 1
+
+[targets."x86_64-unknown-linux-gnu".smoke]
+selector = { kind = "direct" }
+argv = ["version"]
+timeout_ms = 5000
+stdout_limit = 1024
+stderr_limit = 1024
+
+[targets."aarch64-unknown-linux-gnu".smoke]
+selector = { kind = "direct" }
+argv = ["version"]
+timeout_ms = 5000
+stdout_limit = 1024
+stderr_limit = 1024
+
+[targets."x86_64-apple-darwin".smoke]
+selector = { kind = "direct" }
+argv = ["version"]
+timeout_ms = 5000
+stdout_limit = 1024
+stderr_limit = 1024
+
+[targets."aarch64-apple-darwin".smoke]
+selector = { kind = "direct" }
+argv = ["version"]
+timeout_ms = 5000
+stdout_limit = 1024
+stderr_limit = 1024
+
+[targets."x86_64-pc-windows-msvc".smoke]
+selector = { kind = "direct" }
+argv = ["version"]
+timeout_ms = 5000
+stdout_limit = 1024
+stderr_limit = 1024

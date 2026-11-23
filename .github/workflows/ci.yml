@@ -51,10 +51,9 @@ jobs:
 
   scripts:
     # The Rust gates above cannot see the installer, the maintenance scripts, or
-    # the Python harness that drives the TUI test drivers. Shellcheck previously
-    # ran only in the release workflow, against one file, with its findings
-    # discarded; these two steps make both script surfaces blocking.
-    name: Scripts (shellcheck + pytest)
+    # the Python harness that drives the TUI test drivers. Shellcheck and pytest
+    # remain blocking; the same job also exercises the pinned Eggpack contract.
+    name: Scripts (shellcheck + pytest + Eggpack contract)
     runs-on: ubuntu-latest
     steps:
       - name: Check out sources
@@ -64,6 +63,11 @@ jobs:
         uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           toolchain: stable
+
+      - name: Install Rust 1.89.0 for Eggpack
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: 1.89.0
 
       - name: Cache cargo registry and git
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -84,7 +88,12 @@ jobs:
 
       # One case shells out to the sustained runner, which builds the gregg test
       # binary first; it therefore needs the toolchain and a warm target dir.
+      - name: Build pinned Eggpack CLI for contract tests
+        run: bash scripts/build-pinned-eggpack.sh "$RUNNER_TEMP/eggpack/eggpack"
+
       - name: Script tests
+        env:
+          EGGPACK_CLI: ${{ runner.temp }}/eggpack/eggpack
         run: python3 -m pytest scripts/tests -q
 
   macos:

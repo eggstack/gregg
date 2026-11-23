@@ -72,6 +72,23 @@ jobs:
             --input-tag "${DISPATCH_TAG}" \
             --check-registry
 
+      - name: Install Rust 1.89.0 for pinned Eggpack
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: 1.89.0
+
+      - name: Validate release contract with pinned Eggpack
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          bash scripts/release-eggpack-preflight.sh \
+            "$RELEASE_TAG" \
+            "$RELEASE_VERSION" \
+            "$(git rev-parse HEAD)"
+
   build-linux-x86_64:
     name: Linux x86_64 (glibc 2.17)
     needs: preflight

@@ -739,13 +739,9 @@ pub fn dispatch_with_config_intent(
     explicit: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match command {
-        Command::Run => {
-            // Delegate to the async run entry point.
-            // This is handled in main.rs.
-            Err(Box::new(std::io::Error::other(
-                "Command::Run is handled at the binary boundary",
-            )) as Box<dyn std::error::Error>)
-        }
+        Command::Run => Err(Box::new(std::io::Error::other(
+            "Command::Run is handled at the binary boundary",
+        )) as Box<dyn std::error::Error>),
         Command::Stop => {
             // Unix uses the local control socket and is dispatched at the
             // binary boundary (see main.rs) so it can return errors as the

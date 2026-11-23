@@ -348,6 +348,23 @@ service-management) are untouched. `Cargo.lock` is intentionally
 re-resolved under the new floor and all `--locked` repository/install
 paths remain valid.
 
+### Current dependency state (EggFetch 0.4.0 and Eggpack CLI 0.1.2)
+
+The Gregg client now declares eggfetch-core at version 0.4 and the lockfile resolves
+0.4.0. Its profile is unchanged: defaults remain off, with only
+`standard-http1` + `tls-rustls`. Eggfetch 0.4.0 adds native-URI/request
+builder APIs and changes only the unrelated proxy feature implication; the
+features Gregg enables are unchanged. The broader 0.3 release also includes a
+read-timeout fix while waiting for response headers, covered by Gregg's existing
+poller/EggPool timeout tests.
+
+The release-preflight Eggpack CLI is pinned to the signed/tagged v0.1.2 source
+commit `35b3fc26de63437947aa4f36764c17bd0ebb9f65` in
+`packaging/eggpack/revision.txt` and is built with its lockfile. Eggup is
+not a workspace or Cargo dependency, so no Eggup code was added.
+
+The Plan 147 section below remains the historical 0.2.2 refresh record.
+
 ### Dependency dispositions (Plan 147, eggfetch 0.2 patch refresh)
 
 `Cargo.lock` now resolves published `eggfetch-core 0.2.2` while

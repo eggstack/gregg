@@ -51,6 +51,14 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   screen, and an OSC title or hyperlink sequence cannot retitle your terminal.
   Printable Unicode, including wide CJK, is left intact.
 
+### Changed
+
+- **Refresh the client transport and release-check tool:** `gregg` now resolves
+  `eggfetch-core 0.4.0` under the same lean `standard-http1` + `tls-rustls`
+  feature profile; the pinned Eggpack CLI uses tagged source release v0.1.2.
+  Eggup is not introduced because this workspace does not use it. The release
+  asset contract and updater policy remain unchanged.
+
 ### Fixed
 
 - **The privileged config-permission repair follows no links and no foreign
