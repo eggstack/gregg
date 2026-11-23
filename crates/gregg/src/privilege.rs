@@ -45,11 +45,14 @@ pub fn is_privileged() -> bool {
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
+    let Ok(elevation_size) = u32::try_from(std::mem::size_of::<TOKEN_ELEVATION>()) else {
+        return true;
+    };
     let mut token = std::ptr::null_mut();
     // SAFETY: `GetCurrentProcess` returns a pseudo-handle that must not be
     // closed and takes no arguments; `OpenProcessToken` writes exactly one
     // `HANDLE` through the pointer, which outlives the call.
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token) } == 0 {
         return true;
     }
     let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
@@ -62,8 +65,8 @@ pub fn is_privileged() -> bool {
             token,
             TokenElevation,
             std::ptr::from_mut(&mut elevation).cast(),
-            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
-            &mut returned,
+            elevation_size,
+            &raw mut returned,
         )
     };
     // SAFETY: `token` was created by the successful `OpenProcessToken` above

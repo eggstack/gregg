@@ -890,6 +890,7 @@ mod tests {
     /// The permission repair only relaxes a file that *is* a Gregg config, so
     /// fixtures that assert a mode change must be parseable. A minimal valid
     /// document keeps them about permissions rather than about validation.
+    #[cfg(unix)]
     const VALID_TEST_CONFIG: &str =
         "name = \"greggd\"\nhost = \"127.0.0.1\"\nport = 11310\nsample_interval_ms = 1000\nstale_after_ms = 10000\n";
 
