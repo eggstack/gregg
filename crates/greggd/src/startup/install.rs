@@ -422,6 +422,7 @@ pub(crate) fn ensure_config_preserved(config_path: &Path) -> io::Result<()> {
 /// The repair runs as root during an install and `--config` carries
 /// operator-supplied data, so without this gate a path aimed at an unrelated
 /// root-owned `0600` file would be made world-readable.
+#[cfg(unix)]
 fn permission_repair_target_is_trusted(config_path: &Path) -> bool {
     config_path == Config::default_path() || Config::load(config_path).is_ok()
 }

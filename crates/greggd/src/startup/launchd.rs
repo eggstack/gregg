@@ -212,6 +212,7 @@ const GREGGD_SERVICE_GROUP: &str = "_greggd";
 const GREGGD_SERVICE_UID: u32 = 391;
 const GREGGD_SERVICE_GID: u32 = 391;
 /// Where launchd redirects `StandardOutPath`/`StandardErrorPath`.
+#[cfg(any(unix, test))]
 const GREGGD_LOG_PATH: &str = "/var/log/greggd.log";
 
 /// Create the hidden `_greggd` account the `LaunchDaemon` runs as.
@@ -388,6 +389,7 @@ fn is_regular_directory(path: &Path) -> bool {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)] // Preserve the shared install call's Unix Result signature.
 fn ensure_service_file_ownership(config_path: &Path) -> io::Result<()> {
     let _ = config_path;
     Ok(())
