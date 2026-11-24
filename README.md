@@ -121,6 +121,10 @@ gregg update                       Update this client
 gregg uninstall --dry-run          Preview removal
 
 greggd status                      Check local daemon health and startup state
+greggd job add NAME --schedule '0 2 * * *' -- PROGRAM [ARGS...]
+greggd job list                    List jobs in the selected config
+greggd job remove [NAME]           Remove by name or select interactively
+greggd edit                        Edit the complete daemon config
 greggd startup install             Register Unix startup, report Windows service state
 greggd restart                     Restart the daemon
 greggd update                      Update the daemon
@@ -131,6 +135,8 @@ The client daemon starts automatically when you run `gregg`. To keep it running
 when no TUI is open, use `gregg daemon startup install`. Client startup is
 always per-user. The monitored `greggd` daemon can be installed as a system
 service. See [Client](docs/client.md) and [Daemon](docs/daemon.md).
+
+`greggd job add` stores the executable and each argument as separate argv values after `--`; it does not invoke a shell. `job remove` without a name uses an interactive terminal selector. These commands and `greggd edit` honor `--config`, validate and atomically update that file, and do not signal or restart a running daemon: changes take effect on its next start. Adding a job never enables root execution; when running as Unix root, jobs still require `allow_privileged_jobs = true` in the config.
 
 ## Optional features
 

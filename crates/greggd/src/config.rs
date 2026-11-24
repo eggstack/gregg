@@ -585,6 +585,79 @@ impl Config {
         Ok(())
     }
 
+    /// Run an editor against a private candidate and commit only a valid config.
+    ///
+    /// The caller holds the config mutation lock for the duration of this
+    /// operation. The live file is never passed to the editor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if candidate creation, editor execution, parsing,
+    /// validation, or the final atomic write fails. The live file is unchanged
+    /// until the candidate has been parsed and validated.
+    pub(crate) fn edit_transaction(
+        &self,
+        path: &Path,
+        edit: impl FnOnce(&Path) -> Result<(), ConfigError>,
+    ) -> Result<(), ConfigError> {
+        let violations = self.validate();
+        if !violations.is_empty() {
+            return Err(ConfigError::Validation(violations));
+        }
+
+        let dir = path.parent().ok_or_else(|| ConfigError::AtomicWrite {
+            path: path.to_path_buf(),
+            source: AtomicWriteError::NoParentDirectory,
+        })?;
+        #[cfg(unix)]
+        ensure_config_directory(dir).map_err(|source| ConfigError::AtomicWrite {
+            path: path.to_path_buf(),
+            source: AtomicWriteError::Io(source),
+        })?;
+        #[cfg(not(unix))]
+        fs::create_dir_all(dir).map_err(|source| ConfigError::AtomicWrite {
+            path: path.to_path_buf(),
+            source: AtomicWriteError::Io(source),
+        })?;
+
+        let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let candidate = dir.join(format!(
+            ".greggd-edit-{}-{nanos}-{id}-{:08x}.toml",
+            std::process::id(),
+            temp_rand_suffix(nanos, id),
+        ));
+        let content = self.to_toml().map_err(|source| ConfigError::AtomicWrite {
+            path: path.to_path_buf(),
+            source: AtomicWriteError::Serialization(source),
+        })?;
+        let write_result = (|| -> std::io::Result<()> {
+            let mut file = create_secure_temp_file(&candidate)?;
+            file.write_all(content.as_bytes())?;
+            file.sync_all()?;
+            Ok(())
+        })();
+        if let Err(source) = write_result {
+            let _ = fs::remove_file(&candidate);
+            return Err(ConfigError::AtomicWrite {
+                path: path.to_path_buf(),
+                source: AtomicWriteError::Io(source),
+            });
+        }
+
+        if let Err(error) = edit(&candidate) {
+            let _ = fs::remove_file(&candidate);
+            return Err(error);
+        }
+
+        let parse_result = Self::load(&candidate);
+        let _ = fs::remove_file(&candidate);
+        let edited = parse_result?;
+        edited.write_atomic(path)
+    }
+
     /// Return a reference to the host field.
     #[must_use]
     pub fn host(&self) -> IpAddr {
@@ -849,6 +922,8 @@ pub enum ConfigError {
     Validation(Vec<ConfigViolation>),
     /// Root must explicitly acknowledge scheduled command execution.
     PrivilegedJobsOptInRequired,
+    /// The editor could not be launched or exited unsuccessfully.
+    EditorFailed { path: PathBuf, message: String },
     /// Atomic write operation failed.
     AtomicWrite {
         path: PathBuf,
@@ -878,6 +953,9 @@ impl fmt::Display for ConfigError {
                 f,
                 "scheduled jobs will execute as root; set allow_privileged_jobs = true to opt in"
             ),
+            Self::EditorFailed { path, message } => {
+                write!(f, "editor failed for {}: {message}", path.display())
+            }
             Self::AtomicWrite { path, source } => {
                 write!(f, "atomic write to {} failed: {source}", path.display())
             }
@@ -890,7 +968,9 @@ impl std::error::Error for ConfigError {
         match self {
             Self::Io { source, .. } => Some(source),
             Self::Parse { source, .. } => Some(source),
-            Self::Validation(_) | Self::PrivilegedJobsOptInRequired => None,
+            Self::Validation(_) | Self::PrivilegedJobsOptInRequired | Self::EditorFailed { .. } => {
+                None
+            }
             Self::AtomicWrite { source, .. } => Some(source),
         }
     }
@@ -1076,6 +1156,84 @@ mod tests {
         .unwrap();
         assert!(config.host.is_unspecified());
         assert!(config.is_valid());
+    }
+
+    #[test]
+    fn edit_transaction_commits_only_a_valid_private_candidate() {
+        let dir = std::env::temp_dir().join(format!(
+            "greggd-edit-transaction-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("greggd.toml");
+        let original = Config::default();
+        original.write_atomic(&path).unwrap();
+        let edited = Config {
+            port: 11319,
+            name: "edited".to_owned(),
+            ..original.clone()
+        };
+        original
+            .edit_transaction(&path, |candidate| {
+                assert_ne!(candidate, path.as_path());
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    assert_eq!(
+                        std::fs::metadata(candidate).unwrap().permissions().mode() & 0o777,
+                        0o600
+                    );
+                }
+                std::fs::write(candidate, edited.to_toml().unwrap()).unwrap();
+                Ok(())
+            })
+            .unwrap();
+        let stored = Config::load(&path).unwrap();
+        assert_eq!(stored.name, "edited");
+        assert_eq!(stored.port, 11319);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn edit_transaction_failures_preserve_original_bytes_and_clean_candidate() {
+        for (label, candidate_contents) in [
+            ("invalid-toml", Some("this = [")),
+            ("invalid-config", Some("name = 'bad'\nhost = '127.0.0.1'\nport = 0\nsample_interval_ms = 1000\nstale_after_ms = 10000\n")),
+            ("editor-failure", None),
+        ] {
+            let dir = std::env::temp_dir().join(format!(
+                "greggd-edit-{}-{}-{}",
+                label,
+                std::process::id(),
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("greggd.toml");
+            let original = Config::default();
+            original.write_atomic(&path).unwrap();
+            let before = std::fs::read(&path).unwrap();
+            let result = original.edit_transaction(&path, |candidate| {
+                if let Some(contents) = candidate_contents {
+                    std::fs::write(candidate, contents).unwrap();
+                    Ok(())
+                } else {
+                    Err(ConfigError::EditorFailed {
+                        path: candidate.to_path_buf(),
+                        message: "controlled editor failure".to_owned(),
+                    })
+                }
+            });
+            assert!(result.is_err(), "{label} must fail");
+            assert_eq!(std::fs::read(&path).unwrap(), before, "{label} changed live config");
+            assert!(std::fs::read_dir(&dir).unwrap().all(|entry| {
+                !entry.unwrap().file_name().to_string_lossy().starts_with(".greggd-edit-")
+            }), "{label} left a candidate behind");
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 
     fn test_job(name: &str) -> ScheduledJobConfig {

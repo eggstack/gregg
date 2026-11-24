@@ -56,6 +56,8 @@ in command arguments or output. See the
 [daemon guide](https://github.com/eggstack/gregg/blob/main/docs/daemon.md#scheduled-maintenance)
 for configuration and limits.
 
+Manage local jobs in the selected config with `greggd job add NAME --schedule '0 2 * * *' -- PROGRAM [ARGS...]`, `greggd job list`, and `greggd job remove [NAME]`. The `--` separator preserves the executable and each argument as distinct argv values; no shell is involved. Omitting the remove name opens a terminal selector, while named removal is noninteractive. `greggd edit` opens the complete config using `$VISUAL`, `$EDITOR`, or a platform fallback, edits a private candidate, and commits only after parsing and validation. All these commands honor `--config`; changes are atomic and take effect on the next daemon start without restarting a running instance. The existing `allow_privileged_jobs` opt-in is never changed implicitly.
+
 ## API and security
 
 The API is read-only. See the

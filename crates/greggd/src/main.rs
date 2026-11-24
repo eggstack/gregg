@@ -120,6 +120,12 @@ fn classify_error(error: &(dyn Error + 'static)) -> greggd::cli::ExitCode {
     if let Some(error) = error.downcast_ref::<greggd::config::ConfigError>() {
         return greggd::cli::ExitCode::from(error);
     }
+    if error
+        .downcast_ref::<greggd::cli::JobCommandError>()
+        .is_some()
+    {
+        return greggd::cli::ExitCode::ConfigError;
+    }
     if let Some(error) = error.downcast_ref::<greggd::cli::ConfigValidationError>() {
         let _ = error;
         return greggd::cli::ExitCode::ConfigError;
@@ -203,6 +209,9 @@ mod tests {
             classify_error(&validation),
             greggd::cli::ExitCode::ConfigError
         );
+
+        let job = greggd::cli::JobCommandError("duplicate job".to_owned());
+        assert_eq!(classify_error(&job), greggd::cli::ExitCode::ConfigError);
 
         let update_permission = greggd::update::UpdateError::PermissionDenied {
             message: "permission denied writing to /usr/local/bin".to_string(),

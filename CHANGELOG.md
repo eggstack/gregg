@@ -9,6 +9,14 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Scheduled-job CLI and transactional daemon editor (Plan 196):** add, list,
+  and remove local jobs with `greggd job add/list/remove`; omission of the remove
+  name opens a small terminal selector. `greggd edit` edits the complete daemon
+  config through a private candidate and commits only after validation. Job
+  commands preserve direct argv (no shell), honor `--config`, leave the root-job
+  opt-in unchanged, and do not reload/restart a running daemon; changes take
+  effect on its next start.
+
 - **Interactive CLI removal:** `gregg remove` and `gregg eggpool remove` now
   list configured entries when no target is supplied. Use `j`/`k` or Up/Down
   to select and Enter to remove; Esc, `q`, or Ctrl-C cancels. Target-based

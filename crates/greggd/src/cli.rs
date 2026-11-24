@@ -17,6 +17,8 @@ use crate::config::{Config, ConfigError};
 use crate::service::ServiceError;
 use crate::startup::StartupMethodArg;
 
+mod job_selector;
+
 /// Lightweight metrics daemon for the gregg monitoring system.
 #[derive(Parser)]
 #[command(
@@ -85,6 +87,17 @@ pub enum Command {
         /// The new port number (1-65535).
         port: u16,
     },
+    /// Manage local scheduled jobs in this config; changes apply on the next daemon start.
+    Job {
+        #[command(subcommand)]
+        command: JobCommand,
+    },
+    /// Edit the complete daemon configuration transactionally.
+    ///
+    /// Resolves the editor from $VISUAL, $EDITOR, then platform fallbacks. The
+    /// editor receives a private candidate file directly, never through a shell.
+    /// Changes apply on the next daemon start; a running daemon is not restarted.
+    Edit,
     /// Uninstall the greggd daemon binary and its Gregg-owned startup integration.
     ///
     /// Removes only the exact invoked executable; a sibling `gregg` binary
@@ -127,6 +140,46 @@ pub enum Command {
     #[cfg(target_os = "windows")]
     #[command(hide = true)]
     Service,
+}
+
+/// Scheduled-job management commands.
+#[derive(Subcommand)]
+pub enum JobCommand {
+    /// Add one validated local scheduled command.
+    Add {
+        /// Stable operator-facing job name.
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// Five-field cron schedule in local civil time.
+        #[arg(long, value_name = "SCHEDULE")]
+        schedule: String,
+        /// Working directory for the command.
+        #[arg(long, value_name = "DIR")]
+        working_dir: Option<PathBuf>,
+        /// Maximum allowed cached load before the job is admitted.
+        #[arg(long, value_name = "LOAD")]
+        max_load: Option<f32>,
+        /// Load averaging period: 1m, 5m, or 15m. Requires --max-load.
+        #[arg(long, value_name = "WINDOW")]
+        load_window: Option<String>,
+        /// Delay between retries while the load gate is closed.
+        #[arg(long, value_name = "MILLISECONDS")]
+        retry_interval_ms: Option<u64>,
+        /// Maximum time a due occurrence may wait for the load gate.
+        #[arg(long, value_name = "MILLISECONDS")]
+        max_wait_ms: Option<u64>,
+        /// Executable and argv values; required after the -- separator.
+        #[arg(last = true, required = true, num_args = 1.., allow_hyphen_values = true, value_name = "PROGRAM [ARGS...]")]
+        command: Vec<String>,
+    },
+    /// List configured jobs and their argv values without changing the config.
+    List,
+    /// Remove one job by exact name, or select one interactively when omitted.
+    Remove {
+        /// Exact configured job name; omit to open the terminal selector.
+        #[arg(value_name = "NAME")]
+        name: Option<String>,
+    },
 }
 
 /// Startup subcommands for automatic startup management.
@@ -289,6 +342,18 @@ pub fn load_config(path: &std::path::Path, explicit: bool) -> Result<Config, Con
 #[derive(Debug)]
 pub struct ConfigValidationError(pub Vec<crate::config::ConfigViolation>);
 
+/// A user-facing config command failure that is not a schema violation.
+#[derive(Debug)]
+pub struct JobCommandError(pub String);
+
+impl fmt::Display for JobCommandError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for JobCommandError {}
+
 impl fmt::Display for ConfigValidationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "configuration validation failed:")?;
@@ -314,9 +379,20 @@ pub fn mutate_config(
     explicit: bool,
     mutate: impl FnOnce(&mut Config),
 ) -> Result<(), Box<dyn std::error::Error>> {
+    mutate_config_with_result(path, explicit, |config| {
+        mutate(config);
+        Ok(())
+    })
+}
+
+fn mutate_config_with_result<T>(
+    path: &std::path::Path,
+    explicit: bool,
+    mutate: impl FnOnce(&mut Config) -> Result<T, Box<dyn std::error::Error>>,
+) -> Result<T, Box<dyn std::error::Error>> {
     let _lock = acquire_config_lock(path);
     let mut config = load_config(path, explicit)?;
-    mutate(&mut config);
+    let result = mutate(&mut config)?;
 
     let violations = config.validate();
     if !violations.is_empty() {
@@ -324,8 +400,220 @@ pub fn mutate_config(
     }
 
     config.write_atomic(path)?;
+    Ok(result)
+}
 
+fn dispatch_job_command(
+    command: &JobCommand,
+    config_path: &std::path::Path,
+    explicit: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match command {
+        JobCommand::Add {
+            name,
+            schedule,
+            working_dir,
+            max_load,
+            load_window,
+            retry_interval_ms,
+            max_wait_ms,
+            command,
+        } => {
+            let job = crate::config::ScheduledJobConfig {
+                name: name.clone(),
+                schedule: schedule.clone(),
+                command: command.clone(),
+                working_dir: working_dir.clone(),
+                max_load: *max_load,
+                load_window: load_window.clone(),
+                retry_interval_ms: *retry_interval_ms,
+                max_wait_ms: *max_wait_ms,
+            };
+            mutate_config_with_result(config_path, explicit, |config| {
+                if config.jobs.iter().any(|existing| existing.name == job.name) {
+                    return Err(Box::new(JobCommandError(format!(
+                        "scheduled job {job_name:?} already exists",
+                        job_name = job.name
+                    ))));
+                }
+                config.jobs.push(job);
+                Ok(())
+            })?;
+            println!(
+                "Added scheduled job {name:?} in {}. Changes take effect on the next daemon start; a running daemon was not restarted.",
+                config_path.display()
+            );
+            Ok(())
+        }
+        JobCommand::List => {
+            let config = load_config(config_path, explicit)?;
+            print!("{}", render_job_list(config_path, &config));
+            Ok(())
+        }
+        JobCommand::Remove { name: Some(name) } => {
+            remove_named_job(config_path, explicit, name)?;
+            println!(
+                "Removed scheduled job {name:?} from {}. Changes take effect on the next daemon start; a running daemon was not restarted.",
+                config_path.display()
+            );
+            Ok(())
+        }
+        JobCommand::Remove { name: None } => {
+            let config = load_config(config_path, explicit)?;
+            if config.jobs.is_empty() {
+                println!("No scheduled jobs configured in {}.", config_path.display());
+                return Ok(());
+            }
+            let Some(index) = job_selector::select(&config.jobs)? else {
+                println!("Removal cancelled; configuration unchanged.");
+                return Ok(());
+            };
+            let name = config.jobs[index].name.clone();
+            remove_named_job(config_path, explicit, &name)?;
+            println!(
+                "Removed scheduled job {name:?} from {}. Changes take effect on the next daemon start; a running daemon was not restarted.",
+                config_path.display()
+            );
+            Ok(())
+        }
+    }
+}
+
+fn remove_named_job(
+    config_path: &std::path::Path,
+    explicit: bool,
+    name: &str,
+) -> Result<crate::config::ScheduledJobConfig, Box<dyn std::error::Error>> {
+    mutate_config_with_result(config_path, explicit, |config| {
+        let Some(index) = config.jobs.iter().position(|job| job.name == name) else {
+            return Err(Box::new(JobCommandError(format!(
+                "no scheduled job named {name:?} is configured"
+            ))));
+        };
+        Ok(config.jobs.remove(index))
+    })
+}
+
+fn render_job_list(config_path: &std::path::Path, config: &Config) -> String {
+    if config.jobs.is_empty() {
+        return format!(
+            "No scheduled jobs configured in {}.\n",
+            config_path.display()
+        );
+    }
+    let mut lines = vec![format!(
+        "Scheduled jobs in {} (config order):",
+        config_path.display()
+    )];
+    for job in &config.jobs {
+        lines.push(format!("- {}", job.name));
+        lines.push(format!("  schedule: {}", job.schedule));
+        lines.push(format!("  command argv: {:?}", job.command));
+        lines.push(format!(
+            "  working directory: {}",
+            job.working_dir
+                .as_ref()
+                .map_or_else(|| "(not set)".to_owned(), |path| path.display().to_string())
+        ));
+        if let Some(max_load) = job.max_load {
+            lines.push(format!(
+                "  load gate: max-load <= {max_load}, window {}, retry {} ms, max wait {} ms",
+                job.effective_load_window(),
+                job.effective_retry_interval_ms(),
+                job.effective_max_wait_ms()
+            ));
+        } else {
+            lines.push("  load gate: none".to_owned());
+        }
+    }
+    format!("{}\n", lines.join("\n"))
+}
+
+fn edit_config(
+    config_path: &std::path::Path,
+    explicit: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let editor = resolve_editor().ok_or_else(|| {
+        Box::new(ConfigError::EditorFailed {
+            path: config_path.to_path_buf(),
+            message: "no editor found; set $VISUAL or $EDITOR".to_owned(),
+        }) as Box<dyn std::error::Error>
+    })?;
+    edit_config_with_editor(config_path, explicit, &editor)
+}
+
+fn edit_config_with_editor(
+    config_path: &std::path::Path,
+    explicit: bool,
+    editor: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _lock = acquire_config_lock(config_path);
+    let config = load_config(config_path, explicit)?;
+    config.edit_transaction(config_path, |candidate| {
+        let status = ProcessCommand::new(editor)
+            .arg(candidate)
+            .status()
+            .map_err(|error| ConfigError::EditorFailed {
+                path: candidate.to_path_buf(),
+                message: format!("failed to launch editor {editor:?}: {error}"),
+            })?;
+        if !status.success() {
+            return Err(ConfigError::EditorFailed {
+                path: candidate.to_path_buf(),
+                message: format!("editor exited with status: {status}"),
+            });
+        }
+        Ok(())
+    })?;
+    println!(
+        "Updated daemon configuration at {}. Changes take effect on the next daemon start; a running daemon was not restarted.",
+        config_path.display()
+    );
     Ok(())
+}
+
+fn resolve_editor() -> Option<String> {
+    for variable in ["VISUAL", "EDITOR"] {
+        if let Ok(value) = std::env::var(variable) {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_owned());
+            }
+        }
+    }
+    #[cfg(windows)]
+    let fallbacks = ["hx", "code", "notepad"];
+    #[cfg(not(windows))]
+    let fallbacks = ["hx", "vim", "vi"];
+    fallbacks
+        .into_iter()
+        .find(|candidate| executable_exists(candidate))
+        .map(str::to_owned)
+}
+
+fn executable_exists(candidate: &str) -> bool {
+    let candidate_path = std::path::Path::new(candidate);
+    if candidate_path.is_absolute() || candidate_path.components().count() > 1 {
+        return candidate_path.is_file();
+    }
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    #[cfg(windows)]
+    let extensions = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_owned());
+    std::env::split_paths(&path).any(|directory| {
+        #[cfg(windows)]
+        {
+            directory.join(candidate).is_file()
+                || extensions
+                    .split(';')
+                    .any(|extension| directory.join(format!("{candidate}{extension}")).is_file())
+        }
+        #[cfg(not(windows))]
+        {
+            directory.join(candidate).is_file()
+        }
+    })
 }
 
 /// Advisory cross-process lock guard for daemon config mutation.
@@ -787,6 +1075,8 @@ pub fn dispatch_with_config_intent(
             println!("{}", display_address(&config));
             Ok(())
         }
+        Command::Job { command } => dispatch_job_command(command, config_path, explicit),
+        Command::Edit => edit_config(config_path, explicit),
         Command::Status => {
             let config = load_config(config_path, explicit)?;
             let report = crate::status::gather_status(
@@ -1129,6 +1419,365 @@ mod native_tests {
         assert_eq!(updated.port, 11320);
         assert!(updated.allow_privileged_jobs);
         assert_eq!(updated.jobs, config.jobs);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn plan196_config_path(label: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "greggd-plan196-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create test directory");
+        let path = dir.join("greggd.toml");
+        (dir, path)
+    }
+
+    #[test]
+    fn job_cli_parses_config_path_and_preserves_trailing_argv() {
+        let cli = Cli::try_parse_from([
+            "greggd",
+            "--config",
+            "/tmp/plan196-first.toml",
+            "job",
+            "add",
+            "rotate-logs",
+            "--schedule",
+            "0 2 * * *",
+            "--working-dir",
+            "/var/log",
+            "--",
+            "/usr/local/bin/rotate",
+            "--keep",
+            "14 days",
+        ])
+        .expect("valid job add command");
+        assert_eq!(
+            cli.config,
+            Some(std::path::PathBuf::from("/tmp/plan196-first.toml"))
+        );
+        let Command::Job {
+            command:
+                JobCommand::Add {
+                    name,
+                    schedule,
+                    working_dir,
+                    command,
+                    ..
+                },
+        } = cli.command
+        else {
+            panic!("expected job add");
+        };
+        assert_eq!(name, "rotate-logs");
+        assert_eq!(schedule, "0 2 * * *");
+        assert_eq!(working_dir, Some(std::path::PathBuf::from("/var/log")));
+        assert_eq!(
+            command,
+            vec![
+                "/usr/local/bin/rotate".to_owned(),
+                "--keep".to_owned(),
+                "14 days".to_owned()
+            ]
+        );
+
+        let cli = Cli::try_parse_from([
+            "greggd",
+            "job",
+            "add",
+            "x",
+            "--schedule",
+            "0 2 * * *",
+            "--config",
+            "/tmp/plan196-second.toml",
+            "--",
+            "program",
+            "two words",
+            "--literal",
+        ])
+        .expect("global config can follow the nested subcommand");
+        assert_eq!(
+            cli.config,
+            Some(std::path::PathBuf::from("/tmp/plan196-second.toml"))
+        );
+        let Command::Job {
+            command: JobCommand::Add { command, .. },
+        } = cli.command
+        else {
+            panic!("expected job add");
+        };
+        assert_eq!(
+            command,
+            vec![
+                "program".to_owned(),
+                "two words".to_owned(),
+                "--literal".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn job_and_edit_command_forms_are_explicit_and_bounded() {
+        assert!(matches!(
+            Cli::try_parse_from(["greggd", "job", "list"])
+                .unwrap()
+                .command,
+            Command::Job {
+                command: JobCommand::List
+            }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["greggd", "job", "remove"])
+                .unwrap()
+                .command,
+            Command::Job {
+                command: JobCommand::Remove { name: None }
+            }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["greggd", "job", "remove", "exact-name"]).unwrap().command,
+            Command::Job { command: JobCommand::Remove { name: Some(name) } } if name == "exact-name"
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["greggd", "edit"]).unwrap().command,
+            Command::Edit
+        ));
+        assert!(Cli::try_parse_from([
+            "greggd",
+            "job",
+            "add",
+            "missing-separator",
+            "--schedule",
+            "0 2 * * *",
+            "program"
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "greggd",
+            "job",
+            "add",
+            "missing-command",
+            "--schedule",
+            "0 2 * * *",
+            "--"
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from(["greggd", "job", "list", "unexpected"]).is_err());
+    }
+
+    #[test]
+    fn job_add_preserves_config_and_exact_argv_without_root_opt_in() {
+        let (dir, path) = plan196_config_path("add");
+        let mut original = Config::default();
+        original.name = "preserved-name".to_owned();
+        original.port = 11328;
+        original.scheduler_history_limit = Some(3);
+        original.write_atomic(&path).unwrap();
+        let command = JobCommand::Add {
+            name: "rotate-logs".to_owned(),
+            schedule: "0 2 * * *".to_owned(),
+            working_dir: Some(std::path::PathBuf::from("/var/log")),
+            max_load: None,
+            load_window: None,
+            retry_interval_ms: None,
+            max_wait_ms: None,
+            command: vec![
+                "/usr/local/bin/rotate".to_owned(),
+                "--keep".to_owned(),
+                "14 days".to_owned(),
+            ],
+        };
+        dispatch_job_command(&command, &path, true).unwrap();
+        let updated = Config::load(&path).unwrap();
+        assert_eq!(updated.name, "preserved-name");
+        assert_eq!(updated.port, 11328);
+        assert_eq!(updated.scheduler_history_limit, Some(3));
+        assert!(!updated.allow_privileged_jobs);
+        assert_eq!(updated.jobs.len(), 1);
+        assert_eq!(
+            updated.jobs[0].command,
+            vec![
+                "/usr/local/bin/rotate".to_owned(),
+                "--keep".to_owned(),
+                "14 days".to_owned()
+            ]
+        );
+        assert_eq!(
+            updated.jobs[0].working_dir,
+            Some(std::path::PathBuf::from("/var/log"))
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn invalid_or_duplicate_job_add_does_not_write_config() {
+        let (dir, path) = plan196_config_path("add-reject");
+        let mut original = Config::default();
+        original.jobs.push(crate::config::ScheduledJobConfig {
+            name: "duplicate".to_owned(),
+            schedule: "0 2 * * *".to_owned(),
+            command: vec!["program".to_owned()],
+            working_dir: None,
+            max_load: None,
+            load_window: None,
+            retry_interval_ms: None,
+            max_wait_ms: None,
+        });
+        original.write_atomic(&path).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let make_add = |name: &str, schedule: &str| JobCommand::Add {
+            name: name.to_owned(),
+            schedule: schedule.to_owned(),
+            working_dir: None,
+            max_load: None,
+            load_window: None,
+            retry_interval_ms: None,
+            max_wait_ms: None,
+            command: vec!["program".to_owned()],
+        };
+        let duplicate = dispatch_job_command(&make_add("duplicate", "0 3 * * *"), &path, true)
+            .expect_err("duplicate should fail");
+        assert!(duplicate.to_string().contains("already exists"));
+        let invalid = dispatch_job_command(&make_add("new-job", "not a schedule"), &path, true)
+            .expect_err("invalid schedule should fail");
+        assert!(invalid
+            .to_string()
+            .contains("configuration validation failed"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn job_list_is_read_only_and_renders_argv_as_escaped_values() {
+        let (dir, path) = plan196_config_path("list");
+        let mut config = Config::default();
+        config.jobs.push(crate::config::ScheduledJobConfig {
+            name: "quoted".to_owned(),
+            schedule: "0 2 * * *".to_owned(),
+            command: vec![
+                "program".to_owned(),
+                "two words".to_owned(),
+                "a\"b".to_owned(),
+            ],
+            working_dir: Some(std::path::PathBuf::from("/var/tmp")),
+            max_load: None,
+            load_window: None,
+            retry_interval_ms: None,
+            max_wait_ms: None,
+        });
+        config.write_atomic(&path).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let rendered = render_job_list(&path, &config);
+        assert!(rendered.contains(&format!("command argv: {:?}", config.jobs[0].command)));
+        assert!(rendered.contains("working directory: /var/tmp"));
+        dispatch_job_command(&JobCommand::List, &path, true).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn named_job_removal_is_exact_and_missing_name_does_not_write() {
+        let (dir, path) = plan196_config_path("remove");
+        let mut config = Config::default();
+        for name in ["first", "second", "third"] {
+            config.jobs.push(crate::config::ScheduledJobConfig {
+                name: name.to_owned(),
+                schedule: "0 2 * * *".to_owned(),
+                command: vec!["program".to_owned()],
+                working_dir: None,
+                max_load: None,
+                load_window: None,
+                retry_interval_ms: None,
+                max_wait_ms: None,
+            });
+        }
+        config.write_atomic(&path).unwrap();
+        remove_named_job(&path, true, "second").unwrap();
+        let updated = Config::load(&path).unwrap();
+        assert_eq!(
+            updated
+                .jobs
+                .iter()
+                .map(|job| job.name.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "third"]
+        );
+        let before = std::fs::read(&path).unwrap();
+        let missing =
+            remove_named_job(&path, true, "absent").expect_err("unknown name should fail");
+        assert!(missing.to_string().contains("no scheduled job named"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn omitted_name_non_tty_removal_refuses_without_writing() {
+        let (dir, path) = plan196_config_path("non-tty");
+        let mut config = Config::default();
+        config.jobs.push(crate::config::ScheduledJobConfig {
+            name: "existing".to_owned(),
+            schedule: "0 2 * * *".to_owned(),
+            command: vec!["program".to_owned()],
+            working_dir: None,
+            max_load: None,
+            load_window: None,
+            retry_interval_ms: None,
+            max_wait_ms: None,
+        });
+        config.write_atomic(&path).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let error = dispatch_job_command(&JobCommand::Remove { name: None }, &path, true)
+            .expect_err("non-TTY interactive selection should refuse");
+        assert!(error.to_string().contains("requires a terminal"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn edit_launches_editor_directly_with_one_candidate_argument() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (dir, path) = plan196_config_path("editor-direct");
+        Config::default().write_atomic(&path).unwrap();
+        let editor = dir.join("controlled-editor");
+        std::fs::write(
+            &editor,
+            "#!/bin/sh\n[ \"$#\" -eq 1 ] || exit 21\nprintf '%s\\n' 'name = \"edited\"' 'host = \"127.0.0.1\"' 'port = 11319' 'sample_interval_ms = 1000' 'stale_after_ms = 10000' > \"$1\"\n",
+        ).unwrap();
+        std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o700)).unwrap();
+        edit_config_with_editor(&path, true, editor.to_str().unwrap()).unwrap();
+        let updated = Config::load(&path).unwrap();
+        assert_eq!(updated.name, "edited");
+        assert_eq!(updated.port, 11319);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn editor_nonzero_exit_preserves_original_config() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (dir, path) = plan196_config_path("editor-failure");
+        Config::default().write_atomic(&path).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let editor = dir.join("failing-editor");
+        std::fs::write(&editor, "#!/bin/sh\nexit 7\n").unwrap();
+        std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let error = edit_config_with_editor(&path, true, editor.to_str().unwrap())
+            .expect_err("nonzero editor status should fail");
+        assert!(error.to_string().contains("editor exited with status"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(std::fs::read_dir(&dir).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".greggd-edit-")
+        }));
         let _ = std::fs::remove_dir_all(dir);
     }
 
