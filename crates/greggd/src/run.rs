@@ -19,7 +19,7 @@ use std::time::Duration;
 use gregg_protocol::v2::SCHEMA_VERSION_V2;
 use gregg_protocol::{ReadinessState, SCHEMA_VERSION_V1};
 use tokio::net::TcpListener;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{broadcast, mpsc, watch};
 use tracing::{info, warn};
 
 use crate::collector::SystemCollector;
@@ -142,9 +142,19 @@ pub async fn run_with_control_path<C: SystemCollector + 'static>(
     config: Config,
     config_path: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (shutdown, _control_socket) = shutdown_with_control(config_path)
+    let (rehash_tx, rehash_rx) = mpsc::channel(1);
+    let (shutdown, _control_socket) = shutdown_with_control(config_path, rehash_tx.clone())
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
-    run_with_shutdown(collector, config, shutdown).await
+    run_with_shutdown_on_ready_and_control(
+        collector,
+        config,
+        Some(config_path.to_path_buf()),
+        rehash_tx,
+        rehash_rx,
+        shutdown,
+        || Ok(()),
+    )
+    .await
 }
 
 /// Dispatch the foreground daemon entry point for the current platform.
@@ -173,9 +183,40 @@ pub async fn run_with_control_path_or_default<C: SystemCollector + 'static>(
     }
     #[cfg(target_os = "windows")]
     {
-        let _ = config_path;
-        run(collector, config).await
+        let shutdown = wait_for_shutdown_signal()?;
+        run_with_windows_control_path(collector, config, config_path, shutdown, || Ok(())).await
     }
+}
+
+/// Run with the protected Windows named-pipe rehash endpoint bound to this config.
+#[cfg(target_os = "windows")]
+pub(crate) async fn run_with_windows_control_path<C, S, F>(
+    collector: C,
+    config: Config,
+    config_path: &std::path::Path,
+    shutdown: S,
+    on_ready: F,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    C: SystemCollector + 'static,
+    S: std::future::Future,
+    S::Output: ShutdownResult,
+    F: FnOnce() -> Result<(), Box<dyn std::error::Error>>,
+{
+    let listener = crate::control_windows::bind_listener(config_path)
+        .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)?;
+    let (rehash_tx, rehash_rx) = mpsc::channel(1);
+    let _control_task = crate::control_windows::spawn_control_task(listener, rehash_tx.clone());
+    run_with_shutdown_on_ready_and_control(
+        collector,
+        config,
+        Some(config_path.to_path_buf()),
+        rehash_tx,
+        rehash_rx,
+        shutdown,
+        on_ready,
+    )
+    .await
 }
 
 /// Run the daemon with an externally provided shutdown source.
@@ -206,10 +247,32 @@ where
 /// The foreground entry point uses a no-op callback. The Windows SCM worker
 /// uses the seam to publish `RUNNING` only after all configuration validation,
 /// runtime setup, and listener binding have succeeded.
-#[allow(clippy::too_many_lines)]
 pub(crate) async fn run_with_shutdown_on_ready<C, S, F>(
     collector: C,
-    mut config: Config,
+    config: Config,
+    shutdown: S,
+    on_ready: F,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    C: SystemCollector + 'static,
+    S: std::future::Future,
+    S::Output: ShutdownResult,
+    F: FnOnce() -> Result<(), Box<dyn std::error::Error>>,
+{
+    let (rehash_tx, rehash_rx) = mpsc::channel(1);
+    run_with_shutdown_on_ready_and_control(
+        collector, config, None, rehash_tx, rehash_rx, shutdown, on_ready,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_lines)]
+async fn run_with_shutdown_on_ready_and_control<C, S, F>(
+    collector: C,
+    config: Config,
+    config_path: Option<std::path::PathBuf>,
+    _rehash_keepalive: mpsc::Sender<crate::local_control::RehashRequest>,
+    rehash_rx: mpsc::Receiver<crate::local_control::RehashRequest>,
     shutdown: S,
     on_ready: F,
 ) -> Result<(), Box<dyn std::error::Error>>
@@ -273,7 +336,6 @@ where
     // Plan 163: the scheduler publication handle exists even when no job is
     // configured, so `/v2/scheduler` answers a valid empty document instead of
     // `404`. The scheduler task replaces it with the live handle when it starts.
-    let history_limit = config.scheduler_history_limit();
     let scheduler_publisher = SchedulerPublisher::empty();
     let server_state = ServerState::with_stale_policy_and_scheduler(
         DEFAULT_MAX_CONSECUTIVE_FAILURES,
@@ -302,27 +364,23 @@ where
         return Err(error);
     }
 
-    let (load_tx, scheduler_handle) = if config.jobs.is_empty() {
-        (None, None)
-    } else {
-        let (load_tx, load_rx) = watch::channel(LoadGateState::UNAVAILABLE);
-        let scheduler_jobs = std::mem::take(&mut config.jobs);
-        let shutdown_rx = shutdown_tx.subscribe();
-        let handle = tokio::spawn(async move {
-            // A scheduler failure stays a supervised daemon failure: it must
-            // not be reported as a fabricated empty scheduler document.
-            scheduler::run(
-                scheduler_jobs,
-                history_limit,
-                scheduler_publisher,
-                load_rx,
-                shutdown_rx,
-            )
-            .await
-            .unwrap_or_else(|error| panic!("maintenance scheduler failed: {error}"));
-        });
-        (Some(load_tx), Some(handle))
-    };
+    // The scheduler task is daemon-lifetime even with an empty initial job
+    // set: a later explicit REHASH can add the first job without replacing the
+    // engine, history publisher, or active-child slot.
+    let (load_tx, load_rx) = watch::channel(LoadGateState::UNAVAILABLE);
+    let shutdown_rx = shutdown_tx.subscribe();
+    let scheduler_handle = tokio::spawn(async move {
+        scheduler::run(
+            config,
+            config_path,
+            scheduler_publisher,
+            load_rx,
+            shutdown_rx,
+            rehash_rx,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("maintenance scheduler failed: {error}"));
+    });
 
     // Spawn the sampler task.
     let sampler_handle = {
@@ -336,33 +394,28 @@ where
                     let state = state.clone();
                     let load_tx = load_tx.clone();
                     async move {
-                        if let Some(load_tx) = load_tx {
-                            let load = snap_v2.as_deref().and_then(|payload| payload.snapshot.load);
-                            let _ = load_tx.send(LoadGateState { readiness, load });
-                        }
+                        let load = snap_v2.as_deref().and_then(|payload| payload.snapshot.load);
+                        let _ = load_tx.send(LoadGateState { readiness, load });
                         sync_sampler_state(&state, readiness, snap, snap_v2).await;
                     }
                 })
                 .await;
         };
-        if let Some(mut scheduler_handle) = scheduler_handle {
-            tokio::spawn(async move {
-                tokio::pin!(sampler_task);
-                tokio::select! {
-                    () = &mut sampler_task => {
-                        if let Err(error) = scheduler_handle.await {
-                            panic!("maintenance scheduler task failed: {error}");
-                        }
-                    }
-                    result = &mut scheduler_handle => match result {
-                        Ok(()) => sampler_task.await,
-                        Err(error) => panic!("maintenance scheduler task failed: {error}"),
+        let mut scheduler_handle = scheduler_handle;
+        tokio::spawn(async move {
+            tokio::pin!(sampler_task);
+            tokio::select! {
+                () = &mut sampler_task => {
+                    if let Err(error) = scheduler_handle.await {
+                        panic!("maintenance scheduler task failed: {error}");
                     }
                 }
-            })
-        } else {
-            tokio::spawn(sampler_task)
-        }
+                result = &mut scheduler_handle => match result {
+                    Ok(()) => sampler_task.await,
+                    Err(error) => panic!("maintenance scheduler task failed: {error}"),
+                }
+            }
+        })
     };
 
     // Keep the typed EggServe completion future under the existing task
@@ -618,6 +671,7 @@ fn wait_for_shutdown_signal(
 #[cfg(unix)]
 fn shutdown_with_control(
     config_path: &std::path::Path,
+    rehash_tx: mpsc::Sender<crate::local_control::RehashRequest>,
 ) -> Result<
     (
         impl std::future::Future<Output = &'static str>,
@@ -632,7 +686,7 @@ fn shutdown_with_control(
     let (stop_rx, guard) = match bound {
         control::ControlBind::Bound { listener, path } => {
             let guard = control::ControlSocketGuard::new(path.clone());
-            let _handle = control::spawn_stop_task(listener, path, stop_tx);
+            let _handle = control::spawn_control_task(listener, Some(rehash_tx), stop_tx);
             (Some(stop_rx), guard)
         }
         control::ControlBind::NotBound => {

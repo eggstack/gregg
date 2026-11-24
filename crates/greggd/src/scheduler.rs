@@ -4,6 +4,7 @@ pub(crate) mod observation;
 pub(crate) mod schedule;
 
 use std::process::{ExitStatus, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Local};
@@ -12,10 +13,11 @@ use gregg_protocol::{
 };
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{broadcast, mpsc, watch, Semaphore};
 use tokio::time::Instant;
 
-use crate::config::{ScheduledJobConfig, MAX_JOBS};
+use crate::config::{Config, ScheduledJobConfig, MAX_JOBS};
+use crate::local_control::{RehashRejection, RehashRequest, RehashResponse};
 use observation::{
     drain_into, drain_step, job_state, OutputTail, SchedulerObserver, SchedulerPublisher,
     TerminalRecord,
@@ -109,6 +111,7 @@ struct PendingOccurrence {
 /// validated configuration so a launch decision never copies it.
 #[derive(Debug)]
 struct JobState {
+    history_id: u64,
     schedule: LocalSchedule,
     next_due: DateTime<Local>,
     pending: Option<PendingOccurrence>,
@@ -121,8 +124,8 @@ struct JobState {
 }
 
 #[derive(Debug)]
-struct Engine<'a> {
-    configs: &'a [ScheduledJobConfig],
+struct Engine {
+    configs: Vec<ScheduledJobConfig>,
     states: Vec<JobState>,
     /// Plan 163: bounded history plus the published read-only snapshot. The
     /// engine owns it because it is the only thing that knows when an
@@ -138,6 +141,8 @@ struct Launch {
     pending_age: Duration,
     observed_load: Option<f32>,
     load_window: Option<&'static str>,
+    /// Stable history identity of the job definition at launch.
+    history_id: u64,
     /// Civil occurrence this run was scheduled for.
     scheduled: DateTime<Local>,
     /// Whether later civil occurrences were folded into this run.
@@ -172,9 +177,9 @@ fn load_gate(
     ))
 }
 
-impl<'a> Engine<'a> {
+impl Engine {
     fn new(
-        configs: &'a [ScheduledJobConfig],
+        configs: &[ScheduledJobConfig],
         wall_now: DateTime<Local>,
         history_limit: usize,
         publisher: SchedulerPublisher,
@@ -182,32 +187,106 @@ impl<'a> Engine<'a> {
         if configs.len() > MAX_JOBS {
             return Err(format!("scheduler has more than {MAX_JOBS} jobs"));
         }
-        // Established here, not in a caller: `next_deadline` has no deadline to
-        // return without a job, so an empty set would panic inside the wake
-        // loop rather than fail the way every other configuration error does.
-        if configs.is_empty() {
-            return Err("scheduler requires at least one job".to_owned());
-        }
+        let names: Vec<String> = configs.iter().map(|config| config.name.clone()).collect();
+        let mut observer = SchedulerObserver::new(&names, history_limit, now_unix_ms(), publisher);
+        let mut owned_configs = Vec::with_capacity(configs.len());
         let mut states = Vec::with_capacity(configs.len());
         for config in configs {
             let schedule = LocalSchedule::parse(&config.schedule)?;
             let next_due = schedule
                 .next_after(&wall_now)
                 .map_err(|error| format!("job {:?}: {error}", config.name))?;
+            let history_id = observer.ensure_history(&config.name);
             states.push(JobState {
+                history_id,
                 schedule,
                 next_due,
                 pending: None,
                 last_gate: None,
             });
+            owned_configs.push(config.clone());
         }
-        let names: Vec<String> = configs.iter().map(|config| config.name.clone()).collect();
-        let observer = SchedulerObserver::new(&names, history_limit, now_unix_ms(), publisher);
+        let history_ids: Vec<u64> = states.iter().map(|state| state.history_id).collect();
+        observer.reconcile_history(&history_ids, None);
         Ok(Self {
-            configs,
+            configs: owned_configs,
             states,
             observer,
         })
+    }
+
+    /// Apply a validated job set without replacing this engine or its observer.
+    /// Existing states survive only when the complete job definition is identical;
+    /// new or changed jobs become eligible at a strictly future occurrence.
+    fn reconcile(
+        &mut self,
+        configs: Vec<ScheduledJobConfig>,
+        wall_now: DateTime<Local>,
+        active_history_id: Option<u64>,
+    ) -> Result<bool, String> {
+        if configs.len() > MAX_JOBS {
+            return Err(format!("scheduler has more than {MAX_JOBS} jobs"));
+        }
+        if self.configs == configs {
+            return Ok(false);
+        }
+
+        // Parse and calculate every new schedule before changing engine state.
+        // A failure is atomic: the old config, pending work, and observer stay live.
+        let mut prepared = Vec::with_capacity(configs.len());
+        for config in configs {
+            let schedule = LocalSchedule::parse(&config.schedule)?;
+            let next_due = schedule
+                .next_after(&wall_now)
+                .map_err(|error| format!("job {:?}: {error}", config.name))?;
+            prepared.push((config, schedule, next_due));
+        }
+
+        let old = std::mem::take(&mut self.configs)
+            .into_iter()
+            .zip(std::mem::take(&mut self.states))
+            .map(Some)
+            .collect::<Vec<_>>();
+        let mut old = old;
+        let mut next_configs = Vec::with_capacity(prepared.len());
+        let mut next_states = Vec::with_capacity(prepared.len());
+        for (config, schedule, next_due) in prepared {
+            let unchanged = old.iter().position(|entry| {
+                entry
+                    .as_ref()
+                    .is_some_and(|(previous, _)| previous == &config)
+            });
+            if let Some(index) = unchanged {
+                let (previous, state) = old[index].take().expect("matched old job exists");
+                debug_assert_eq!(previous, config);
+                next_configs.push(config);
+                next_states.push(state);
+            } else {
+                let history_id = self.observer.ensure_history(&config.name);
+                next_states.push(JobState {
+                    history_id,
+                    schedule,
+                    next_due,
+                    pending: None,
+                    last_gate: None,
+                });
+                next_configs.push(config);
+            }
+        }
+        let current_history_ids: Vec<u64> =
+            next_states.iter().map(|state| state.history_id).collect();
+        self.observer
+            .reconcile_history(&current_history_ids, active_history_id);
+        self.configs = next_configs;
+        self.states = next_states;
+        Ok(true)
+    }
+
+    /// Reconcile retained history after an active child has completed.
+    fn retire_finished_history(&mut self) {
+        let current_history_ids: Vec<u64> =
+            self.states.iter().map(|state| state.history_id).collect();
+        self.observer.reconcile_history(&current_history_ids, None);
     }
 
     /// Publish current live state, skipping an unchanged state.
@@ -216,14 +295,13 @@ impl<'a> Engine<'a> {
     /// scheduler wake. Because it compares against the last publication, the
     /// Plan-160 one-minute reconciliation wake publishes nothing when no
     /// externally visible state changed.
-    async fn publish(&mut self, wall_now: DateTime<Local>, running: Option<(usize, u64)>) {
+    async fn publish(&mut self, wall_now: DateTime<Local>, running: Option<(u64, u64)>) {
         let jobs: Vec<SchedulerJobV2> = self
             .states
             .iter()
-            .enumerate()
-            .map(|(index, state)| {
-                let config = &self.configs[index];
-                let running_here = running.filter(|(active, _)| *active == index);
+            .zip(&self.configs)
+            .map(|(state, config)| {
+                let running_here = running.filter(|(active, _)| *active == state.history_id);
                 // A load gate is holding the occurrence back exactly when a
                 // gate decision exists, nothing is running for this job, and
                 // the occurrence is still waiting. The retry instant is then
@@ -257,7 +335,7 @@ impl<'a> Engine<'a> {
                         })
                         .flatten(),
                     running_since_unix_ms: running_here.map(|(_, started)| started),
-                    last: self.observer.last_summary(index),
+                    last: self.observer.last_summary(state.history_id),
                 }
             })
             .collect();
@@ -279,14 +357,14 @@ impl<'a> Engine<'a> {
     /// deferred, and with `Some(winner)` the ordering filter keeps the
     /// documented "visited before the winner" boundary.
     fn defer_blocked_before(
-        &mut self,
+        states: &mut [JobState],
+        configs: &[ScheduledJobConfig],
         winner: Option<(Instant, usize)>,
         now: Instant,
         unix_now: u64,
         load: LoadGateState,
     ) {
-        let configs = self.configs;
-        for (blocked, state) in self.states.iter_mut().enumerate() {
+        for (blocked, state) in states.iter_mut().enumerate() {
             let Some(pending) = state.pending.as_ref() else {
                 continue;
             };
@@ -340,13 +418,12 @@ impl<'a> Engine<'a> {
     /// ran; omitting it would make the recent-runs display quietly dishonest.
     /// Returns the pending age for the existing log line.
     fn take_expired(
-        &mut self,
-        index: usize,
+        observer: &mut SchedulerObserver,
+        state: &mut JobState,
         now: Instant,
         config: &ScheduledJobConfig,
         load: LoadGateState,
     ) -> Option<u64> {
-        let state = &mut self.states[index];
         let load_blocked = load_gate(config, load).is_some_and(|(allowed, ..)| !allowed);
         let expired = load_blocked
             && state.pending.as_ref().is_some_and(|pending| {
@@ -358,8 +435,8 @@ impl<'a> Engine<'a> {
         }
         let pending = state.pending.take().expect("pending checked above");
         let pending_age_ms = duration_millis(now.saturating_duration_since(pending.since));
-        self.observer.record_terminal(
-            index,
+        observer.record_terminal(
+            state.history_id,
             TerminalRecord::without_child(
                 pending.scheduled.timestamp_millis().max(0).unsigned_abs(),
                 now_unix_ms(),
@@ -379,7 +456,7 @@ impl<'a> Engine<'a> {
         load: LoadGateState,
         slot_available: bool,
     ) -> Result<Option<Launch>, String> {
-        let configs = self.configs;
+        let configs = &self.configs;
         let unix_now = wall_now.timestamp_millis().max(0).unsigned_abs();
         for (index, state) in self.states.iter_mut().enumerate() {
             let config = &configs[index];
@@ -416,8 +493,11 @@ impl<'a> Engine<'a> {
             }
         }
         // Expiry needs the observer, which is a separate field from `states`.
+        let (states, observer) = (&mut self.states, &mut self.observer);
         for (index, config) in configs.iter().enumerate() {
-            if let Some(pending_age_ms) = self.take_expired(index, now, config, load) {
+            if let Some(pending_age_ms) =
+                Self::take_expired(observer, &mut states[index], now, config, load)
+            {
                 tracing::info!(
                     job = %config.name,
                     pending_age_ms,
@@ -451,14 +531,21 @@ impl<'a> Engine<'a> {
         let Some((since, index)) = selected else {
             // Nothing was eligible. Every load-blocked candidate is still
             // rescheduled here so no pending keeps an elapsed `retry_at`.
-            self.defer_blocked_before(None, now, unix_now, load);
+            Self::defer_blocked_before(&mut self.states, configs, None, now, unix_now, load);
             return Ok(None);
         };
 
         // Defer every load-blocked candidate that would have been visited
         // before the winner, so an older blocked job neither hides nor is
         // hidden by the job that takes the free global slot.
-        self.defer_blocked_before(Some((since, index)), now, unix_now, load);
+        Self::defer_blocked_before(
+            &mut self.states,
+            configs,
+            Some((since, index)),
+            now,
+            unix_now,
+            load,
+        );
 
         let pending = self.states[index]
             .pending
@@ -477,6 +564,7 @@ impl<'a> Engine<'a> {
         });
         Ok(Some(Launch {
             index,
+            history_id: self.states[index].history_id,
             pending_age: now.saturating_duration_since(pending.since),
             observed_load: gate.and_then(|(_, _, observed, _)| observed),
             load_window: gate.map(|(_, window, _, _)| window),
@@ -524,7 +612,7 @@ impl<'a> Engine<'a> {
                 }
             }
         }
-        deadline.expect("a scheduler is started only with at least one job")
+        deadline.unwrap_or(now + MAX_CIVIL_RECHECK)
     }
 
     #[cfg(test)]
@@ -537,7 +625,7 @@ impl<'a> Engine<'a> {
 }
 
 /// A running child plus everything needed to finalize its terminal record.
-struct RunningChild<'a> {
+struct RunningChild {
     child: tokio::process::Child,
     /// Piped only when history capture is enabled; otherwise both are `None`
     /// and the child keeps the original null streams.
@@ -554,11 +642,11 @@ struct RunningChild<'a> {
     /// tail here makes a cancelled drain lose nothing it had folded in.
     stdout_tail: OutputTail,
     stderr_tail: OutputTail,
-    /// Index into the configured job set, so every publication can name the
-    /// job that actually holds the global child slot — and every terminal
-    /// record is attributed to the job that was actually launched.
-    index: usize,
-    job_name: &'a str,
+    /// Stable identity of the launched job history, independent of later
+    /// vector reordering or removal during live reconciliation.
+    history_id: u64,
+    /// Frozen launch-time name; never borrowed from a replaceable config vector.
+    job_name: String,
     started: Instant,
     started_unix_ms: u64,
     scheduled_unix_ms: u64,
@@ -583,7 +671,7 @@ struct RunningChild<'a> {
     stderr_done: bool,
 }
 
-impl RunningChild<'_> {
+impl RunningChild {
     /// Freeze the direct child's terminal execution event and open its
     /// bounded post-exit output settle window.
     ///
@@ -655,7 +743,7 @@ struct ChildCompletion {
 ///    child slot after the scheduled child is gone, while never blocking the
 ///    scheduler to capture a descendant's later output. Within that budget the
 ///    two streams progress independently: see [`settle_output`].
-async fn await_child_completion(child: &mut RunningChild<'_>) -> ChildCompletion {
+async fn await_child_completion(child: &mut RunningChild) -> ChildCompletion {
     if child.exit.is_none() {
         // The inner block scopes the drain borrows so the frozen exit can be
         // installed as soon as the select resolves.
@@ -805,6 +893,8 @@ async fn settle_output<O, E>(
 
 enum SchedulerWake {
     Child(Option<ChildCompletion>),
+    Rehash(RehashRequest),
+    RehashChannelClosed,
     Deadline,
     Shutdown,
 }
@@ -840,8 +930,8 @@ struct FinishedChild {
 /// duration come from the completion's frozen exit event, never from the moment
 /// the record is assembled.
 fn finish_child(
-    engine: &mut Engine<'_>,
-    child: &RunningChild<'_>,
+    engine: &mut Engine,
+    child: &RunningChild,
     completion: ChildCompletion,
 ) -> FinishedChild {
     let (outcome, exit_code, signal) = match completion.status {
@@ -863,7 +953,7 @@ fn finish_child(
         }
     };
     let sequence = engine.observer.record_terminal(
-        child.index,
+        child.history_id,
         TerminalRecord {
             scheduled_unix_ms: child.scheduled_unix_ms,
             started_unix_ms: Some(child.started_unix_ms),
@@ -889,9 +979,9 @@ fn finish_child(
 
 fn start_child(
     job: &ScheduledJobConfig,
-    index: usize,
+    history_id: u64,
     capture_output: bool,
-) -> Result<RunningChild<'_>, String> {
+) -> Result<RunningChild, String> {
     let Some(executable) = job.command.first() else {
         return Err("validated command has no executable".to_owned());
     };
@@ -929,8 +1019,8 @@ fn start_child(
         stderr,
         stdout_tail: OutputTail::new(),
         stderr_tail: OutputTail::new(),
-        index,
-        job_name: &job.name,
+        history_id,
+        job_name: job.name.clone(),
         started: Instant::now(),
         started_unix_ms: now_unix_ms(),
         scheduled_unix_ms: 0,
@@ -943,6 +1033,98 @@ fn start_child(
     })
 }
 
+const REHASH_LOAD_DEADLINE: Duration = Duration::from_millis(750);
+
+#[derive(Debug)]
+enum RehashLoadFailure {
+    Busy,
+    TimedOut,
+    Config(crate::config::ConfigError),
+    Worker(String),
+}
+
+/// Run bounded config I/O away from the current-thread runtime. The semaphore
+/// permit lives inside the blocking closure, so a timed-out filesystem read
+/// cannot cause repeated rehash requests to accumulate more blocked workers.
+async fn bounded_rehash_load<F>(
+    load_gate: Arc<Semaphore>,
+    deadline: Duration,
+    load: F,
+) -> Result<Config, RehashLoadFailure>
+where
+    F: FnOnce() -> Result<Config, crate::config::ConfigError> + Send + 'static,
+{
+    let permit = load_gate
+        .try_acquire_owned()
+        .map_err(|_| RehashLoadFailure::Busy)?;
+    let mut task = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        load()
+    });
+    match tokio::time::timeout(deadline, &mut task).await {
+        Ok(Ok(Ok(config))) => Ok(config),
+        Ok(Ok(Err(error))) => Err(RehashLoadFailure::Config(error)),
+        Ok(Err(error)) => Err(RehashLoadFailure::Worker(error.to_string())),
+        Err(_) => Err(RehashLoadFailure::TimedOut),
+    }
+}
+
+async fn prepare_rehash(
+    config_path: Option<&std::path::Path>,
+    active_config: &mut Config,
+    engine: &mut Engine,
+    active_history_id: Option<u64>,
+    is_unix_root: bool,
+    load_gate: Arc<Semaphore>,
+) -> RehashResponse {
+    let Some(config_path) = config_path else {
+        return RehashResponse::Rejected(RehashRejection::ControlUnavailable);
+    };
+    let path = config_path.to_path_buf();
+    let candidate = match bounded_rehash_load(load_gate, REHASH_LOAD_DEADLINE, move || {
+        Config::load_for_rehash(&path)
+    })
+    .await
+    {
+        Ok(config) => config,
+        Err(RehashLoadFailure::Busy) => return RehashResponse::Busy,
+        Err(RehashLoadFailure::TimedOut) => return RehashResponse::Uncertain,
+        Err(RehashLoadFailure::Config(error)) => {
+            tracing::info!(error = %error, "scheduled-job rehash config rejected");
+            return RehashResponse::Rejected(RehashRejection::InvalidConfig);
+        }
+        Err(RehashLoadFailure::Worker(error)) => {
+            tracing::warn!(%error, "scheduled-job rehash config worker failed");
+            return RehashResponse::Rejected(RehashRejection::Scheduler);
+        }
+    };
+    let authority = candidate.validate_job_authority(is_unix_root);
+    if let Err(error) = authority {
+        tracing::info!(error = %error, "scheduled-job rehash authority rejected");
+        return RehashResponse::Rejected(RehashRejection::JobAuthority);
+    }
+
+    let restart_only = active_config.restart_only_changes(&candidate);
+    if !restart_only.is_empty() {
+        return RehashResponse::RestartRequired(restart_only);
+    }
+
+    match engine.reconcile(candidate.jobs.clone(), Local::now(), active_history_id) {
+        Ok(false) => {
+            *active_config = candidate;
+            RehashResponse::Unchanged
+        }
+        Ok(true) => {
+            *active_config = candidate;
+            RehashResponse::Applied
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, "validated scheduled-job rehash could not be reconciled");
+            RehashResponse::Rejected(RehashRejection::Scheduler)
+        }
+    }
+}
+
 /// Run the daemon's configured job set until its shutdown signal arrives.
 ///
 /// `publisher` is the same shared cell the HTTP server already serves, so the
@@ -950,15 +1132,24 @@ fn start_child(
 /// server state.
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn run(
-    jobs: Vec<ScheduledJobConfig>,
-    history_limit: usize,
+    config: Config,
+    config_path: Option<std::path::PathBuf>,
     publisher: SchedulerPublisher,
     mut load_rx: watch::Receiver<LoadGateState>,
     mut shutdown: broadcast::Receiver<()>,
+    mut rehash_rx: mpsc::Receiver<RehashRequest>,
 ) -> Result<(), String> {
-    let mut engine = Engine::new(&jobs, Local::now(), history_limit, publisher)?;
+    let mut active_config = config;
+    let mut engine = Engine::new(
+        &active_config.jobs,
+        Local::now(),
+        active_config.scheduler_history_limit(),
+        publisher,
+    )?;
     let capture_output = engine.observer.capture_enabled();
-    let mut active: Option<RunningChild<'_>> = None;
+    let mut active: Option<RunningChild> = None;
+    let mut rehash_open = true;
+    let rehash_load_gate = Arc::new(Semaphore::new(1));
     // Publish the initial idle state so a configured job is visible before its
     // first run, and a daemon with jobs is never observably empty.
     engine.publish(Local::now(), None).await;
@@ -969,8 +1160,8 @@ pub(crate) async fn run(
         // await, so the borrow never spans a suspension point.
         let load_state = *load_rx.borrow_and_update();
         if let Some(launch) = engine.tick(wall_now, now, load_state, active.is_none())? {
-            let job = &jobs[launch.index];
-            match start_child(job, launch.index, capture_output) {
+            let job = &engine.configs[launch.index];
+            match start_child(job, launch.history_id, capture_output) {
                 Ok(mut child) => {
                     child.scheduled_unix_ms =
                         launch.scheduled.timestamp_millis().max(0).unsigned_abs();
@@ -987,7 +1178,7 @@ pub(crate) async fn run(
                     engine
                         .publish(
                             Local::now(),
-                            active.as_ref().map(|c| (c.index, c.started_unix_ms)),
+                            active.as_ref().map(|c| (c.history_id, c.started_unix_ms)),
                         )
                         .await;
                 }
@@ -998,7 +1189,7 @@ pub(crate) async fn run(
                     // command behind an empty recent-runs list.
                     let finished = now_unix_ms();
                     let sequence = engine.observer.record_terminal(
-                        launch.index,
+                        launch.history_id,
                         TerminalRecord::without_child(
                             launch.scheduled.timestamp_millis().max(0).unsigned_abs(),
                             finished,
@@ -1020,7 +1211,7 @@ pub(crate) async fn run(
         engine
             .publish(
                 wall_now,
-                active.as_ref().map(|c| (c.index, c.started_unix_ms)),
+                active.as_ref().map(|c| (c.history_id, c.started_unix_ms)),
             )
             .await;
 
@@ -1040,6 +1231,10 @@ pub(crate) async fn run(
             };
             tokio::select! {
                 result = child_wait => SchedulerWake::Child(result),
+                request = rehash_rx.recv(), if rehash_open => match request {
+                    Some(request) => SchedulerWake::Rehash(request),
+                    None => SchedulerWake::RehashChannelClosed,
+                },
                 () = tokio::time::sleep_until(wake_at) => SchedulerWake::Deadline,
                 _ = shutdown.recv() => SchedulerWake::Shutdown,
             }
@@ -1048,6 +1243,7 @@ pub(crate) async fn run(
             SchedulerWake::Child(Some(completion)) => {
                 let child = active.take().expect("completed child remains active");
                 let finished = finish_child(&mut engine, &child, completion);
+                engine.retire_finished_history();
                 tracing::info!(
                     job = %child.job_name,
                     sequence = finished.sequence,
@@ -1060,6 +1256,33 @@ pub(crate) async fn run(
                 engine.publish(Local::now(), None).await;
             }
             SchedulerWake::Child(None) | SchedulerWake::Deadline => {}
+            SchedulerWake::RehashChannelClosed => rehash_open = false,
+            SchedulerWake::Rehash(request) => {
+                #[cfg(unix)]
+                let is_unix_root = crate::startup::install::is_privileged();
+                #[cfg(not(unix))]
+                let is_unix_root = false;
+                let response = prepare_rehash(
+                    config_path.as_deref(),
+                    &mut active_config,
+                    &mut engine,
+                    active.as_ref().map(|child| child.history_id),
+                    is_unix_root,
+                    Arc::clone(&rehash_load_gate),
+                )
+                .await;
+                if response == RehashResponse::Applied {
+                    engine
+                        .publish(
+                            Local::now(),
+                            active
+                                .as_ref()
+                                .map(|child| (child.history_id, child.started_unix_ms)),
+                        )
+                        .await;
+                }
+                let _ = request.reply.send(response);
+            }
             SchedulerWake::Shutdown => {
                 if let Some(active_child) = active.as_mut() {
                     tracing::info!(job = %active_child.job_name, "scheduler shutting down with active command");
@@ -1089,29 +1312,31 @@ pub(crate) async fn run(
 }
 
 #[cfg(test)]
-impl<'a> Engine<'a> {
+impl Engine {
     /// Build an engine whose jobs bypass configuration validation so a
     /// calendar-impossible schedule can reach the runtime failure path.
-    fn new_unchecked(configs: &'a [ScheduledJobConfig], wall_now: DateTime<Local>) -> Self {
-        let states = configs
-            .iter()
-            .map(|config| {
-                let schedule =
-                    LocalSchedule::parse(&config.schedule).expect("test schedule parses");
-                let next_due = schedule.next_after(&wall_now).unwrap_or(wall_now);
-                JobState {
-                    schedule,
-                    next_due,
-                    pending: None,
-                    last_gate: None,
-                }
-            })
-            .collect();
+    fn new_unchecked(configs: &[ScheduledJobConfig], wall_now: DateTime<Local>) -> Self {
         let names: Vec<String> = configs.iter().map(|config| config.name.clone()).collect();
+        let mut observer =
+            SchedulerObserver::new(&names, 5, now_unix_ms(), SchedulerPublisher::empty());
+        let mut states = Vec::with_capacity(configs.len());
+        for config in configs {
+            let schedule = LocalSchedule::parse(&config.schedule).expect("test schedule parses");
+            let next_due = schedule.next_after(&wall_now).unwrap_or(wall_now);
+            states.push(JobState {
+                history_id: observer.ensure_history(&config.name),
+                schedule,
+                next_due,
+                pending: None,
+                last_gate: None,
+            });
+        }
+        let history_ids: Vec<u64> = states.iter().map(|state| state.history_id).collect();
+        observer.reconcile_history(&history_ids, None);
         Self {
-            configs,
+            configs: configs.to_vec(),
             states,
-            observer: SchedulerObserver::new(&names, 5, now_unix_ms(), SchedulerPublisher::empty()),
+            observer,
         }
     }
 }
@@ -1609,7 +1834,9 @@ mod tests {
             .expect("an open gate launches");
         // A later wake, while the child still holds the slot.
         let started = now_unix_ms();
-        engine.publish(wall, Some((launch.index, started))).await;
+        engine
+            .publish(wall, Some((launch.history_id, started)))
+            .await;
         let publication = publisher.current().await;
         let summary: SchedulerSummaryV2 =
             serde_json::from_slice(&publication.summary_bytes).expect("valid summary");
@@ -1693,13 +1920,18 @@ mod tests {
         impossible.schedule = "0 0 30 2 *".to_owned();
         let (load_tx, load_rx) = watch::channel(LoadGateState::UNAVAILABLE);
         let (shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);
+        let (_rehash_tx, rehash_rx) = mpsc::channel(1);
         drop(load_tx);
         let error = run(
-            vec![impossible],
-            5,
+            Config {
+                jobs: vec![impossible],
+                ..Config::default()
+            },
+            None,
             SchedulerPublisher::empty(),
             load_rx,
             shutdown_rx.resubscribe(),
+            rehash_rx,
         )
         .await
         .expect_err("the scheduler reports an unsatisfiable schedule");
@@ -1718,6 +1950,297 @@ mod tests {
             retry_interval_ms: None,
             max_wait_ms: None,
         }
+    }
+
+    #[test]
+    fn empty_scheduler_accepts_its_first_job_without_an_immediate_run() {
+        let wall = wall_time();
+        let mut engine = Engine::new(&[], wall, 5, SchedulerPublisher::empty()).unwrap();
+        assert_eq!(engine.states.len(), 0);
+        assert!(engine
+            .reconcile(vec![daily_job("first")], wall, None)
+            .unwrap());
+        assert_eq!(engine.configs.len(), 1);
+        assert!(engine.states[0].next_due > wall);
+        assert!(engine
+            .tick(wall, Instant::now(), LoadGateState::UNAVAILABLE, true)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn reconciliation_preserves_unchanged_pending_and_reinitializes_changed_jobs() {
+        let wall = wall_time();
+        let unchanged = daily_job("unchanged");
+        let edited = daily_job("edited");
+        let removed = daily_job("removed");
+        let mut engine = Engine::new(
+            &[unchanged.clone(), edited.clone(), removed.clone()],
+            wall,
+            5,
+            SchedulerPublisher::empty(),
+        )
+        .unwrap();
+        let mono = Instant::now();
+        let due = engine.states[0].next_due;
+        assert!(engine
+            .tick(due, mono, LoadGateState::UNAVAILABLE, false)
+            .unwrap()
+            .is_none());
+        let preserved_id = engine.states[0].history_id;
+        let preserved_since = engine.states[0].pending.as_ref().unwrap().since;
+        let preserved_due = engine.states[0].next_due;
+        let active_removed_id = engine.states[2].history_id;
+        let mut edited_candidate = edited.clone();
+        edited_candidate.command.push("new-argument".to_owned());
+        let added = daily_job("added");
+
+        assert!(engine
+            .reconcile(
+                vec![unchanged, edited_candidate, added],
+                wall,
+                Some(active_removed_id),
+            )
+            .unwrap());
+        assert_eq!(engine.configs.len(), 3);
+        assert_eq!(engine.states[0].history_id, preserved_id);
+        assert_eq!(
+            engine.states[0].pending.as_ref().unwrap().since,
+            preserved_since
+        );
+        assert_eq!(engine.states[0].next_due, preserved_due);
+        assert!(engine.states[1].pending.is_none());
+        assert!(engine.states[2].pending.is_none());
+        assert!(engine.states[1].next_due > wall);
+        assert!(engine.states[2].next_due > wall);
+        assert!(engine.observer.has_history(active_removed_id));
+
+        assert!(!engine
+            .reconcile(engine.configs.clone(), wall, Some(active_removed_id))
+            .unwrap());
+        assert_eq!(
+            engine.states[0].pending.as_ref().unwrap().since,
+            preserved_since
+        );
+    }
+
+    #[tokio::test]
+    async fn timed_out_rehash_load_does_not_block_or_accumulate_workers() {
+        let load_gate = Arc::new(Semaphore::new(1));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+
+        let result = bounded_rehash_load(Arc::clone(&load_gate), Duration::ZERO, move || {
+            started_tx
+                .send(())
+                .expect("test observes the blocking worker");
+            release_rx
+                .recv()
+                .expect("test releases the blocking worker");
+            finished_tx
+                .send(())
+                .expect("test observes worker completion");
+            Ok(Config::default())
+        })
+        .await;
+        assert!(matches!(result, Err(RehashLoadFailure::TimedOut)));
+        started_rx.await.expect("blocking worker started");
+
+        let busy = bounded_rehash_load(Arc::clone(&load_gate), Duration::ZERO, || {
+            Ok(Config::default())
+        })
+        .await;
+        assert!(matches!(busy, Err(RehashLoadFailure::Busy)));
+
+        release_tx.send(()).expect("blocking worker is still alive");
+        finished_rx.await.expect("blocking worker completed");
+        drop(
+            load_gate
+                .clone()
+                .acquire_owned()
+                .await
+                .expect("semaphore remains open"),
+        );
+        let retried =
+            bounded_rehash_load(load_gate, Duration::from_secs(1), || Ok(Config::default()))
+                .await
+                .expect("permit is released when the read finishes");
+        assert_eq!(retried.jobs, Vec::<ScheduledJobConfig>::new());
+    }
+
+    #[tokio::test]
+    async fn rehash_authority_failure_preserves_the_active_configuration() {
+        let dir = std::env::temp_dir().join(format!(
+            "greggd-rehash-authority-{}-{}",
+            std::process::id(),
+            now_unix_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("greggd.toml");
+        let mut active_config = Config::default();
+        let mut candidate = active_config.clone();
+        candidate.jobs.push(daily_job("unauthorized"));
+        candidate.write_atomic(&path).unwrap();
+        let mut engine = Engine::new(&[], wall_time(), 5, SchedulerPublisher::empty()).unwrap();
+
+        assert_eq!(
+            prepare_rehash(
+                Some(&path),
+                &mut active_config,
+                &mut engine,
+                None,
+                true,
+                Arc::new(Semaphore::new(1)),
+            )
+            .await,
+            RehashResponse::Rejected(RehashRejection::JobAuthority)
+        );
+        assert_eq!(active_config, Config::default());
+        assert_eq!(engine.configs, Vec::<ScheduledJobConfig>::new());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn unchanged_rehash_returns_unchanged_without_mutating_the_engine() {
+        let dir = std::env::temp_dir().join(format!(
+            "greggd-rehash-unchanged-{}-{}",
+            std::process::id(),
+            now_unix_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("greggd.toml");
+        let active_config = Config::default();
+        active_config.write_atomic(&path).unwrap();
+        let mut current = active_config.clone();
+        let mut engine = Engine::new(&[], wall_time(), 5, SchedulerPublisher::empty()).unwrap();
+
+        assert_eq!(
+            prepare_rehash(
+                Some(&path),
+                &mut current,
+                &mut engine,
+                None,
+                false,
+                Arc::new(Semaphore::new(1)),
+            )
+            .await,
+            RehashResponse::Unchanged
+        );
+        assert_eq!(current, active_config);
+        assert_eq!(engine.configs, Vec::<ScheduledJobConfig>::new());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn rehash_policy_is_atomic_for_mixed_and_invalid_candidates() {
+        let dir = std::env::temp_dir().join(format!(
+            "greggd-rehash-policy-{}-{}",
+            std::process::id(),
+            now_unix_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("greggd.toml");
+        let mut active_config = Config::default();
+        #[cfg(unix)]
+        if crate::startup::install::is_privileged() {
+            active_config.allow_privileged_jobs = true;
+        }
+        let mut candidate = active_config.clone();
+        candidate.jobs.push(daily_job("first"));
+        candidate.write_atomic(&path).unwrap();
+        let mut engine = Engine::new(&[], wall_time(), 5, SchedulerPublisher::empty()).unwrap();
+        let load_gate = Arc::new(Semaphore::new(1));
+        assert_eq!(
+            prepare_rehash(
+                Some(&path),
+                &mut active_config,
+                &mut engine,
+                None,
+                false,
+                Arc::clone(&load_gate),
+            )
+            .await,
+            RehashResponse::Applied
+        );
+        let accepted_config = active_config.clone();
+        let accepted_jobs = engine.configs.clone();
+        assert_eq!(accepted_jobs, candidate.jobs);
+
+        let mut mixed = candidate.clone();
+        mixed.port += 1;
+        mixed.jobs.push(daily_job("must-not-apply"));
+        mixed.write_atomic(&path).unwrap();
+        assert_eq!(
+            prepare_rehash(
+                Some(&path),
+                &mut active_config,
+                &mut engine,
+                None,
+                false,
+                Arc::clone(&load_gate),
+            )
+            .await,
+            RehashResponse::RestartRequired(vec!["port"])
+        );
+        assert_eq!(active_config, accepted_config);
+        assert_eq!(engine.configs, accepted_jobs);
+
+        std::fs::write(&path, b"jobs = [").unwrap();
+        assert_eq!(
+            prepare_rehash(
+                Some(&path),
+                &mut active_config,
+                &mut engine,
+                None,
+                false,
+                Arc::clone(&load_gate),
+            )
+            .await,
+            RehashResponse::Rejected(RehashRejection::InvalidConfig)
+        );
+        assert_eq!(active_config, accepted_config);
+        assert_eq!(engine.configs, accepted_jobs);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn active_child_survives_removal_and_keeps_launch_history_identity() {
+        let wall = wall_time();
+        let mut config = job("launched", None);
+        config.command = vec![
+            "/bin/sh".to_owned(),
+            "-c".to_owned(),
+            "sleep 0.5; printf launched".to_owned(),
+        ];
+        let mut engine = Engine::new(
+            std::slice::from_ref(&config),
+            wall,
+            5,
+            SchedulerPublisher::empty(),
+        )
+        .unwrap();
+        let history_id = engine.states[0].history_id;
+        let mut child = start_child(&config, history_id, true).expect("child starts");
+        child.scheduled_unix_ms = wall.timestamp_millis().max(0).unsigned_abs();
+
+        let completion = tokio::select! {
+            completion = await_child_completion(&mut child) => completion,
+            () = tokio::time::sleep(Duration::from_millis(50)) => {
+                assert!(engine.reconcile(Vec::new(), wall, Some(history_id)).unwrap());
+                assert!(child.child.try_wait().unwrap().is_none(), "rehash must not kill the active child");
+                await_child_completion(&mut child).await
+            }
+        };
+        finish_child(&mut engine, &child, completion);
+        engine.retire_finished_history();
+        assert_eq!(engine.configs, Vec::<ScheduledJobConfig>::new());
+        let summary = engine
+            .observer
+            .last_summary(history_id)
+            .expect("removed job's terminal history is retained");
+        assert_eq!(summary.outcome, SchedulerOutcomeV2::Success);
     }
 
     #[test]
@@ -1767,25 +2290,20 @@ mod tests {
     }
 
     #[test]
-    fn empty_job_list_builds_no_engine_state() {
-        // A jobless daemon still pays zero reconciliation cost: production
-        // `run_with_shutdown` never spawns the scheduler task when
-        // `config.jobs` is empty (`run.rs` keeps the `is_empty` branch), so no
-        // wake loop exists to pay for.
-        //
-        // The engine layer refuses the same configuration instead of building
-        // a state-free engine. `next_deadline` has no deadline to return
-        // without a job, so constructing an empty engine would leave its
-        // assertion waiting to fire inside the wake loop rather than reporting
-        // a configuration error where the precondition belongs.
+    fn empty_job_list_builds_a_persistent_idle_engine() {
         let wall = wall_time();
-        let configs: &[ScheduledJobConfig] = &[];
-        let error = Engine::new(configs, wall, 5, SchedulerPublisher::empty())
-            .expect_err("an empty engine would assert on its first wake");
-        assert!(
-            error.contains("at least one job"),
-            "unexpected error: {error}"
+        let mut engine = Engine::new(&[], wall, 5, SchedulerPublisher::empty()).unwrap();
+        assert_eq!(engine.configs, Vec::<ScheduledJobConfig>::new());
+        assert!(engine.states.is_empty());
+        let now = Instant::now();
+        assert_eq!(
+            engine.next_deadline(wall, now, true),
+            now + MAX_CIVIL_RECHECK
         );
+        assert!(engine
+            .tick(wall, now, LoadGateState::UNAVAILABLE, true)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -2134,10 +2652,11 @@ mod observation_tests {
 
     /// Unix only, for the same reason as [`run_child_to_completion`].
     #[cfg(unix)]
-    fn launch_for(engine: &Engine<'_>, index: usize, pending_age: Duration) -> Launch {
+    fn launch_for(engine: &Engine, index: usize, pending_age: Duration) -> Launch {
         let _ = engine;
         Launch {
             index,
+            history_id: engine.states[index].history_id,
             pending_age,
             observed_load: None,
             load_window: None,
@@ -3022,6 +3541,7 @@ mod observation_tests {
         );
         let launch = Launch {
             index: 0,
+            history_id: 0,
             pending_age: Duration::from_millis(250),
             observed_load: None,
             load_window: None,
@@ -3034,7 +3554,7 @@ mod observation_tests {
         };
         assert_ne!(error, "");
         observer.record_terminal(
-            launch.index,
+            launch.history_id,
             TerminalRecord::without_child(
                 launch.scheduled.timestamp_millis().max(0).unsigned_abs(),
                 now_unix_ms(),
@@ -3216,7 +3736,7 @@ mod observation_tests {
                 pending_since_unix_ms: None,
                 next_retry_unix_ms: None,
                 running_since_unix_ms: None,
-                last: observer.last_summary(index),
+                last: observer.last_summary(index as u64),
             })
             .collect();
         observer.publish(jobs, 1_700_000_002_000).await;

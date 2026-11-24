@@ -9,13 +9,21 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Live scheduled-job rehash (Plan 197):** add `greggd [--config PATH] rehash`
+  to validate the selected full config and apply jobs-only changes to the
+  running daemon through bounded local control. Restart-bound field changes
+  (including host and port) reject the entire candidate; the command does not
+  restart the daemon, implicitly rehash after edits, or expose an HTTP mutation
+  route. A response lost after delivery is reported as uncertain.
+
 - **Scheduled-job CLI and transactional daemon editor (Plan 196):** add, list,
   and remove local jobs with `greggd job add/list/remove`; omission of the remove
   name opens a small terminal selector. `greggd edit` edits the complete daemon
   config through a private candidate and commits only after validation. Job
   commands preserve direct argv (no shell), honor `--config`, leave the root-job
-  opt-in unchanged, and do not reload/restart a running daemon; changes take
-  effect on its next start.
+  opt-in unchanged, and do not reload/restart a running daemon implicitly. Use
+  the explicit `greggd rehash` command to apply jobs-only changes; other config
+  changes remain restart-required.
 
 - **Interactive CLI removal:** `gregg remove` and `gregg eggpool remove` now
   list configured entries when no target is supplied. Use `j`/`k` or Up/Down

@@ -391,13 +391,15 @@ impl SchedulerPublisher {
 /// Bounded per-job terminal history.
 #[derive(Debug)]
 struct JobHistory {
+    id: u64,
     name: String,
     records: VecDeque<SchedulerRunRecordV2>,
 }
 
 impl JobHistory {
-    fn new(name: &str, limit: usize) -> Self {
+    fn new(id: u64, name: &str, limit: usize) -> Self {
         Self {
+            id,
             name: name.to_owned(),
             // Never allocate more than the frozen bound, even for a configured
             // limit above what a job can ever reach.
@@ -475,6 +477,8 @@ pub(crate) struct SchedulerObserver {
     epoch: SchedulerEpochV2,
     limit: usize,
     histories: Vec<JobHistory>,
+    next_history_id: u64,
+    visible_history_ids: Vec<u64>,
     next_sequence: u64,
     history_revision: u64,
     publisher: SchedulerPublisher,
@@ -510,8 +514,11 @@ impl SchedulerObserver {
             limit,
             histories: job_names
                 .iter()
-                .map(|name| JobHistory::new(name, limit))
+                .enumerate()
+                .map(|(id, name)| JobHistory::new(id as u64, name, limit))
                 .collect(),
+            next_history_id: job_names.len() as u64,
+            visible_history_ids: (0..job_names.len() as u64).collect(),
             next_sequence: 1,
             history_revision: 0,
             publisher,
@@ -525,9 +532,86 @@ impl SchedulerObserver {
         self.publisher.clone()
     }
 
+    /// Whether one retained history identity still exists.
+    #[cfg(test)]
+    pub(crate) fn has_history(&self, history_id: u64) -> bool {
+        self.histories
+            .iter()
+            .any(|history| history.id == history_id)
+    }
+
     /// Whether child output should be piped at all.
     pub(crate) fn capture_enabled(&self) -> bool {
         self.limit > 0
+    }
+
+    /// Return a stable history identity for a job name, creating an empty ring
+    /// when this is the first scheduler configuration to contain that job.
+    pub(crate) fn ensure_history(&mut self, name: &str) -> u64 {
+        if let Some(history) = self.histories.iter().find(|history| history.name == name) {
+            return history.id;
+        }
+        let id = self.next_history_id;
+        self.next_history_id = self.next_history_id.saturating_add(1);
+        self.histories.push(JobHistory::new(id, name, self.limit));
+        id
+    }
+
+    /// Reconcile the bounded published history set without replacing the
+    /// observer. Current jobs and the active child's history identity take
+    /// precedence; older retired histories fill any remaining slots.
+    pub(crate) fn reconcile_history(&mut self, current_ids: &[u64], active_id: Option<u64>) {
+        let cap = gregg_protocol::MAX_SCHEDULER_JOBS + usize::from(active_id.is_some());
+        while self.histories.len() > cap {
+            let victim = self
+                .histories
+                .iter()
+                .enumerate()
+                .filter(|(_, history)| {
+                    !current_ids.contains(&history.id) && Some(history.id) != active_id
+                })
+                .min_by_key(|(_, history)| {
+                    history.records.back().map_or(0, |record| record.sequence)
+                })
+                .map(|(index, _)| index);
+            let Some(victim) = victim else {
+                break;
+            };
+            self.histories.remove(victim);
+        }
+
+        // The wire contract has room for at most MAX_SCHEDULER_JOBS history
+        // rows. Keep every current job first; an active removed job is included
+        // only when there is room, and is retained internally until its record
+        // can be published after completion.
+        let mut visible = current_ids.to_vec();
+        if let Some(active_id) = active_id.filter(|id| !visible.contains(id)) {
+            if visible.len() < gregg_protocol::MAX_SCHEDULER_JOBS {
+                visible.push(active_id);
+            }
+        }
+        let mut retired: Vec<(u64, u64)> = self
+            .histories
+            .iter()
+            .filter(|history| !visible.contains(&history.id))
+            .map(|history| {
+                (
+                    history.id,
+                    history.records.back().map_or(0, |record| record.sequence),
+                )
+            })
+            .collect();
+        retired.sort_by_key(|(_, sequence)| std::cmp::Reverse(*sequence));
+        for (id, _) in retired {
+            if visible.len() == gregg_protocol::MAX_SCHEDULER_JOBS {
+                break;
+            }
+            visible.push(id);
+        }
+        if visible != self.visible_history_ids {
+            self.visible_history_ids = visible;
+            self.history_revision = self.history_revision.saturating_add(1);
+        }
     }
 
     /// Record a terminal occurrence and publish the new history revision.
@@ -537,7 +621,7 @@ impl SchedulerObserver {
     /// client deduplication identity.
     pub(crate) fn record_terminal(
         &mut self,
-        index: usize,
+        history_id: u64,
         record: TerminalRecord,
         outcome: SchedulerOutcomeV2,
     ) -> u64 {
@@ -549,7 +633,11 @@ impl SchedulerObserver {
             self.history_revision = self.history_revision.saturating_add(1);
             return sequence;
         }
-        let Some(history) = self.histories.get_mut(index) else {
+        let Some(history) = self
+            .histories
+            .iter_mut()
+            .find(|history| history.id == history_id)
+        else {
             return sequence;
         };
         let wire = SchedulerRunRecordV2 {
@@ -576,8 +664,13 @@ impl SchedulerObserver {
 
     /// The most recent terminal record summary for one job, for the summary
     /// document's at-a-glance row.
-    pub(crate) fn last_summary(&self, index: usize) -> Option<SchedulerRunSummaryV2> {
-        let record = self.histories.get(index)?.records.back()?;
+    pub(crate) fn last_summary(&self, history_id: u64) -> Option<SchedulerRunSummaryV2> {
+        let record = self
+            .histories
+            .iter()
+            .find(|history| history.id == history_id)?
+            .records
+            .back()?;
         Some(SchedulerRunSummaryV2 {
             sequence: record.sequence,
             scheduled_unix_ms: record.scheduled_unix_ms,
@@ -609,25 +702,19 @@ impl SchedulerObserver {
         }) {
             return false;
         }
-        let histories = if self.limit == 0 {
-            // A disabled history still reports the configured job names with
-            // empty record lists, so the document shape is stable.
-            self.histories
-                .iter()
-                .map(|history| SchedulerJobHistoryV2 {
-                    name: history.name.clone(),
-                    records: Vec::new(),
-                })
-                .collect()
-        } else {
-            self.histories
-                .iter()
-                .map(|history| SchedulerJobHistoryV2 {
-                    name: history.name.clone(),
-                    records: history.records.iter().cloned().collect(),
-                })
-                .collect()
-        };
+        let histories = self
+            .visible_history_ids
+            .iter()
+            .filter_map(|id| self.histories.iter().find(|history| history.id == *id))
+            .map(|history| SchedulerJobHistoryV2 {
+                name: history.name.clone(),
+                records: if self.limit == 0 {
+                    Vec::new()
+                } else {
+                    history.records.iter().cloned().collect()
+                },
+            })
+            .collect();
         // The comparison key is only built on the path that actually publishes,
         // where one clone is noise next to serializing two documents. The
         // unchanged-wake path above returns before reaching it.

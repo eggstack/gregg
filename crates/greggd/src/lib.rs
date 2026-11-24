@@ -9,9 +9,15 @@ pub mod cli;
 pub mod collector;
 /// Daemon configuration, validation, file I/O, and atomic persistence.
 pub mod config;
-/// Local Unix-domain control socket for `greggd stop`.
+/// Local Unix-domain control socket for `greggd stop` and `rehash`.
 #[cfg(unix)]
 pub mod control;
+/// Shared bounded local-control messages.
+pub(crate) mod local_control;
+pub use local_control::{RehashRejection, RehashResponse, RehashTransportError};
+/// Windows local control-pipe transport for `greggd rehash`.
+#[cfg(target_os = "windows")]
+pub mod control_windows;
 /// Local-network address resolution utilities.
 pub mod net;
 /// Foreground daemon entry point and shutdown orchestration.

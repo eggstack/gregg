@@ -47,6 +47,14 @@ fn run_main() -> Result<(), Box<dyn Error>> {
             ))
         }
         #[cfg(unix)]
+        greggd::cli::Command::Rehash => {
+            greggd::cli::report_rehash_result(greggd::control::send_rehash(&config_path))
+        }
+        #[cfg(target_os = "windows")]
+        greggd::cli::Command::Rehash => {
+            greggd::cli::report_rehash_result(greggd::control_windows::send_rehash(&config_path))
+        }
+        #[cfg(unix)]
         greggd::cli::Command::Stop => {
             // Control-socket identity is derived from the config *path*
             // alone (FNV-1a of the normalized path; never from host/port),
@@ -125,6 +133,12 @@ fn classify_error(error: &(dyn Error + 'static)) -> greggd::cli::ExitCode {
         .is_some()
     {
         return greggd::cli::ExitCode::ConfigError;
+    }
+    if let Some(error) = error.downcast_ref::<greggd::cli::RehashCommandError>() {
+        return match error {
+            greggd::cli::RehashCommandError::Config(_) => greggd::cli::ExitCode::ConfigError,
+            greggd::cli::RehashCommandError::Runtime(_) => greggd::cli::ExitCode::RuntimeError,
+        };
     }
     if let Some(error) = error.downcast_ref::<greggd::cli::ConfigValidationError>() {
         let _ = error;

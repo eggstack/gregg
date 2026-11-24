@@ -471,9 +471,10 @@ fn run_service_worker(config_path: &Path) -> Result<(), Box<dyn std::error::Erro
             .build()
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
-        rt.block_on(crate::run::run_with_shutdown_on_ready(
+        rt.block_on(crate::run::run_with_windows_control_path(
             collector,
             config,
+            config_path,
             shutdown_future,
             || {
                 update_status(status_handle, WsState::Running, 0, Duration::from_secs(10))

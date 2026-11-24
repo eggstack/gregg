@@ -45,14 +45,188 @@ pub struct Cli {
     pub command: Command,
 }
 
+/// A rehash result that must exit nonzero while preserving its user-visible class.
+#[derive(Debug, thiserror::Error)]
+pub enum RehashCommandError {
+    /// Candidate config/authority rejected; no runtime changes were applied.
+    #[error("{0}")]
+    Config(String),
+    /// The daemon or local control could not complete the operation.
+    #[error("{0}")]
+    Runtime(String),
+}
+
+/// Print a typed rehash result and map every non-applied outcome to a failure.
+pub fn report_rehash_result(
+    result: Result<crate::RehashResponse, crate::RehashTransportError>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::{RehashRejection as Rejection, RehashResponse as Response};
+    let response = result.map_err(|error| {
+        Box::new(RehashCommandError::Runtime(error.to_string())) as Box<dyn std::error::Error>
+    })?;
+    match response {
+        Response::Applied => {
+            println!("greggd rehash applied");
+            Ok(())
+        }
+        Response::Unchanged => {
+            println!("greggd rehash unchanged");
+            Ok(())
+        }
+        Response::RestartRequired(fields) => Err(Box::new(RehashCommandError::Config(format!(
+            "restart required for changed field(s): {}; no changes applied",
+            fields.join(", ")
+        )))),
+        Response::Rejected(Rejection::InvalidConfig) => Err(Box::new(RehashCommandError::Config(
+            "candidate config is invalid or unreadable; no changes applied".to_owned(),
+        ))),
+        Response::Rejected(Rejection::JobAuthority) => Err(Box::new(RehashCommandError::Config(
+            "scheduled-job authority check failed; no changes applied".to_owned(),
+        ))),
+        Response::Rejected(Rejection::Scheduler) => Err(Box::new(RehashCommandError::Runtime(
+            "scheduler could not reconcile the candidate; no changes applied".to_owned(),
+        ))),
+        Response::Rejected(Rejection::ControlUnavailable) => {
+            Err(Box::new(RehashCommandError::Runtime(
+                "daemon rehash control is unavailable; no changes applied".to_owned(),
+            )))
+        }
+        Response::Busy => Err(Box::new(RehashCommandError::Runtime(
+            "daemon rehash queue is busy; no request was queued".to_owned(),
+        ))),
+        Response::Uncertain => Err(Box::new(RehashCommandError::Runtime(
+            "rehash outcome is uncertain; the daemon may have applied the request".to_owned(),
+        ))),
+    }
+}
+
+#[cfg(test)]
+mod rehash_cli_tests {
+    use super::*;
+    use crate::{RehashRejection, RehashResponse, RehashTransportError};
+    use clap::Parser;
+
+    #[test]
+    fn rehash_accepts_the_global_config_path_before_or_after_the_command() {
+        for argv in [
+            vec!["greggd", "rehash"],
+            vec!["greggd", "--config", "/tmp/selected.toml", "rehash"],
+            vec!["greggd", "rehash", "--config", "/tmp/selected.toml"],
+        ] {
+            let parsed = Cli::try_parse_from(argv).expect("rehash arguments should parse");
+            assert!(matches!(parsed.command, Command::Rehash));
+            if parsed.config.is_some() {
+                assert_eq!(parsed.config, Some(PathBuf::from("/tmp/selected.toml")));
+            }
+        }
+    }
+
+    fn error_class(result: Result<RehashResponse, RehashTransportError>) -> (bool, String) {
+        let error = report_rehash_result(result).expect_err("this outcome must fail");
+        let message = error.to_string();
+        let command_error = error
+            .downcast_ref::<RehashCommandError>()
+            .expect("rehash errors retain their exit classification");
+        (
+            matches!(command_error, RehashCommandError::Config(_)),
+            message,
+        )
+    }
+
+    #[test]
+    fn rehash_applied_and_unchanged_are_the_only_success_responses() {
+        assert!(report_rehash_result(Ok(RehashResponse::Applied)).is_ok());
+        assert!(report_rehash_result(Ok(RehashResponse::Unchanged)).is_ok());
+    }
+
+    #[test]
+    fn rehash_response_classes_are_truthful_and_nonzero_outcomes_stay_distinct() {
+        let (is_config, message) =
+            error_class(Ok(RehashResponse::RestartRequired(vec!["host", "port"])));
+        assert!(is_config);
+        assert!(message.contains("host, port"));
+        assert!(message.contains("no changes applied"));
+
+        for (response, expected) in [
+            (
+                RehashResponse::Rejected(RehashRejection::InvalidConfig),
+                "candidate config is invalid",
+            ),
+            (
+                RehashResponse::Rejected(RehashRejection::JobAuthority),
+                "authority check failed",
+            ),
+        ] {
+            let (is_config, message) = error_class(Ok(response));
+            assert!(is_config);
+            assert!(message.contains(expected));
+            assert!(message.contains("no changes applied"));
+        }
+
+        for (response, expected) in [
+            (
+                RehashResponse::Rejected(RehashRejection::Scheduler),
+                "scheduler could not reconcile",
+            ),
+            (
+                RehashResponse::Rejected(RehashRejection::ControlUnavailable),
+                "control is unavailable",
+            ),
+            (RehashResponse::Busy, "queue is busy"),
+            (RehashResponse::Uncertain, "outcome is uncertain"),
+        ] {
+            let (is_config, message) = error_class(Ok(response));
+            assert!(!is_config);
+            assert!(message.contains(expected));
+        }
+    }
+
+    #[test]
+    fn rehash_transport_errors_never_claim_application() {
+        for (error, expected) in [
+            (RehashTransportError::NotRunning, "not running"),
+            (
+                RehashTransportError::Uncertain {
+                    detail: "reply timed out".to_owned(),
+                },
+                "uncertain",
+            ),
+            (RehashTransportError::BadResponse, "invalid response"),
+        ] {
+            let (is_config, message) = error_class(Err(error));
+            assert!(!is_config);
+            assert!(message.contains(expected));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn absent_daemon_is_reported_without_starting_a_fallback_process() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after the epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "greggd-rehash-cli-{}-{nonce}.toml",
+            std::process::id()
+        ));
+        let result = crate::control::send_rehash(&path);
+        assert!(matches!(result, Err(RehashTransportError::NotRunning)));
+        let (is_config, message) = error_class(result);
+        assert!(!is_config);
+        assert!(message.contains("not running"));
+    }
+}
+
 /// Available subcommands.
 #[derive(Subcommand)]
 pub enum Command {
     /// Run the daemon in the foreground.
     Run,
-    /// Stop a running greggd instance via the local Unix control socket
-    /// (Linux/macOS) or via the Windows Service Control Manager (Windows).
+    /// Stop a running greggd instance via local control.
     Stop,
+    /// Apply valid scheduled-job changes from this config to the running daemon.
+    Rehash,
     /// Start the greggd Windows service.
     #[cfg(target_os = "windows")]
     Start,
@@ -87,7 +261,7 @@ pub enum Command {
         /// The new port number (1-65535).
         port: u16,
     },
-    /// Manage local scheduled jobs in this config; changes apply on the next daemon start.
+    /// Manage local scheduled jobs in this config. Changes do not reload the running daemon automatically; use `rehash` to apply jobs-only changes, otherwise they take effect on the next start.
     Job {
         #[command(subcommand)]
         command: JobCommand,
@@ -96,7 +270,7 @@ pub enum Command {
     ///
     /// Resolves the editor from $VISUAL, $EDITOR, then platform fallbacks. The
     /// editor receives a private candidate file directly, never through a shell.
-    /// Changes apply on the next daemon start; a running daemon is not restarted.
+    /// A running daemon is not reloaded or restarted automatically. Use `rehash` for jobs-only changes; other config changes require a restart.
     Edit,
     /// Uninstall the greggd daemon binary and its Gregg-owned startup integration.
     ///
@@ -440,7 +614,7 @@ fn dispatch_job_command(
                 Ok(())
             })?;
             println!(
-                "Added scheduled job {name:?} in {}. Changes take effect on the next daemon start; a running daemon was not restarted.",
+                "Added scheduled job {name:?} in {}. No live reload was requested; run `greggd rehash` to apply jobs-only changes, otherwise changes take effect on the next daemon start.",
                 config_path.display()
             );
             Ok(())
@@ -453,7 +627,7 @@ fn dispatch_job_command(
         JobCommand::Remove { name: Some(name) } => {
             remove_named_job(config_path, explicit, name)?;
             println!(
-                "Removed scheduled job {name:?} from {}. Changes take effect on the next daemon start; a running daemon was not restarted.",
+                "Removed scheduled job {name:?} from {}. No live reload was requested; run `greggd rehash` to apply jobs-only changes, otherwise changes take effect on the next daemon start.",
                 config_path.display()
             );
             Ok(())
@@ -471,7 +645,7 @@ fn dispatch_job_command(
             let name = config.jobs[index].name.clone();
             remove_named_job(config_path, explicit, &name)?;
             println!(
-                "Removed scheduled job {name:?} from {}. Changes take effect on the next daemon start; a running daemon was not restarted.",
+                "Removed scheduled job {name:?} from {}. No live reload was requested; run `greggd rehash` to apply jobs-only changes, otherwise changes take effect on the next daemon start.",
                 config_path.display()
             );
             Ok(())
@@ -566,7 +740,7 @@ fn edit_config_with_editor(
         Ok(())
     })?;
     println!(
-        "Updated daemon configuration at {}. Changes take effect on the next daemon start; a running daemon was not restarted.",
+        "Updated daemon configuration at {}. No live reload was requested; run `greggd rehash` to apply jobs-only changes, otherwise changes take effect on the next daemon start.",
         config_path.display()
     );
     Ok(())
@@ -1029,6 +1203,9 @@ pub fn dispatch_with_config_intent(
     match command {
         Command::Run => Err(Box::new(std::io::Error::other(
             "Command::Run is handled at the binary boundary",
+        )) as Box<dyn std::error::Error>),
+        Command::Rehash => Err(Box::new(std::io::Error::other(
+            "Command::Rehash is handled at the binary boundary",
         )) as Box<dyn std::error::Error>),
         Command::Stop => {
             // Unix uses the local control socket and is dispatched at the

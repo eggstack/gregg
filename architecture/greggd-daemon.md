@@ -20,10 +20,10 @@ SCM `service` / `start` path.
 |--------|------|---------|
 | `main` | `src/main.rs` | Binary boundary: CLI parsing, logging, error reporting, exit-code classification, and platform collector dispatch |
 | `lib` | `src/lib.rs` | Library root, re-exports all modules |
-| `cli` | `src/cli.rs` | Clap CLI: `run`, `stop`, `croncheck` (bounded `/v2/healthz` watchdog; spawns `run` only on refusal), `configprint`, `status` (read-only diagnostic composition), `host`, `port`, `version`, `update` (daemon lifecycle coordination over `gregg-update`), `uninstall [--dry-run] [--purge]` (exact-exe removal + owned startup teardown, dry-run/purge), `startup install`/`instructions` (`--method auto|systemd|launchd|cron`), `restart` (universal manager-aware; SCM on Windows / direct on Unix); Windows adds `start` and hidden `service` SCM entry; global `--config/-c`; authoritative bounded health fetch (`fetch_health_bytes`) with detail (`probe_health`) and watchdog (`probe_greggd`) classifications |
-| `run` | `src/run.rs` | Foreground daemon: wiring + supervision loop; entry points `run()`, `run_with_shutdown()`, Unix `run_with_control_path()`, cross-platform `run_with_control_path_or_default()`, all funneling into the shared `run_with_shutdown_on_ready()` core (foreground passes a no-op `on_ready`; Windows SCM passes the `RUNNING` publisher invoked only after listener bind); `RunOutcome`, 10s graceful shutdown deadline, Unix control-socket + Windows SCM entry alongside SIGTERM/SIGINT |
+| `cli` | `src/cli.rs` | Clap CLI: `run`, `stop`, `rehash` (bounded local jobs-only config application with applied acknowledgment), `croncheck` (bounded `/v2/healthz` watchdog; spawns `run` only on refusal), `configprint`, `status` (read-only diagnostic composition), `host`, `port`, `version`, `update` (daemon lifecycle coordination over `gregg-update`), `uninstall [--dry-run] [--purge]` (exact-exe removal + owned startup teardown, dry-run/purge), `startup install`/`instructions` (`--method auto|systemd|launchd|cron`), `restart` (universal manager-aware; SCM on Windows / direct on Unix); Windows adds `start` and hidden `service` SCM entry; global `--config/-c`; authoritative bounded health fetch (`fetch_health_bytes`) with detail (`probe_health`) and watchdog (`probe_greggd`) classifications |
+| `run` | `src/run.rs` | Foreground daemon: wiring + supervision loop; entry points `run()`, `run_with_shutdown()`, Unix `run_with_control_path()`, cross-platform `run_with_control_path_or_default()`, all funneling into `run_with_shutdown_on_ready_and_control()` (foreground passes a no-op `on_ready`; Windows SCM passes the `RUNNING` publisher invoked only after listeners bind); one scheduler worker persists even with an empty initial job set; `RunOutcome`, 10s graceful shutdown deadline, Unix control socket and Windows named-pipe rehash endpoint alongside SIGTERM/SIGINT/SCM |
 | `config` | `src/config.rs` | TOML config, validation, atomic writes; `ConfigViolation`, `AtomicWriteError` |
-| `control` | `src/control.rs` (Unix-only) | Unix-domain control socket for `greggd stop`; normalized config identity (FNV-1a digest) computed once per operation, config-adjacent primary + temp-dir fallback paths; `ControlSocketGuard` is owned by the caller (`run_with_control_path`) so socket-file removal happens on every exit path, including signal-driven shutdown where the stop task is still parked in `accept()` |
+| `control` | `src/control.rs` (Unix-only) | Unix-domain local control socket for `greggd stop` and `greggd rehash`; fixed bounded `STOP\n`/`REHASH\n` requests, with rehash waiting for scheduler acknowledgment; normalized config identity (FNV-1a digest) computed once per operation, config-adjacent primary + temp-dir fallback paths; `ControlSocketGuard` is owned by the caller (`run_with_control_path`) so socket-file removal happens on every exit path, including signal-driven shutdown where the control task is still parked in `accept()` |
 | `net` | `src/net.rs` | Local-network address resolution for `configprint`: resolves a wildcard bind host to the primary local IP via a transient UDP `connect()` (no packets sent) |
 | `sampler` | `src/sampler.rs` | Periodic sampling loop, readiness lifecycle; `SamplerError`, `Clock`/`RealClock` (`SyntheticClock` is test-only) |
 | `scheduler` | `src/scheduler.rs`, `src/scheduler/schedule.rs` | Optional local maintenance engine: strict five-field cron wrapper, bounded pending state, cached sampler load feed, one Tokio child slot, direct-child shutdown |
@@ -388,16 +388,12 @@ A forward wall-clock jump is therefore observed within about a minute and
 skipped occurrences coalesce rather than replay; a backward jump cannot
 launch before the stored civil occurrence is due. Reconciliation wakes run
 the existing bounded scan silently and perform no telemetry, HTTP,
-filesystem, or process work. A daemon with no configured jobs spawns no
-scheduler task and pays zero cost.
-
-An empty job set is therefore refused **in the engine constructor**, alongside
-the 64-job upper bound, because that is where the "at least one job" precondition
-`next_deadline` relies on is actually established. It has no deadline to return
-without a job, so the assertion there would otherwise fire inside the wake loop
-— a panic in the maintenance path — instead of failing the way every other
-configuration error does. The `run.rs` empty-config guard stays as defense in
-depth, not as the sole owner of the invariant.
+filesystem, or process work. One scheduler worker is started for every daemon, including one whose initial
+job set is empty, and remains alive for explicit local rehash requests. An empty
+engine is valid: it has no scheduled deadline but can transition to or from a
+non-empty set without replacing the worker, observer, history publisher, or
+active-child slot. This adds only the idle task needed to accept a first job set
+after startup.
 Pending selection is an allocation-free bounded scan over job state: the
 oldest pending time wins with config order as the stable tie breaker, and
 no candidate vector is built merely to choose a job. Every load-gated launch
@@ -519,6 +515,7 @@ configuration error and is neither written nor followed by process management.
 |---------|---------|
 | `run` | Start foreground daemon |
 | `stop` | Stop a running daemon via local Unix-domain control socket (Linux/macOS) or Windows SCM; idempotent when already stopped |
+| `rehash` | Ask the daemon selected by `--config` to read its own captured config path and apply jobs-only changes. It sends one bounded local `REHASH\n` request over the Unix control socket or protected Windows named pipe; the fixed request never carries a file path. Full validation and root-job authority are repeated, restart-only diffs reject atomically, and `APPLIED` is returned only after scheduler reconciliation. No daemon/process/service restart, watcher, implicit post-edit rehash, or HTTP mutation route; a lost acknowledgment after delivery is uncertain |
 | `croncheck` | Watchdog for cron and other non-systemd supervisors: bounded raw HTTP `/v2/healthz` probe on the configured local bind (wildcards normalized to loopback); valid Gregg Ready/Warming/Failed means running, refusal alone permits a detached `<current_exe> run` spawn, and unrelated/malformed/silent/ambiguous peers return nonzero without spawning |
 | `configprint` | Read configured bind address and print one canonical `host:port` line; bind wildcards (`0.0.0.0`, `::`) are resolved to the host's primary local IP so the output is a usable address, and the original wildcard is preserved if the local IP cannot be resolved; no network I/O beyond a local route lookup, no listener bind, no service, no config mutation |
 | `status` | Read-only local diagnostics: version, config path, canonical bind `host:port`, bounded `/v2/healthz` classification (`ready`/`warming`/`failed`/`unreachable`/`not-gregg`, same probe authority as `croncheck`), detected startup-manager state. Exit 0 only when a valid Gregg endpoint answered; never starts/stops/restarts/installs, never infers process ownership from port occupancy, never invokes `sudo` |
@@ -535,7 +532,7 @@ configuration error and is neither written nor followed by process management.
 | `port` | Atomically mutate port; applies on next start (Windows also restarts the SCM service via config-intent dispatch) |
 | `version` | Print compile-time daemon version |
 
-The local job commands and `edit` honor the selected `--config`, validate before the existing atomic writer, and never signal or reload an already-running daemon; their changes are read at the next daemon start. `job add` does not modify `allow_privileged_jobs`; Unix euid 0 still requires that explicit setting before configured jobs can run.
+The local job commands and `edit` honor the selected `--config`, validate before the existing atomic writer, and never signal or reload an already-running daemon implicitly. Run `greggd [--config PATH] rehash` to apply a valid jobs-only change; if any startup-bound field also changed, the entire candidate is rejected and no job changes are applied. Restart-only fields are `name`, `host`, `port`, `sample_interval_ms`, `stale_after_ms`, `allow_privileged_jobs`, and `scheduler_history_limit`; future fields remain restart-only until explicitly classified. Without rehash, edits take effect at the next daemon start. Rehash repeats complete config validation and root-job authority checks, and `job add` never changes `allow_privileged_jobs`.
 
 The binary boundary owns logging initialization and error presentation. The
 runtime and CLI library functions return errors and never call
@@ -565,10 +562,10 @@ config identity path via a deterministic 64-bit FNV-1a hex digest. Existing
 config files are filesystem-canonicalized, so relative, absolute, and symlink
 spellings of the same file produce the same control paths; an absent implicit
 default uses a deterministic lexical absolute path without requiring the TOML
-file to exist. The canonicalization happens exactly once per `run`/`stop`
+file to exist. The canonicalization happens exactly once per `run`/`stop`/`rehash`
 operation and the resulting identity is threaded through the primary and
 fallback derivations, so a file appearing or disappearing between calls cannot
-flip the canonical/lexical branch and a differing `cwd` for `run` vs `stop`
+flip the canonical/lexical branch and a differing `cwd` for `run` vs `stop`/`rehash`
 cannot produce two `<id>` values for one spelling. Two different config files in the same directory still produce
 different control paths (`greggd-<id>.control.sock`). Editing `host` or
 `port` inside the same TOML does not change the `<id>`, so the same daemon
@@ -598,14 +595,26 @@ unreachable sockets result in idempotent not-running output. Permission
 errors map to exit code 4. Unexpected I/O conditions — for example a
 daemon that accepts `STOP\n` but never replies — are reported as an
 uncertain outcome with a warning and exit code 3 rather than being
-conflated with "not running". The HTTP API remains read-only and is unrelated
-to the control socket. Stale socket cleanup is conservative: only
+conflated with "not running". `greggd rehash` uses this same path identity, sends only `REHASH\n`, and
+waits for the scheduler's applied/rejected reply; the daemon reloads its own
+captured config path, never an arbitrary client-supplied path. Client/server
+frames and waits are bounded, and a timeout after request delivery is reported
+as uncertain. No process discovery or service-manager call is involved. The
+HTTP API remains read-only and is unrelated to local control. Stale socket
+cleanup is conservative: only
 `ConnectionRefused` and `NotFound` connect failures, after metadata has
 confirmed the entry is a socket, authorize unlinking. `PermissionDenied`,
 `TimedOut`, or any other unexpected error never unlinks an existing
 entry.
 
 ### Windows service management
+
+The Windows local rehash endpoint is a config-path-derived named pipe. Its
+protected DACL grants access to `BUILTIN\Administrators` and
+`NT AUTHORITY\LocalService` only (`D:P(A;;GA;;;BA)(A;;GA;;;LS)`), and remote
+clients are rejected. It carries the same fixed `REHASH\n` request and waits
+for scheduler completion; SCM control acceptance is not treated as a rehash
+acknowledgment. The endpoint uses bounded newline frames and I/O/apply waits.
 
 The Windows-only `ServiceManager` trait provides `start`, `stop`, `restart`,
 `is_active`, `unregister`, and a bounded registration query (full

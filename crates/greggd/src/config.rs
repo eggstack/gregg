@@ -234,6 +234,48 @@ impl Config {
         self.scheduler_history_limit
             .unwrap_or(DEFAULT_SCHEDULER_HISTORY_LIMIT)
     }
+
+    /// List changed non-job fields that remain startup-bound for Plan 197.
+    /// Any future field not deliberately classified here is still rejected via
+    /// the exhaustive fallback equality check.
+    pub(crate) fn restart_only_changes(&self, candidate: &Self) -> Vec<&'static str> {
+        let mut changed = Vec::new();
+        if self.name != candidate.name {
+            changed.push("name");
+        }
+        if self.host != candidate.host {
+            changed.push("host");
+        }
+        if self.port != candidate.port {
+            changed.push("port");
+        }
+        if self.sample_interval_ms != candidate.sample_interval_ms {
+            changed.push("sample_interval_ms");
+        }
+        if self.stale_after_ms != candidate.stale_after_ms {
+            changed.push("stale_after_ms");
+        }
+        if self.allow_privileged_jobs != candidate.allow_privileged_jobs {
+            changed.push("allow_privileged_jobs");
+        }
+        if self.scheduler_history_limit != candidate.scheduler_history_limit {
+            changed.push("scheduler_history_limit");
+        }
+
+        let mut candidate_without_known_changes = candidate.clone();
+        candidate_without_known_changes.name.clone_from(&self.name);
+        candidate_without_known_changes.host = self.host;
+        candidate_without_known_changes.port = self.port;
+        candidate_without_known_changes.sample_interval_ms = self.sample_interval_ms;
+        candidate_without_known_changes.stale_after_ms = self.stale_after_ms;
+        candidate_without_known_changes.allow_privileged_jobs = self.allow_privileged_jobs;
+        candidate_without_known_changes.scheduler_history_limit = self.scheduler_history_limit;
+        candidate_without_known_changes.jobs.clone_from(&self.jobs);
+        if candidate_without_known_changes != *self {
+            changed.push("other");
+        }
+        changed
+    }
 }
 
 /// How old a `.greggd-*.toml.tmp` file must be before it is treated as stale.
@@ -423,6 +465,33 @@ impl Config {
             path: path.to_path_buf(),
             source: e,
         })?;
+        Self::parse(&content, Some(path))
+    }
+
+    /// Load a candidate configuration under a strict byte bound for local rehash.
+    ///
+    /// This still performs the same complete parse and validation as [`Self::load`].
+    pub(crate) fn load_for_rehash(path: &Path) -> Result<Self, ConfigError> {
+        use std::io::Read;
+
+        const MAX_BYTES: u64 = 1_048_576;
+        let file = fs::File::open(path).map_err(|source| ConfigError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let mut content = String::new();
+        file.take(MAX_BYTES + 1)
+            .read_to_string(&mut content)
+            .map_err(|source| ConfigError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        if content.len() as u64 > MAX_BYTES {
+            return Err(ConfigError::TooLarge {
+                path: path.to_path_buf(),
+                max_bytes: MAX_BYTES,
+            });
+        }
         Self::parse(&content, Some(path))
     }
 
@@ -918,6 +987,8 @@ pub enum ConfigError {
         path: Option<PathBuf>,
         source: toml::de::Error,
     },
+    /// Rehash candidate exceeded its bounded input size.
+    TooLarge { path: PathBuf, max_bytes: u64 },
     /// Configuration failed validation.
     Validation(Vec<ConfigViolation>),
     /// Root must explicitly acknowledge scheduled command execution.
@@ -942,6 +1013,11 @@ impl fmt::Display for ConfigError {
                     write!(f, "failed to parse config: {source}")
                 }
             }
+            Self::TooLarge { path, max_bytes } => write!(
+                f,
+                "configuration {} exceeds the {max_bytes}-byte rehash limit",
+                path.display()
+            ),
             Self::Validation(violations) => {
                 write!(f, "configuration validation failed:")?;
                 for v in violations {
@@ -968,9 +1044,10 @@ impl std::error::Error for ConfigError {
         match self {
             Self::Io { source, .. } => Some(source),
             Self::Parse { source, .. } => Some(source),
-            Self::Validation(_) | Self::PrivilegedJobsOptInRequired | Self::EditorFailed { .. } => {
-                None
-            }
+            Self::TooLarge { .. }
+            | Self::Validation(_)
+            | Self::PrivilegedJobsOptInRequired
+            | Self::EditorFailed { .. } => None,
             Self::AtomicWrite { source, .. } => Some(source),
         }
     }
@@ -1100,6 +1177,77 @@ mod tests {
     /// Plan 187: the wildcard is no longer a default. A machine that joins an
     /// untrusted network must not serve an unauthenticated API without the
     /// operator choosing that.
+    #[test]
+    fn rehash_policy_accepts_jobs_only_and_lists_every_restart_only_field() {
+        let active = Config::default();
+        let mut jobs_only = active.clone();
+        jobs_only.jobs.push(test_job("new-job"));
+        assert_eq!(active.restart_only_changes(&jobs_only), Vec::<&str>::new());
+
+        let cases = [
+            (
+                "name",
+                Config {
+                    name: "changed".to_owned(),
+                    ..active.clone()
+                },
+            ),
+            (
+                "host",
+                Config {
+                    host: "192.0.2.10".parse().unwrap(),
+                    ..active.clone()
+                },
+            ),
+            (
+                "port",
+                Config {
+                    port: active.port + 1,
+                    ..active.clone()
+                },
+            ),
+            (
+                "sample_interval_ms",
+                Config {
+                    sample_interval_ms: 2_000,
+                    ..active.clone()
+                },
+            ),
+            (
+                "stale_after_ms",
+                Config {
+                    stale_after_ms: 20_000,
+                    ..active.clone()
+                },
+            ),
+            (
+                "allow_privileged_jobs",
+                Config {
+                    allow_privileged_jobs: true,
+                    ..active.clone()
+                },
+            ),
+            (
+                "scheduler_history_limit",
+                Config {
+                    scheduler_history_limit: Some(4),
+                    ..active.clone()
+                },
+            ),
+        ];
+        for (field, candidate) in cases {
+            assert_eq!(active.restart_only_changes(&candidate), [field]);
+        }
+
+        let mut mixed = jobs_only;
+        mixed.port += 1;
+        assert_eq!(active.restart_only_changes(&mixed), ["port"]);
+        assert_ne!(
+            active.jobs, mixed.jobs,
+            "mixed candidate includes job changes too"
+        );
+    }
+
     #[test]
     fn default_config_binds_loopback() {
         let config = Config::default();

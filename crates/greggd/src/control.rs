@@ -63,6 +63,11 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tracing::warn;
 
+use crate::local_control::{
+    decode_response, encode_response, RehashRejection, RehashRequest, RehashResponse,
+    RehashTransportError, MAX_REHASH_RESPONSE_BYTES,
+};
+
 /// Maximum length of the `sun_path` field on Unix-domain sockets.
 ///
 /// Linux `UNIX_PATH_MAX` is 108; macOS is 104. We leave a small margin for a
@@ -92,6 +97,11 @@ pub const STOP_COMMAND: &[u8] = b"STOP\n";
 
 /// Wire-level OK acknowledgement. Terminated with `\n`.
 pub const OK_RESPONSE: &[u8] = b"OK\n";
+
+/// Wire-level rehash request. It carries no path or config data.
+pub const REHASH_COMMAND: &[u8] = crate::local_control::REHASH_COMMAND;
+
+const REHASH_CLIENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Errors returned by the control socket helpers.
 #[derive(Debug, Error)]
@@ -515,6 +525,105 @@ pub fn send_stop(config_path: &Path) -> Result<StopOutcome, ControlError> {
     }
 }
 
+/// Send one bounded REHASH-newline request over the selected config's local socket.
+///
+/// The daemon response is emitted only after scheduler reconciliation. Missing
+/// sockets are reported as `NotRunning`; losing the reply after delivering the
+/// request is explicitly uncertain.
+pub fn send_rehash(config_path: &Path) -> Result<RehashResponse, RehashTransportError> {
+    use std::io::{Read, Write};
+    use std::time::Duration;
+
+    const CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
+    const IO_TIMEOUT: Duration = REHASH_CLIENT_TIMEOUT;
+    let candidates = ControlIdentity::for_path(config_path).stop_candidates();
+    let mut last_error = None;
+
+    for candidate in &candidates {
+        let mut stream = match connect_with_timeout(candidate, CONNECT_TIMEOUT) {
+            Ok(stream) => stream,
+            Err(error) => {
+                record_stop_error(&mut last_error, error);
+                continue;
+            }
+        };
+        stream.set_write_timeout(Some(IO_TIMEOUT))?;
+        if let Err(error) = stream.write_all(REHASH_COMMAND) {
+            return Err(RehashTransportError::Uncertain {
+                detail: format!("request may have been delivered: {error}"),
+            });
+        }
+
+        let response_deadline = std::time::Instant::now() + IO_TIMEOUT;
+        let mut frame = [0; MAX_REHASH_RESPONSE_BYTES + 1];
+        let mut length = 0;
+        loop {
+            if length == frame.len() {
+                return Err(RehashTransportError::BadResponse);
+            }
+            let remaining = response_deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(RehashTransportError::Uncertain {
+                    detail: "timed out after delivering the rehash request".into(),
+                });
+            }
+            if let Err(error) = stream.set_read_timeout(Some(remaining)) {
+                return Err(RehashTransportError::Uncertain {
+                    detail: format!("could not await the daemon acknowledgment: {error}"),
+                });
+            }
+            match stream.read(&mut frame[length..]) {
+                Ok(0) => {
+                    return Err(RehashTransportError::Uncertain {
+                        detail: "daemon closed the connection before acknowledging rehash".into(),
+                    });
+                }
+                Ok(read) => {
+                    length += read;
+                    if frame[..length].contains(&b'\n') {
+                        let response = decode_response(&frame[..length])?;
+                        return if response == RehashResponse::Uncertain {
+                            Err(RehashTransportError::Uncertain {
+                                detail: "daemon accepted the request but did not confirm scheduler application".into(),
+                            })
+                        } else {
+                            Ok(response)
+                        };
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    return Err(RehashTransportError::Uncertain {
+                        detail: "timed out after delivering the rehash request".into(),
+                    });
+                }
+                Err(error) => {
+                    return Err(RehashTransportError::Uncertain {
+                        detail: format!("connection failed after delivering the request: {error}"),
+                    });
+                }
+            }
+        }
+    }
+
+    match last_error {
+        Some(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            ) =>
+        {
+            Err(RehashTransportError::NotRunning)
+        }
+        Some(error) => Err(RehashTransportError::Io(error)),
+        None => Err(RehashTransportError::NotRunning),
+    }
+}
+
 /// Result of a `greggd stop` invocation.
 #[derive(Debug, PartialEq, Eq)]
 pub enum StopOutcome {
@@ -789,8 +898,18 @@ pub fn spawn_stop_task(
     _path: PathBuf,
     notify: tokio::sync::oneshot::Sender<std::io::Result<&'static str>>,
 ) -> tokio::task::JoinHandle<()> {
+    spawn_control_task(listener, None, notify)
+}
+
+/// Spawn the shared STOP/REHASH listener. REHASH is acknowledged only after
+/// the scheduler replies; STOP retains the existing `OK\n` behavior.
+pub(crate) fn spawn_control_task(
+    listener: tokio::net::UnixListener,
+    rehash_tx: Option<tokio::sync::mpsc::Sender<RehashRequest>>,
+    notify: tokio::sync::oneshot::Sender<std::io::Result<&'static str>>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let result = stop_loop(listener).await;
+        let result = stop_loop(listener, rehash_tx).await;
         let _ = notify.send(result);
     })
 }
@@ -826,7 +945,10 @@ impl Drop for ControlSocketGuard {
     }
 }
 
-async fn stop_loop(listener: tokio::net::UnixListener) -> std::io::Result<&'static str> {
+async fn stop_loop(
+    listener: tokio::net::UnixListener,
+    rehash_tx: Option<tokio::sync::mpsc::Sender<RehashRequest>>,
+) -> std::io::Result<&'static str> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let mut accept_backoff = std::time::Duration::from_millis(20);
@@ -892,6 +1014,32 @@ async fn stop_loop(listener: tokio::net::UnixListener) -> std::io::Result<&'stat
             })
             .await;
             return Ok("control-stop");
+        }
+        if received.as_deref() == Some(REHASH_COMMAND) {
+            let response = if let Some(sender) = &rehash_tx {
+                let (reply, response_rx) = tokio::sync::oneshot::channel();
+                match sender.try_send(RehashRequest { reply }) {
+                    Ok(()) => match tokio::time::timeout(CONTROL_CLIENT_TIMEOUT, response_rx).await
+                    {
+                        Ok(Ok(response)) => response,
+                        Ok(Err(_)) | Err(_) => RehashResponse::Uncertain,
+                    },
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => RehashResponse::Busy,
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                        RehashResponse::Rejected(RehashRejection::ControlUnavailable)
+                    }
+                }
+            } else {
+                RehashResponse::Rejected(RehashRejection::ControlUnavailable)
+            };
+            let frame = encode_response(&response);
+            let _ = tokio::time::timeout(CONTROL_CLIENT_TIMEOUT, async {
+                let _ = stream.write_all(&frame).await;
+                let _ = stream.flush().await;
+                let _ = stream.shutdown().await;
+            })
+            .await;
+            continue;
         }
         let _ = stream.shutdown().await;
     }
@@ -1151,6 +1299,50 @@ mod tests {
     fn wire_constants_have_expected_format() {
         assert_eq!(STOP_COMMAND, b"STOP\n");
         assert_eq!(OK_RESPONSE, b"OK\n");
+        assert_eq!(REHASH_COMMAND, b"REHASH\n");
+    }
+
+    #[tokio::test]
+    async fn rehash_returns_only_the_scheduler_acknowledgment() {
+        let dir = fresh_temp_dir("rehash-ack");
+        let cfg = make_config_file(&dir, "greggd.toml");
+        let ControlBind::Bound { path, listener } = bind_listener(&cfg) else {
+            panic!("control listener must bind");
+        };
+        let _guard = ControlSocketGuard::new(path);
+        let (request_tx, mut request_rx) = tokio::sync::mpsc::channel(1);
+        let (notify_tx, _notify_rx) = tokio::sync::oneshot::channel();
+        let _control = spawn_control_task(listener, Some(request_tx), notify_tx);
+        let scheduler = tokio::spawn(async move {
+            let request = request_rx.recv().await.expect("scheduler receives request");
+            request
+                .reply
+                .send(RehashResponse::RestartRequired(vec!["host", "port"]))
+                .expect("control listener is awaiting the result");
+        });
+
+        let client_path = cfg.clone();
+        let response = tokio::task::spawn_blocking(move || send_rehash(&client_path))
+            .await
+            .expect("client task completes")
+            .expect("well-formed scheduler response");
+        assert_eq!(
+            response,
+            RehashResponse::RestartRequired(vec!["host", "port"])
+        );
+        scheduler.await.expect("scheduler responder completes");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rehash_without_a_listener_is_not_running() {
+        let dir = fresh_temp_dir("rehash-missing");
+        let cfg = make_config_file(&dir, "greggd.toml");
+        assert!(matches!(
+            send_rehash(&cfg),
+            Err(RehashTransportError::NotRunning)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
