@@ -27,12 +27,15 @@ used by `gregg add`.
 
 Bracketed endpoint syntax is reserved for IPv6 literals. IPv6 link-local zone
 identifiers are supported. `gregg remove` accepts a host without a port,
-including a bare IPv6 literal, and removes the matching configured host.
+including a bare IPv6 literal, and removes the matching configured host. With no
+argument, `gregg remove` opens a selector and removes only the selected entry.
+Use `j`/`k` or Up/Down to move, Enter to remove, and Esc or `q` to cancel.
 
 Other useful commands:
 
 ```text
-gregg remove HOST       Remove a configured host
+gregg remove            Select a configured host to remove
+gregg remove HOST       Remove all configured entries for a host
 gregg edit              Open the client configuration
 gregg version           Print the client version
 gregg update            Update this executable
@@ -110,16 +113,35 @@ invoked client executable and does not remove a sibling `greggd` binary.
 
 ## EggPool
 
-The optional EggPool pane uses one configured endpoint:
+The optional EggPool pane uses one configured endpoint. Add it with:
 
 ```text
 gregg eggpool add pool.local:11300
 gregg eggpool add pool.local:11300 --https --api-key-env EGGPOOL_API_KEY
 ```
 
-Use `--https` for TLS and `--replace` to change an existing endpoint. The
-configuration stores the environment variable name, not the API key. Omit the
-`[eggpool]` configuration to disable the pane and its network activity.
+The command writes one `[eggpool]` table to the `gregg` client configuration.
+Manage it with `gregg eggpool list` and `gregg eggpool remove`. Removing without
+an endpoint opens the selector; Enter removes the selected endpoint, while Esc
+or `q` cancels. A supplied host or host:port keeps target-based removal. The
+equivalent TOML is:
+
+```toml
+[eggpool]
+id = "01234567-89ab-4cde-8123-456789abcdef" # UUID v4
+host = "pool.local"                         # host only; no scheme or path
+port = 11300
+scheme = "https"                            # "http" or "https"
+name = "Main EggPool"                       # optional display name
+api_key_env = "EGGPOOL_API_KEY"              # optional environment-variable name
+```
+
+`id`, `host`, `port`, and `scheme` are required; `name` and `api_key_env` are
+optional. The CLI generates the UUIDv4 `id`; preserve it when editing the file.
+`api_key_env` names the environment variable containing the key; the key itself
+is never written to the config. Set the variable in the environment before
+starting `gregg`. Use `--replace` to change an existing endpoint. Omit the
+`[eggpool]` table to disable the pane and its network activity.
 
 With an API key configured, cleartext HTTP is accepted only for a loopback
 endpoint (`127.0.0.1`, `::1`, or `localhost`); `gregg eggpool add` refuses a
@@ -142,8 +164,23 @@ provide metrics when supported. `Ctrl-R` refreshes the active pane.
 
 Press `c` to open scheduled-job details for the selected host. Use
 `Shift-J` and `Shift-K` to select a job. The summary updates every 30 seconds;
-run history is fetched when it changes. The client daemon keeps a bounded,
-memory-only history cache, which is lost when that daemon restarts.
+run history is fetched when it changes.
+
+The optional `[cron]` table in `gregg.toml` controls the client-side display
+window and memory cache; it does not define schedules. Omit it to use the
+defaults of five displayed records and 25 cached records per job:
+
+```toml
+[cron]
+display_history = 5
+cache_history = 25
+```
+
+`display_history` accepts 1–20; `cache_history` accepts 1–50 and must be at least
+as large as `display_history`. The cache is bounded and memory-only, and is lost
+when the client daemon restarts. Define jobs in the monitored host's
+`greggd.toml` instead; see [Scheduled maintenance](daemon.md#scheduled-maintenance)
+for the `[[jobs]]` example and options.
 
 A daemon that does not support the scheduler routes is shown as unsupported,
 not offline. Scheduler read failures keep the last data and mark it stale.

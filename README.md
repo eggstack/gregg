@@ -109,7 +109,12 @@ and scheduled-job rendering.
 
 ```text
 gregg list                         List configured machines
-gregg remove 192.168.1.10          Remove a machine by host
+gregg remove                       Select one machine to remove
+gregg remove HOST[:PORT]           Remove by host or exact endpoint
+gregg eggpool add HOST             Configure the EggPool endpoint
+gregg eggpool list                 List the EggPool endpoint
+gregg eggpool remove               Select the EggPool endpoint to remove
+gregg eggpool remove HOST[:PORT]   Remove the matching EggPool endpoint
 gregg refresh 30                   Set the polling interval in seconds
 gregg edit                         Edit the client configuration
 gregg update                       Update this client
@@ -136,10 +141,12 @@ unavailable rather than shown as zero. Older daemons remain usable.
 Optional `greggd` scheduled jobs run local maintenance commands from cron
 schedules. The client can display their state and recent output. Scheduler
 output is available to any client that can reach the unauthenticated daemon
-listener, so keep that listener on a trusted network. See [Daemon](docs/daemon.md).
+listener, so keep that listener on a trusted network. See the [scheduled-job
+configuration and TOML example](docs/daemon.md#scheduled-maintenance).
 
 The optional EggPool pane displays periodized usage metrics and separate
-service-health information. See [Client](docs/client.md#eggpool).
+service-health information. See the
+[EggPool setup and TOML example](docs/client.md#eggpool).
 
 ## Supported release targets
 

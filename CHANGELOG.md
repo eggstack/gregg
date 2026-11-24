@@ -9,6 +9,11 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Interactive CLI removal:** `gregg remove` and `gregg eggpool remove` now
+  list configured entries when no target is supplied. Use `j`/`k` or Up/Down
+  to select and Enter to remove; Esc, `q`, or Ctrl-C cancels. Target-based
+  removal remains available with its existing matching behavior.
+
 - **Page-scrolling aliases in the TUI (Plan 184):** `Ctrl-D` and `Ctrl-U` page
   forward and back through the system list, next to the existing
   `PageDown`/`PageUp` and `f`/`b` bindings. They are aliases of the same

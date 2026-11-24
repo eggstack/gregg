@@ -842,22 +842,22 @@ mod tests {
                     }
                 }
                 let request = String::from_utf8_lossy(&buf[..total]);
-                let response_status = if request
+                let (response_status, response_body) = if request
                     .lines()
                     .next()
                     .is_some_and(|line| line.contains("/v2/"))
                     && !body.windows(9).any(|window| window == b"snapshot\":")
                 {
-                    "404 Not Found"
+                    ("404 Not Found", &[][..])
                 } else {
-                    &status
+                    (status.as_str(), body.as_slice())
                 };
                 let header = format!(
                     "HTTP/1.1 {response_status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
+                    response_body.len()
                 );
-                stream.write_all(header.as_bytes()).await.unwrap();
-                stream.write_all(&body).await.unwrap();
+                let _ = stream.write_all(header.as_bytes()).await;
+                let _ = stream.write_all(response_body).await;
             }
         });
         format!("http://127.0.0.1:{}", addr.port())
@@ -1767,7 +1767,7 @@ mod tests {
                     let (body, status) = if is_v2 {
                         match &v2_resp {
                             Some((body, status)) => (body.clone(), status.clone()),
-                            None => (b"not found".to_vec(), "404 Not Found".to_string()),
+                            None => (Vec::new(), "404 Not Found".to_string()),
                         }
                     } else {
                         (v1_resp.0.clone(), v1_resp.1.clone())

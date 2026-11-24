@@ -38,6 +38,25 @@ gregg
 `gregg add` requires an explicit port. It accepts `host:port`, `[ipv6]:port`,
 `nickname@host:port`, and `http://host:port/`. HTTPS is not supported.
 
+## Configure endpoints
+
+```text
+gregg list
+gregg remove
+gregg remove server.local
+gregg eggpool add pool.local:11300 --https
+gregg eggpool list
+gregg eggpool remove
+```
+
+`gregg remove` without an endpoint opens a selector for monitored machines;
+`gregg eggpool remove` does the same for the configured EggPool endpoint. Use
+`j`/`k` or Up/Down to move, Enter to remove the highlighted item, and Esc or
+`q` to cancel. A supplied target keeps the existing non-interactive behavior:
+host-only system removal removes every matching host, while `host:port` removes
+one endpoint. EggPool target matching remains host-wide or exact by port.
+Without a terminal, provide a target for either remove command.
+
 ## Navigation
 
 | Key | Action |

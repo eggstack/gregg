@@ -850,13 +850,19 @@ instead of surfacing later as a `NetworkError` or an unrenderable
 |---------|---------|
 | `add <host:port or http://host:port/> or nickname@host:port>` | Add endpoint with required explicit port; `--name` and an inline `nickname@` are mutually exclusive; persisted fields are normalized `host`/`port` and optional `name` |
 | `list` | List configured endpoints |
-| `remove <host\|host:port>` | Host-only removes all endpoints on that host; `host:port` removes one exact endpoint |
+| `remove [<host\|host:port>]` | With no target, interactively select one endpoint; host-only removes all entries on that host; `host:port` removes one exact endpoint |
 | `refresh` | Set the global polling interval (seconds) |
 | `edit` | Open config in editor |
 | `version` | Print client version |
 | `update` | Thin CLI adapter over the shared `gregg-update` mechanism (binds program identity, preserves variant structure with program-prefixed `Display`); full flow (`run_simple_update`) lives in `gregg-update` |
 | `uninstall [--dry-run] [--purge]` | Remove only the exact invoked client executable (sibling `greggd` survives; no directory recursion); config preserved by default, `--purge` removes only the resolved config file after successful Unix Cargo package removal, `--dry-run` shows Cargo plus config intent without mutation; Windows Cargo-owned installs print the zero-mutation handoff; never inits the TUI runtime |
-| `eggpool add/list/remove` | Manage the single EggPool endpoint; adding another requires `--replace` and reports a configuration conflict otherwise |
+| `eggpool add/list/remove` | Manage the single EggPool endpoint; add supports `--replace`; remove without a target opens the selector, while a target preserves host/host:port matching |
+
+When either `remove` command has no target, the CLI renders the configured
+entries in a terminal selector. `j`/`k` and Up/Down move; Enter confirms the
+selected entry; Esc, `q`, or Ctrl-C cancels without changing configuration. A
+non-terminal invocation must supply a target. The selected stable config ID is
+rechecked before writing, so a concurrent edit cannot redirect the removal.
 
 ## EggPool
 

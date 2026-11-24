@@ -488,6 +488,12 @@ violation when one already exists.
 EggPool URL-normalization and URL-representation failures are reported as
 `InvalidEndpoint`, not generic transport failures.
 
+`gregg remove` and `gregg eggpool remove` accept an optional target. Without
+one, they render the configured entries in a terminal selector: `j`/`k` or
+Up/Down moves, Enter removes the highlighted stable config ID, and Esc, `q`, or
+Ctrl-C cancels. A supplied target keeps the existing host/host:port removal
+semantics, and non-terminal invocations must supply a target.
+
 ## Ctrl-R config reload
 
 Still the only reload boundary; there is no filesystem watcher. The Systems-pane

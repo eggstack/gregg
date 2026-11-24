@@ -1804,6 +1804,19 @@ mod tests {
         }
     }
 
+    async fn wait_for_result_count(worker: &EggpoolWorker, expected: usize) {
+        let watchdog = watchdog();
+        tokio::select! {
+            biased;
+            () = async {
+                while worker.results.len() < expected {
+                    tokio::task::yield_now().await;
+                }
+            } => {}
+            _ = watchdog => panic!("EggPool worker did not queue {expected} results"),
+        }
+    }
+
     async fn stop(
         worker: &mut EggpoolWorker,
         cancel: &tokio_util::sync::CancellationToken,
@@ -2448,8 +2461,10 @@ mod tests {
             "/api/stats/summary?period=1h"
         );
         // Open the gate once: it then answers every request, so each cycle below
-        // completes.
+        // completes. Wait for the initial result before advancing virtual time;
+        // otherwise a slow fetch may arm its refresh deadline after the advance.
         gate.send(true).ok();
+        wait_for_result_count(&worker, 1).await;
 
         // One passive refresh per cycle. The first three fill the remaining
         // slots; the fourth's result cannot be delivered.
@@ -2460,8 +2475,16 @@ mod tests {
                 "/api/stats/summary?period=1h",
                 "passive cycle {cycle} must issue the refresh"
             );
-            for _ in 0..256 {
-                tokio::task::yield_now().await;
+            if cycle < RESULT_CHANNEL_CAPACITY {
+                // Do not advance again until this result has been delivered and
+                // the worker has armed the next passive deadline.
+                wait_for_result_count(&worker, cycle + 1).await;
+            } else {
+                // Let the final fetch reach the full result channel so the
+                // subsequent intent change exercises the backpressured path.
+                for _ in 0..256 {
+                    tokio::task::yield_now().await;
+                }
             }
         }
         assert_eq!(

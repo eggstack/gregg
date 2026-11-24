@@ -404,21 +404,21 @@ mod tests {
                     }
                 }
                 let request = String::from_utf8_lossy(&buf[..total]);
-                let response_status = if request
+                let (response_status, response_body) = if request
                     .lines()
                     .next()
                     .is_some_and(|line| line.contains("/v2/"))
                 {
-                    "404 Not Found"
+                    ("404 Not Found", &[][..])
                 } else {
-                    &status
+                    (status.as_str(), body.as_slice())
                 };
                 let header = format!(
-                    "HTTP/1.1 {response_status}\r\nContent-Length: {}\r\n\r\n",
-                    body.len()
+                    "HTTP/1.1 {response_status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    response_body.len()
                 );
-                stream.write_all(header.as_bytes()).await.unwrap();
-                stream.write_all(&body).await.unwrap();
+                let _ = stream.write_all(header.as_bytes()).await;
+                let _ = stream.write_all(response_body).await;
             }
         });
         format!("http://127.0.0.1:{}", addr.port())
@@ -870,7 +870,17 @@ mod tests {
             .iter()
             .filter(|r| matches!(r.outcome, PollOutcome::Online(_)))
             .count();
-        assert_eq!(online_count, n, "all endpoints should be online");
+        assert_eq!(
+            online_count,
+            n,
+            "all endpoints should be online; failures: {:?}",
+            batch
+                .results
+                .iter()
+                .filter(|result| !matches!(result.outcome, PollOutcome::Online(_)))
+                .map(|result| (&result.endpoint.id, &result.outcome))
+                .collect::<Vec<_>>()
+        );
 
         cancel.cancel();
     }
@@ -1442,21 +1452,21 @@ mod tests {
                     continue;
                 }
                 let request = String::from_utf8_lossy(&buf[..total]);
-                let status = if request
+                let (status, response_body) = if request
                     .lines()
                     .next()
                     .is_some_and(|line| line.contains("/v2/"))
                 {
-                    "404 Not Found"
+                    ("404 Not Found", &[][..])
                 } else {
-                    "200 OK"
+                    ("200 OK", body.as_bytes())
                 };
                 let header = format!(
-                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\n\r\n",
-                    body.len()
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    response_body.len()
                 );
-                stream.write_all(header.as_bytes()).await.unwrap();
-                stream.write_all(body.as_bytes()).await.unwrap();
+                let _ = stream.write_all(header.as_bytes()).await;
+                let _ = stream.write_all(response_body).await;
             }
         });
         format!("http://127.0.0.1:{}", addr.port())

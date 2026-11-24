@@ -17,6 +17,8 @@ use crate::eggpool_endpoint::{
 };
 use crate::endpoint::{EndpointError, EndpointSpec};
 
+mod selector;
+
 /// Compact keyboard-first terminal monitor for multiple remote systems.
 #[derive(Parser)]
 #[command(
@@ -111,21 +113,22 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Remove one or more monitored endpoints.
+    /// Remove monitored endpoints.
     ///
-    /// Use host only to remove all entries for that host (regardless of port),
-    /// or host:port to remove a specific endpoint.
+    /// With no endpoint, opens a keyboard selector and removes only the selected
+    /// entry. Supplying a host still removes every entry on that host;
+    /// host:port removes one exact endpoint.
     ///
     /// # Examples
     ///
     /// ```text
+    /// gregg remove
     /// gregg remove 192.168.1.8
     /// gregg remove 10.0.0.5:8080
     /// ```
     Remove {
-        /// Endpoint to remove. Use host only to remove all entries for that host,
-        /// or host:port to remove a specific endpoint.
-        endpoint: String,
+        /// Optional endpoint. Without one, interactively select a single entry.
+        endpoint: Option<String>,
     },
     /// Set the global polling interval in seconds.
     ///
@@ -364,9 +367,12 @@ pub enum EggpoolCommand {
         json: bool,
     },
     /// Remove the configured `EggPool` endpoint.
+    ///
+    /// Without an endpoint, opens a selector; with one, removes the matching
+    /// endpoint as before.
     Remove {
-        /// `EggPool` host or host:port. Host-only matching ignores the port.
-        endpoint: String,
+        /// Optional `EggPool` host or host:port. Host-only matching ignores the port.
+        endpoint: Option<String>,
     },
 }
 
@@ -469,7 +475,10 @@ fn dispatch_inner(
             replace,
         } => cmd_add(store, endpoint, name.as_deref(), *replace),
         Command::List { json } => cmd_list(store, *json),
-        Command::Remove { endpoint } => cmd_remove(store, endpoint),
+        Command::Remove { endpoint } => match endpoint.as_deref() {
+            Some(endpoint) => cmd_remove(store, endpoint),
+            None => cmd_remove_interactive(store),
+        },
         Command::Refresh { seconds } => cmd_refresh(store, *seconds),
         Command::Edit => cmd_edit(store),
         Command::Update => cmd_update(store),
@@ -751,7 +760,10 @@ fn dispatch_eggpool(
             *replace,
         ),
         EggpoolCommand::List { json } => cmd_eggpool_list(store, *json),
-        EggpoolCommand::Remove { endpoint } => cmd_eggpool_remove(store, endpoint),
+        EggpoolCommand::Remove { endpoint } => match endpoint.as_deref() {
+            Some(endpoint) => cmd_eggpool_remove(store, endpoint),
+            None => cmd_eggpool_remove_interactive(store),
+        },
     }
 }
 
@@ -854,6 +866,49 @@ fn cmd_eggpool_remove(
         eprintln!("removed EggPool endpoint");
     } else {
         eprintln!("no matching EggPool endpoint found: {endpoint_str}");
+    }
+    Ok(())
+}
+
+fn cmd_eggpool_remove_interactive(store: &ConfigStore) -> Result<(), Box<dyn std::error::Error>> {
+    let config = store.load_or_default()?;
+    let Some(entry) = config.eggpool else {
+        eprintln!("no EggPool endpoint configured");
+        return Ok(());
+    };
+
+    let label = format!(
+        "{}  {}{}",
+        entry.name.as_deref().unwrap_or("EggPool"),
+        entry.display_address(),
+        entry
+            .api_key_env
+            .as_deref()
+            .map_or(String::new(), |env| format!("  auth-env={env}")),
+    );
+    let options = [label];
+    let Some(0) = selector::select("Remove EggPool endpoint", &options)? else {
+        eprintln!("removal cancelled");
+        return Ok(());
+    };
+
+    // Recheck the stable id after interaction so a concurrent config edit
+    // cannot cause this selection to remove a different endpoint.
+    let selected_id = entry.id;
+    let removed = store.mutate_with_result(|config| {
+        let matches = config
+            .eggpool
+            .as_ref()
+            .is_some_and(|current| current.id == selected_id);
+        if matches {
+            config.eggpool = None;
+        }
+        Ok(matches)
+    })?;
+    if removed {
+        eprintln!("removed EggPool endpoint");
+    } else {
+        eprintln!("selected EggPool endpoint no longer exists; no changes made");
     }
     Ok(())
 }
@@ -1112,6 +1167,39 @@ fn cmd_remove(store: &ConfigStore, endpoint_str: &str) -> Result<(), Box<dyn std
         }
         Err(e) => Err(Box::new(e)),
     }
+}
+
+fn cmd_remove_interactive(store: &ConfigStore) -> Result<(), Box<dyn std::error::Error>> {
+    let config = store.load_or_default()?;
+    if config.systems.is_empty() {
+        eprintln!("no monitored endpoints configured");
+        return Ok(());
+    }
+
+    let labels: Vec<String> = config
+        .systems
+        .iter()
+        .map(|system| system.to_endpoint().to_string())
+        .collect();
+    let Some(selected) = selector::select("Remove monitored endpoint", &labels)? else {
+        eprintln!("removal cancelled");
+        return Ok(());
+    };
+    let selected_id = config.systems[selected].id.clone();
+
+    // Remove by stable identity, not the displayed position: another process
+    // may have changed the config while the selector was open.
+    let removed = store.mutate_with_result(|config| {
+        let original_len = config.systems.len();
+        config.systems.retain(|system| system.id != selected_id);
+        Ok(original_len - config.systems.len())
+    })?;
+    if removed == 0 {
+        eprintln!("selected endpoint no longer exists; no changes made");
+    } else {
+        eprintln!("removed {removed} endpoint(s)");
+    }
+    Ok(())
 }
 
 fn cmd_refresh(store: &ConfigStore, seconds: u64) -> Result<(), Box<dyn std::error::Error>> {
@@ -1471,9 +1559,37 @@ mod tests {
         let cli = Cli::try_parse_from(["gregg", "remove", "192.168.1.1"]).unwrap();
         match cli.command.unwrap() {
             Command::Remove { endpoint } => {
-                assert_eq!(endpoint, "192.168.1.1");
+                assert_eq!(endpoint.as_deref(), Some("192.168.1.1"));
             }
             _ => panic!("expected Remove command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_remove_without_endpoint_for_interactive_selection() {
+        let cli = Cli::try_parse_from(["gregg", "remove"]).unwrap();
+        assert!(matches!(
+            cli.command.unwrap(),
+            Command::Remove { endpoint: None }
+        ));
+    }
+
+    #[test]
+    fn cli_parses_eggpool_remove_with_and_without_endpoint() {
+        let cli = Cli::try_parse_from(["gregg", "eggpool", "remove"]).unwrap();
+        assert!(matches!(
+            cli.command.unwrap(),
+            Command::Eggpool {
+                command: EggpoolCommand::Remove { endpoint: None }
+            }
+        ));
+
+        let cli = Cli::try_parse_from(["gregg", "eggpool", "remove", "pool.local"]).unwrap();
+        match cli.command.unwrap() {
+            Command::Eggpool {
+                command: EggpoolCommand::Remove { endpoint },
+            } => assert_eq!(endpoint.as_deref(), Some("pool.local")),
+            _ => panic!("expected EggPool remove command"),
         }
     }
 

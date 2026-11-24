@@ -48,8 +48,13 @@ api_key_env = "EGGPOOL_API_KEY"
 ```text
 gregg eggpool add <host> --name "Main EggPool" --api-key-env EGGPOOL_GREGG_API_KEY
 gregg eggpool list              # use --json for a JSON array
+gregg eggpool remove            # select interactively
 gregg eggpool remove <host>
 ```
+
+With no target, `eggpool remove` opens the terminal selector; Enter removes the
+configured endpoint, and Esc/`q` cancels. A supplied host or host:port keeps
+the existing non-interactive matching behavior.
 
 ## Client
 
