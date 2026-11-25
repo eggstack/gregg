@@ -94,8 +94,8 @@ Preserved exclusions:
 - [ ] A running child is never killed or duplicated by rehash; it remains the one active slot, and its final record/output remains attributed to the job definition that launched it.
 - [ ] Existing bounded scheduler history and read-only API remain coherent and retained across accepted job-set reconciliation; no wire/schema/API mutation change is added.
 - [ ] Existing direct argv, same-principal execution, root opt-in, scheduler cadence/load-gate/one-child limit, service sandboxing, and shutdown behavior remain intact.
-- [ ] Docs/help/changelog and the daemon skill describe the implemented job-only reload contract and restart boundary; `job add/remove/edit` never silently restarts or implicitly rehashes.
-- [ ] Focused tests, local checks, and existing native platform CI pass or are reported as outstanding; the stripped binary meets Plan 162's unchanged 3,400,000-byte ceiling. Plan 196's blockers remain separately recorded until independently resolved.
+- [ ] Docs/help/changelog and the daemon skill describe the implemented job-only reload contract and restart boundary; `job add/remove/edit` never silently restarts, and no command implicitly rehashes except the post-write attempt for a successful `job add`/`job remove` that Plan 198 defines.
+- [ ] Focused tests, local checks, and existing native platform CI pass; the stripped binary meets Plan 162's ceiling as amended to 3,700,000 bytes (the original 3,400,000-byte text remains historical). Plan 196's blockers remain separately recorded until independently resolved.
 
 ## Risks and stop conditions
 

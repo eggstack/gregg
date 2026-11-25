@@ -233,11 +233,25 @@ mod win32 {
     use std::ffi::{c_void, OsStr};
     use std::ptr;
     use tokio::net::windows::named_pipe::{PipeMode, ServerOptions};
+    #[cfg(test)]
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE};
     use windows_sys::Win32::Foundation::{LocalFree, HLOCAL};
+    #[cfg(test)]
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertStringSidToSidW,
+        GetSecurityInfo, SE_KERNEL_OBJECT,
+    };
     use windows_sys::Win32::Security::Authorization::{
         ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
     };
+    #[cfg(test)]
+    use windows_sys::Win32::Security::{
+        CreateRestrictedToken, ImpersonateLoggedOnUser, RevertToSelf, DACL_SECURITY_INFORMATION,
+        PSID, SID_AND_ATTRIBUTES, TOKEN_DUPLICATE, TOKEN_QUERY,
+    };
     use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+    #[cfg(test)]
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     pub(super) fn create_server(name: &str, first_instance: bool) -> io::Result<NamedPipeServer> {
         let sddl: Vec<u16> = PIPE_SDDL.encode_utf16().chain(std::iter::once(0)).collect();
@@ -279,6 +293,163 @@ mod win32 {
             LocalFree(descriptor as HLOCAL);
         }
         created
+    }
+
+    /// Impersonation guard that always restores the process token on drop.
+    #[cfg(test)]
+    pub(super) struct RestrictedImpersonation;
+
+    #[cfg(test)]
+    impl Drop for RestrictedImpersonation {
+        fn drop(&mut self) {
+            // SAFETY: every guard is constructed only after a successful
+            // ImpersonateLoggedOnUser on this thread, so this is the paired
+            // revert and it takes no pointer arguments.
+            unsafe {
+                RevertToSelf();
+            }
+        }
+    }
+
+    /// Impersonate a restricted form of the current process token in which the
+    /// Administrators group is deny-only, so the protected pipe DACL cannot
+    /// grant it access. Native ACL regression coverage only.
+    #[cfg(test)]
+    pub(super) fn impersonate_restricted_administrator() -> io::Result<RestrictedImpersonation> {
+        let mut process_token = ptr::null_mut();
+        // SAFETY: GetCurrentProcess returns a valid pseudo handle, and
+        // process_token is a live out-parameter. The handle is closed once.
+        let opened = unsafe {
+            OpenProcessToken(
+                GetCurrentProcess(),
+                TOKEN_DUPLICATE | TOKEN_QUERY,
+                &raw mut process_token,
+            )
+        };
+        if opened == 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let administrators_sid: Vec<u16> = "S-1-5-32-544"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut administrators: PSID = ptr::null_mut();
+        // SAFETY: the SID text is NUL-terminated and outlives the call;
+        // administrators is a live out-parameter released with LocalFree below.
+        let converted =
+            unsafe { ConvertStringSidToSidW(administrators_sid.as_ptr(), &raw mut administrators) };
+        if converted == 0 {
+            let error = io::Error::last_os_error();
+            // SAFETY: process_token came from a successful OpenProcessToken.
+            unsafe {
+                CloseHandle(process_token);
+            }
+            return Err(error);
+        }
+
+        let mut deny_administrators = [SID_AND_ATTRIBUTES {
+            Sid: administrators,
+            Attributes: 0,
+        }];
+        let mut restricted = ptr::null_mut();
+        // SAFETY: process_token is a live token handle opened with
+        // TOKEN_DUPLICATE, the SID array is valid for the call, and restricted
+        // is a live out-parameter closed below.
+        let created = unsafe {
+            CreateRestrictedToken(
+                process_token,
+                0,
+                1,
+                deny_administrators.as_mut_ptr(),
+                0,
+                ptr::null(),
+                0,
+                ptr::null(),
+                &raw mut restricted,
+            )
+        };
+        // SAFETY: both allocations came from the calls above and are released
+        // exactly once here, whatever those calls returned.
+        unsafe {
+            LocalFree(administrators as HLOCAL);
+            CloseHandle(process_token);
+        }
+        if created == 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        // SAFETY: restricted is a live impersonation token handle.
+        let impersonated = unsafe { ImpersonateLoggedOnUser(restricted) };
+        // SAFETY: impersonation copied the token onto this thread, so the
+        // handle is no longer needed and is closed exactly once.
+        unsafe {
+            CloseHandle(restricted);
+        }
+        if impersonated == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(RestrictedImpersonation)
+    }
+
+    /// Read the DACL actually attached to the created pipe object and render it
+    /// back to SDDL, so callers inspect the effective policy on the object
+    /// instead of the constant it was built from.
+    #[cfg(test)]
+    pub(super) fn effective_dacl_sddl(handle: HANDLE) -> io::Result<String> {
+        let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
+        // SAFETY: handle is a live pipe handle owned by the caller; the
+        // security-descriptor out-parameter is a live local, the unused owner,
+        // group, and SACL out-parameters are null, and the descriptor is
+        // released with LocalFree below.
+        let status = unsafe {
+            GetSecurityInfo(
+                handle,
+                SE_KERNEL_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &raw mut descriptor,
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return Err(io::Error::from_raw_os_error(
+                i32::try_from(status).unwrap_or(i32::MAX),
+            ));
+        }
+
+        let mut text: *mut u16 = ptr::null_mut();
+        let mut length = 0_u32;
+        // SAFETY: descriptor came from GetSecurityInfo and owns the DACL; text
+        // and length are live out-parameters released with LocalFree below.
+        let converted = unsafe {
+            ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                descriptor,
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION,
+                &raw mut text,
+                &raw mut length,
+            )
+        };
+        let rendered = if converted == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            // SAFETY: a successful conversion returns a NUL-terminated string of
+            // length characters that stays valid until the LocalFree below.
+            let units = unsafe { std::slice::from_raw_parts(text, length as usize) };
+            Ok(String::from_utf16_lossy(units))
+        };
+        // SAFETY: both pointers were allocated by the calls above and each is
+        // released exactly once.
+        unsafe {
+            if !text.is_null() {
+                LocalFree(text as HLOCAL);
+            }
+            LocalFree(descriptor as HLOCAL);
+        }
+        rendered
     }
 }
 
@@ -322,6 +493,43 @@ mod tests {
         assert!(PIPE_SDDL.starts_with("D:P"));
         assert!(PIPE_SDDL.contains(";;;BA)"));
         assert!(PIPE_SDDL.contains(";;;LS)"));
+    }
+
+    #[test]
+    fn created_pipe_object_carries_the_protected_dacl() {
+        use std::os::windows::io::AsRawHandle;
+
+        let config = test_config("acl-descriptor");
+        let listener = Listener::bind(&config).expect("binds protected pipe");
+        let handle = listener
+            .pending
+            .as_ref()
+            .expect("first instance exists")
+            .as_raw_handle();
+        let effective = super::win32::effective_dacl_sddl(handle).expect("reads effective DACL");
+        assert_eq!(
+            effective, PIPE_SDDL,
+            "the pipe object must carry the protected owner-only DACL"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_deny_only_administrators_token_cannot_connect() {
+        let config = test_config("acl-denied");
+        let _listener = Listener::bind(&config).expect("binds protected pipe");
+        let name = pipe_name(&config).expect("derives pipe name");
+        let guard = super::win32::impersonate_restricted_administrator()
+            .expect("restricts the current token");
+        let opened = ClientOptions::new().read(true).write(true).open(&name);
+        drop(guard);
+        let error = opened.expect_err("a deny-only Administrators token must be refused");
+        assert_eq!(
+            error
+                .raw_os_error()
+                .and_then(|code| u32::try_from(code).ok()),
+            Some(windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED),
+            "expected an access-denied connect failure, got {error}"
+        );
     }
 
     #[test]
