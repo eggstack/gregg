@@ -495,10 +495,12 @@ mod tests {
         assert!(PIPE_SDDL.contains(";;;LS)"));
     }
 
-    #[test]
-    fn created_pipe_object_carries_the_protected_dacl() {
+    #[tokio::test]
+    async fn created_pipe_object_carries_the_protected_dacl() {
         use std::os::windows::io::AsRawHandle;
 
+        // The pipe handle is created through tokio, so this must run inside a
+        // runtime even though the test itself never awaits.
         let config = test_config("acl-descriptor");
         let listener = Listener::bind(&config).expect("binds protected pipe");
         let handle = listener
