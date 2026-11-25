@@ -135,3 +135,30 @@ Acceptance remains blocked and these are not green qualifications:
 - The stripped Darwin arm64 release daemon measured 3,539,152 bytes, 139,152 bytes above Plan 162's unchanged 3,400,000-byte ceiling. This ceiling is not waived.
 
 Plan 196's separate acceptance blockers and status are unchanged; Plan 197 does not claim to resolve them. No hosted CI result or commit is claimed.
+
+## Follow-up acceptance checks (2026-11-24, local macOS)
+
+Fresh checks were run against the current uncommitted worktree:
+
+- `./scripts/check-local.sh`: failed at the workspace test stage: 989 passed, 1 failed, 2 ignored. The failing test was `eggpool::tests::a_worker_converges_onto_newer_intent_while_a_result_is_backpressured` (panic: “no EggPool summary request was issued”, `crates/gregg/src/eggpool.rs:1794`).
+- `cargo test -p greggd --all-targets --all-features`: 555 passed, 10 failed. Eight Unix control-path tests failed during path/setup assertions; two uninstall purge tests failed because removal of `/var/log/greggd.log` was denied. These failures remain unresolved; this run does not establish that they are baseline-only.
+- Native `gregg-host` macOS tests: 58 passed, 0 failed. The attempted `greggd` macOS collector filter matched 0 tests, so it is not counted as a passing daemon-adapter test.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`: failed in unchanged `gregg-host/src/macos/ffi.rs` (16 library diagnostics; the test target reported 22 diagnostics). The focused no-deps `greggd` strict Clippy gate passed in the preceding check run.
+- `cargo fmt --all -- --check`: passed.
+- The aarch64-apple-darwin release build passed. The resulting `target/aarch64-apple-darwin/release/greggd` measured 3,539,152 bytes, still 139,152 bytes over Plan 162's 3,400,000-byte ceiling.
+- Windows GNU cross-target check/Clippy remain development-only evidence from the preceding run. Native Windows CI, actual allowed/denied named-pipe ACL checks, and native SCM behavior were not run: this worktree is uncommitted and the available host is macOS.
+
+The acceptance status remains blocked. No suite failure is reclassified as an unrelated baseline without evidence, the Plan 162 limit is unchanged, and Plan 196's independent blockers remain untouched.
+
+## Plan 199 follow-up qualification (2026-11-24)
+
+The final local `greggd` and workspace test suites, formatting, strict workspace Clippy, and complete `check-local` now pass after Plan 199's fixture and lint corrections. Native Windows effective ACL, actual remote-client rejection, and SCM qualification remain unrun from this macOS host. The Plan 197 recorded stage remains 3,539,152 bytes, 139,152 over the fixed ceiling; the fresh current Plan 199 tree is 3,555,712 bytes, 155,712 over. Plan 197 remains blocked and separate from Plans 196 and 198.
+
+## Subsequent footprint-limit amendment (2026-11-25)
+
+Plan 162's original 3,400,000-byte limit remains historical; by explicit user
+approval, the current prospective ceiling is 3,700,000 bytes. The recorded Plan
+197 stage (3,539,152 bytes) and the current restored-default build (3,555,696
+bytes) are both within the amended limit. This changes only the applicable size
+criterion; native Windows ACL/remote-client/SCM qualification and the distinct
+Plan 196/197/198 acceptance statuses remain as recorded.

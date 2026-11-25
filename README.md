@@ -125,6 +125,7 @@ greggd job add NAME --schedule '0 2 * * *' -- PROGRAM [ARGS...]
 greggd job list                    List jobs in the selected config
 greggd job remove [NAME]           Remove by name or select interactively
 greggd rehash                      Apply job-only changes to a running daemon
+greggd configtest                  Check loadability and live eligibility without applying
 greggd edit                        Edit the complete daemon config
 greggd startup install             Register Unix startup, report Windows service state
 greggd restart                     Restart the daemon
@@ -137,7 +138,7 @@ when no TUI is open, use `gregg daemon startup install`. Client startup is
 always per-user. The monitored `greggd` daemon can be installed as a system
 service. See [Client](docs/client.md) and [Daemon](docs/daemon.md).
 
-`greggd job add` stores the executable and each argument as separate argv values after `--`; it does not invoke a shell. `job remove` without a name uses an interactive terminal selector. These commands and `greggd edit` honor `--config` and validate and atomically update that file, but never reload or restart a running daemon implicitly. Run `greggd [--config PATH] rehash` to apply a valid jobs-only change; mixed changes are rejected atomically. Changes to `name`, `host`, `port`, sampling/staleness settings, `allow_privileged_jobs`, or `scheduler_history_limit` require a restart. If the daemon does not rehash, file edits take effect on its next start. Rehash rechecks root-job authority; adding a job never enables root execution, and Unix root still requires `allow_privileged_jobs = true` in the config.
+`greggd job add` stores the executable and each argument as separate argv values after `--`; it does not invoke a shell. `job remove` without a name uses an interactive terminal selector. These commands and `greggd edit` honor `--config` and validate and atomically update that file. If replacement succeeds but syncing its parent directory fails, the command reports that the new file is live with uncertain crash durability; it does not claim the prior file was retained or roll back the replacement. After a successful actual `job add` or `job remove` write, the CLI makes one config-specific local rehash attempt: no matching daemon means the saved file will load on its next start; a rejection, restart-required diff, busy response, or uncertain acknowledgment is reported as a nonzero partial outcome, and the file is not rolled back or retried. Failed, duplicate, list, empty, and cancelled operations send no request. `greggd edit`, `host`, and `port` do not auto-rehash; host/port and other startup-bound fields still require a restart. Run `greggd [--config PATH] rehash` for an explicit jobs-only apply; mixed changes are rejected atomically. `greggd [--config PATH] configtest` uses rehash's bounded 1 MiB loader and never applies or writes anything. With a matching daemon it also checks daemon-principal job authority and restart-only compatibility; without one it reports local load-validity only and explicitly says live eligibility was not checked. Rehash rechecks root-job authority; adding a job never enables root execution, and Unix root still requires `allow_privileged_jobs = true` in the config.
 
 ## Optional features
 

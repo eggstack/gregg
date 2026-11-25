@@ -5,13 +5,33 @@
 
 use tokio::sync::oneshot;
 
-/// Fixed local request; it carries no configuration path or candidate data.
+/// Fixed local rehash request; it carries no config path or candidate data.
 pub(crate) const REHASH_COMMAND: &[u8] = b"REHASH\n";
+/// Fixed local check-only request; it carries no config path or candidate data.
+pub(crate) const CONFIGTEST_COMMAND: &[u8] = b"CONFIGTEST\n";
 
-/// Result produced only after the scheduler has accepted or rejected rehash.
+/// Which bounded operation the scheduler should perform for a local request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConfigControlOperation {
+    Rehash,
+    ConfigTest,
+}
+
+/// Decode the fixed newline-terminated local request without accepting payloads.
+pub(crate) fn decode_request(frame: &[u8]) -> Option<ConfigControlOperation> {
+    match frame {
+        REHASH_COMMAND => Some(ConfigControlOperation::Rehash),
+        CONFIGTEST_COMMAND => Some(ConfigControlOperation::ConfigTest),
+        _ => None,
+    }
+}
+
+/// Result produced only after the daemon has handled a bounded config request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RehashResponse {
     Applied,
+    /// Configtest-only eligibility result; never means that anything was applied.
+    Ready,
     Unchanged,
     RestartRequired(Vec<&'static str>),
     Rejected(RehashRejection),
@@ -28,8 +48,9 @@ pub enum RehashRejection {
     ControlUnavailable,
 }
 
-/// One scheduler-bound control request with its correlated completion reply.
-pub(crate) struct RehashRequest {
+/// One serialized scheduler-bound config request with its correlated reply.
+pub(crate) struct ConfigControlRequest {
+    pub(crate) operation: ConfigControlOperation,
     pub(crate) reply: oneshot::Sender<RehashResponse>,
 }
 
@@ -50,6 +71,7 @@ pub enum RehashTransportError {
 pub(crate) fn encode_response(response: &RehashResponse) -> Vec<u8> {
     let line = match response {
         RehashResponse::Applied => "APPLIED".to_owned(),
+        RehashResponse::Ready => "READY".to_owned(),
         RehashResponse::Unchanged => "UNCHANGED".to_owned(),
         RehashResponse::RestartRequired(fields) => {
             let fields = fields.join(",");
@@ -84,6 +106,7 @@ pub(crate) fn decode_response(frame: &[u8]) -> Result<RehashResponse, RehashTran
     }
     match line {
         "APPLIED" => Ok(RehashResponse::Applied),
+        "READY" => Ok(RehashResponse::Ready),
         "UNCHANGED" => Ok(RehashResponse::Unchanged),
         "BUSY" => Ok(RehashResponse::Busy),
         "UNCERTAIN" => Ok(RehashResponse::Uncertain),
@@ -131,9 +154,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_fixed_local_config_requests_are_decoded() {
+        assert_eq!(
+            decode_request(REHASH_COMMAND),
+            Some(ConfigControlOperation::Rehash)
+        );
+        assert_eq!(
+            decode_request(CONFIGTEST_COMMAND),
+            Some(ConfigControlOperation::ConfigTest)
+        );
+        assert_eq!(
+            decode_request(
+                b"CONFIGTEST extra
+"
+            ),
+            None
+        );
+        assert_eq!(decode_request(b"CONFIGTEST"), None);
+    }
+
+    #[test]
     fn every_response_round_trips_as_a_bounded_frame() {
         let responses = [
             RehashResponse::Applied,
+            RehashResponse::Ready,
             RehashResponse::Unchanged,
             RehashResponse::RestartRequired(vec!["host", "port", "sample_interval_ms"]),
             RehashResponse::Rejected(RehashRejection::InvalidConfig),

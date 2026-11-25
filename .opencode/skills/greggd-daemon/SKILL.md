@@ -6,8 +6,8 @@ description: Work with the greggd daemon crate (collectors wiring, sampler, HTTP
 ## What I do
 
 Guide agents through the `greggd` daemon crate: runtime wiring, the sampler and
-HTTP server, the Unix control socket behind `greggd stop`/`rehash`, the
-config-specific Windows rehash pipe, the `croncheck` watchdog, `configprint`,
+HTTP server, the Unix control socket behind `greggd stop`/`rehash`/`configtest`, the
+config-specific Windows rehash/configtest pipe, the `croncheck` watchdog, `configprint`,
 read-only `status`, `startup install`/`instructions` and manager-aware
 `restart`, and Windows SCM service management.
 
@@ -23,10 +23,10 @@ service lifecycle. For platform metric collection itself, use the
 | Module | File | Purpose |
 |--------|------|---------|
 | `main` | `src/main.rs` | Binary boundary: logging init, diagnostics, exit-code classification |
-| `cli` | `src/cli.rs` | Clap CLI and per-command dispatch (`update`/`uninstall` coordinate lifecycle, synchronously); `ExitCode` taxonomy; authoritative bounded health fetch (`fetch_health_bytes`: per-read timeout plus a 5s total deadline) with detail (`probe_health`) and watchdog (`probe_greggd`) classifications; `dispatch()` is deprecated because it cannot distinguish an explicit `--config` from the implicit default, so the binary boundary uses `dispatch_with_config_intent` |
+| `cli` | `src/cli.rs` | Clap CLI and per-command dispatch, including post-write job rehash and check-only `configtest`; `ExitCode` taxonomy; authoritative bounded health fetch (`fetch_health_bytes`: per-read timeout plus a 5s total deadline) with detail (`probe_health`) and watchdog (`probe_greggd`) classifications; `dispatch()` is deprecated because it cannot distinguish an explicit `--config` from the implicit default, so the binary boundary uses `dispatch_with_config_intent` |
 | `run` | `src/run.rs` | Supervision loop; `RunOutcome`, public `run_with_shutdown()`, pub(crate) `run_with_shutdown_on_ready()` callback seam |
 | `config` | `src/config.rs` | TOML config, structured violations, atomic writes |
-| `control` | `src/control.rs` | Unix-only control socket for `greggd stop` (`STOP\n` → `OK\n`) |
+| `control` | `src/control.rs` | Unix config-specific bounded local control: `STOP\n`, `REHASH\n` (apply acknowledgment), and `CONFIGTEST\n` (check-only policy acknowledgment) |
 | `net` | `src/net.rs` | Wildcard-to-local-IP resolution for `configprint` (transient UDP `connect()`, no packets) |
 | `sampler` | `src/sampler.rs` | Cadence + readiness lifecycle (`Warming` → `Ready`/`Failed`), identity-safe snapshot publication; `SyntheticClock` |
 | `server` | `src/server/` | EggServe 0.4 direct H1 service; one coherent published generation per response, with shared immutable status bytes and explicit bounded runtime policy |
@@ -45,8 +45,9 @@ service lifecycle. For platform metric collection itself, use the
   `ServiceMain` worker owns exactly one current-thread runtime.
 - SCM reports `RUNNING` only after the shared daemon core binds its listener
   (the `on_ready` seam fires post-bind).
-- Configured maintenance jobs add one scheduler subsystem only when the job
-  list is non-empty. It reads cached sampler load from a watch channel without
+- The single scheduler worker exists for the daemon lifetime, even when the
+  initial job list is empty, so later rehashes can add jobs without replacing
+  the worker. It reads cached sampler load from a watch channel without
   waking on each sample; it executes direct argv as the existing OS principal,
    retains one pending occurrence per job and one global child, and terminates
   only its direct child during shutdown. Cron eligibility reads local civil
@@ -147,17 +148,18 @@ cache preparation falls back to request-time serialization without panic.
 |---------|----------|
 | `run` | Foreground daemon; on Unix also binds the local control socket |
 | `stop` | Unix: single tiny control socket targeting only the local instance matching the resolved config identity. Windows: delegates to SCM. Idempotent when already stopped |
-| `rehash` | `greggd [--config PATH] rehash` sends a fixed bounded local request (Unix control socket / protected Windows named pipe); the daemon reloads only its captured config path, revalidates the whole config and root-job authority, and applies jobs-only changes in place. Mixed changes with restart-only fields reject atomically; `APPLIED` requires scheduler acknowledgment. No restart, watcher, implicit post-edit reload, or HTTP mutation; post-delivery timeout is uncertain |
+| `rehash` | `greggd [--config PATH] rehash` sends a fixed bounded local request (Unix control socket / protected Windows named pipe); the daemon reloads only its captured config path, revalidates the whole config and root-job authority, and applies jobs-only changes in place. Mixed changes with restart-only fields reject atomically; `APPLIED` requires scheduler acknowledgment. No restart, watcher, or HTTP mutation; manual config edits remain explicit, while successful `job add/remove` makes one post-write attempt. Post-delivery timeout is uncertain |
+| `configtest` | `greggd [--config PATH] configtest` validates locally with the exact bounded rehash loader, then checks daemon-principal job authority and restart-only compatibility through the matching local control endpoint when reachable. Returns `READY`/`UNCHANGED` only for a no-apply live check; offline success explicitly means local-load-only and live eligibility unchecked. Never writes, reconciles, publishes, or changes children/history |
 | `croncheck` | Watchdog for non-systemd supervisors: bounded raw HTTP `/v2/healthz` probe on the configured **local** bind (wildcards normalized to loopback). The fetch has a per-read timeout *and* a 5s total deadline, so a slow-loris peer cannot hold it open. Valid Gregg Ready/Warming/Failed means running; refusal alone permits detached `<current_exe> run`; unrelated, malformed, silent, or ambiguous peers return nonzero without spawning |
 | `configprint` | Read-only print of the canonical bind `host:port`; wildcards resolve to the primary local IP. No probe, no bind, no config mutation, no service management |
 | `status` | Read-only local diagnostics: version, config path, canonical bind `host:port`, bounded `/v2/healthz` classification (`ready`/`warming`/`failed`/`unreachable`/`not-gregg`, same probe authority as `croncheck`), detected startup-manager state. Exit 0 only when a valid Gregg endpoint answered; never starts/stops/restarts/installs, never infers process ownership, never invokes `sudo` |
 | `startup install` | Install and enable automatic startup (`auto` default; `--method systemd|launchd|cron`). Systemd uses `/usr/local/bin/greggd` + the **selected `--config`** (default `/etc/gregg/greggd.toml`, rendered into `ExecStart`) + `greggd` user/group + `/etc/systemd/system/greggd.service` (atomic, `daemon-reload`/`enable`/`start`/`restart`); launchd uses `/Library/LaunchDaemons/com.eggstack.greggd.plist` with the selected `--config` rendered into `ProgramArguments`; cron uses idempotent `# greggd managed watchdog` block with `@reboot` + `* * * * *` `croncheck` (shell-quoted, preserves unrelated crontab). Auto picks Windows→SCM, macOS→launchd, Linux systemd→systemd else cron. Identified systemd/launchd never silently falls back to cron; prints exact `sudo <exe> startup install --method <...>` and returns `PermissionDenied` without internal `sudo` |
 | `startup instructions` | Read-only: prints exact commands/paths for the detected or specified method without mutating state |
 | `restart` | Exact-executable-aware manager restart: only owned systemd/launchd/SCM registrations receive manager mutation; foreign same-config or unknown Unix ownership fails closed, a foreign different-known-config registration permits only the selected config's direct path, and Windows has no direct fallback for missing/foreign/unknown SCM. Otherwise Unix uses control `stop` + definitive endpoint-absence check + detached `run`; success requires a bounded valid Gregg health response, not merely process creation. Permission failures print exact platform-correct elevated guidance and return `PermissionDenied` without competing fallback |
-| `job add NAME --schedule ... -- PROGRAM [ARGS...]` | Local validated config mutation through the atomic writer; preserve each argv entry and never invoke a shell. Duplicate/invalid jobs write nothing; never change `allow_privileged_jobs` implicitly; explicitly run `rehash` for a jobs-only live update |
+| `job add NAME --schedule ... -- PROGRAM [ARGS...]` | Local validated config mutation through the atomic writer; preserve each argv entry and never invoke a shell. Duplicate/invalid jobs write nothing; never change `allow_privileged_jobs` implicitly. After a successful actual write and lock release, make one config-specific rehash attempt; no daemon means saved/deferred success, while rejection or uncertainty leaves the file saved and returns nonzero without retry |
 | `job list` | Read-only selected-config listing; render argv as escaped individual values, not a shell-ready command |
-| `job remove [NAME]` | Exact named noninteractive removal; omitted name uses a bounded crossterm selector (Up/Down or `j`/`k`, Enter removes, Esc/`q`/Ctrl-C cancels); check TTY before raw mode and always restore terminal; cancel/non-TTY do not write |
-| `edit` | Full selected daemon config editor: `$VISUAL`, `$EDITOR`, platform fallback; direct argv, private candidate, full TOML/schema validation, atomic commit only on success. It never reloads automatically; use `rehash` only for jobs-only changes, otherwise restart |
+| `job remove [NAME]` | Exact named noninteractive removal; omitted name uses a bounded crossterm selector (Up/Down or `j`/`k`, Enter removes, Esc/`q`/Ctrl-C cancels); check TTY before raw mode and always restore terminal. After a successful actual write and lock release, make one config-specific rehash attempt; cancel, non-TTY, missing-name, empty, failed, and no-op paths do not write or rehash |
+| `edit` | Full selected daemon config editor: `$VISUAL`, `$EDITOR`, platform fallback; direct argv, private candidate, full TOML/schema validation, atomic commit only on success. Pre-rename errors leave the prior file unchanged; post-rename parent-sync failure reports the new file as live with uncertain crash durability. It never reloads automatically; use `rehash` only for jobs-only changes, otherwise restart |
 | `host` / `port` | Atomic persisted mutation; restart-required; `rehash` rejects the candidate without applying any accompanying job edits |
 | `version` | Compile-time version string |
 | `start` / `service` | Windows SCM only (`start` is lifecycle manager; `service` is the internal SCM entry point) |
@@ -201,9 +203,12 @@ cache preparation falls back to request-time serialization without panic.
   narrowly scoped and review actual allow/deny access on native Windows; a
   source-string assertion is not ACL proof.
 - Frames and accept/read/write/apply waits are bounded. A timeout after delivery
-  is uncertain, never applied or rejected.
+  is uncertain, never applied or rejected. `CONFIGTEST\n` uses the same protected
+  path and returns a serialized check-only policy acknowledgment without
+  scheduler reconciliation or publication.
 - SCM Stop/Shutdown remains the Windows shutdown path; SCM acceptance is not
-  the scheduler's rehash acknowledgment.
+  the scheduler's rehash acknowledgment. Native Windows qualification is
+  required for the named-pipe ACL and service path.
 
 ## Exit codes
 

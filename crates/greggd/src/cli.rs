@@ -69,6 +69,9 @@ pub fn report_rehash_result(
             println!("greggd rehash applied");
             Ok(())
         }
+        Response::Ready => Err(Box::new(RehashCommandError::Runtime(
+            "daemon returned a configtest-only response to rehash".to_owned(),
+        ))),
         Response::Unchanged => {
             println!("greggd rehash unchanged");
             Ok(())
@@ -100,11 +103,447 @@ pub fn report_rehash_result(
     }
 }
 
+/// Run configtest with the same bounded loader used by daemon rehash, then
+/// query the matching daemon without applying anything.
+pub fn run_configtest_with_sender(
+    config_path: &std::path::Path,
+    send: impl FnOnce(&std::path::Path) -> Result<crate::RehashResponse, crate::RehashTransportError>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::scheduler::ConfigTestLoadError as LoadError;
+
+    match crate::scheduler::configtest_load_local(config_path) {
+        Ok(()) => {}
+        Err(LoadError::InvalidConfig) => {
+            return Err(Box::new(RehashCommandError::Config(
+                "config is unreadable, too large, or invalid according to the rehash loader".into(),
+            )));
+        }
+        Err(LoadError::Busy) => {
+            return Err(Box::new(RehashCommandError::Runtime(
+                "local configtest loader is busy".into(),
+            )));
+        }
+        Err(LoadError::TimedOut) => {
+            return Err(Box::new(RehashCommandError::Runtime(
+                "local configtest load exceeded the rehash deadline".into(),
+            )));
+        }
+        Err(LoadError::Worker) => {
+            return Err(Box::new(RehashCommandError::Runtime(
+                "local configtest loader could not complete".into(),
+            )));
+        }
+    }
+
+    println!("Config is load-valid locally; checking the matching daemon.");
+    match send(config_path) {
+        Err(crate::RehashTransportError::NotRunning) => {
+            println!("No matching daemon is running; daemon-specific job authority and restart-only compatibility were not checked.");
+            Ok(())
+        }
+        Err(error) => Err(Box::new(RehashCommandError::Runtime(format!(
+            "daemon-specific configtest could not be confirmed: {error}"
+        )))),
+        Ok(response) => report_configtest_response(response),
+    }
+}
+
+fn report_configtest_response(
+    response: crate::RehashResponse,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::{RehashRejection as Rejection, RehashResponse as Response};
+    match response {
+        Response::Ready => {
+            println!("The running daemon considers this config eligible for rehash. No config or scheduler state was changed; this is a snapshot, not a guarantee of a later apply.");
+            Ok(())
+        }
+        Response::Unchanged => {
+            println!("The config is unchanged from the daemon's active jobs. No config or scheduler state was changed.");
+            Ok(())
+        }
+        Response::RestartRequired(fields) => Err(Box::new(RehashCommandError::Config(format!(
+            "restart required for changed field(s): {}; configtest made no changes",
+            fields.join(", ")
+        )))),
+        Response::Rejected(Rejection::InvalidConfig) => Err(Box::new(RehashCommandError::Config(
+            "the daemon rejected the candidate as invalid or unreadable; configtest made no changes".into(),
+        ))),
+        Response::Rejected(Rejection::JobAuthority) => Err(Box::new(RehashCommandError::Config(
+            "the daemon's scheduled-job authority check failed; configtest made no changes".into(),
+        ))),
+        Response::Rejected(Rejection::Scheduler) => Err(Box::new(RehashCommandError::Runtime(
+            "daemon configtest could not complete its policy check".into(),
+        ))),
+        Response::Rejected(Rejection::ControlUnavailable) => Err(Box::new(
+            RehashCommandError::Runtime("daemon configtest control is unavailable".into()),
+        )),
+        Response::Busy => Err(Box::new(RehashCommandError::Runtime(
+            "daemon configtest is busy; no request was queued".into(),
+        ))),
+        Response::Uncertain => Err(Box::new(RehashCommandError::Runtime(
+            "daemon configtest result is uncertain; no apply was requested".into(),
+        ))),
+        Response::Applied => Err(Box::new(RehashCommandError::Runtime(
+            "daemon returned an apply result to check-only configtest".into(),
+        ))),
+    }
+}
+
+fn report_post_write_job_rehash(
+    config_path: &std::path::Path,
+    mutation: &str,
+    send: impl FnOnce(&std::path::Path) -> Result<crate::RehashResponse, crate::RehashTransportError>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("{mutation}; saved config to {}.", config_path.display());
+    match send(config_path) {
+        Err(crate::RehashTransportError::NotRunning) => {
+            println!("No matching daemon is running; the saved config will be loaded on the next daemon start.");
+            Ok(())
+        }
+        Err(error) => Err(Box::new(RehashCommandError::Runtime(format!(
+            "config was saved, but live rehash was not confirmed: {error}"
+        )))),
+        Ok(crate::RehashResponse::Applied) => {
+            println!("The running daemon applied the saved config.");
+            Ok(())
+        }
+        Ok(crate::RehashResponse::Unchanged) => {
+            println!("The running daemon reports no live scheduler change was needed.");
+            Ok(())
+        }
+        Ok(crate::RehashResponse::RestartRequired(fields)) => Err(Box::new(
+            RehashCommandError::Config(format!(
+                "config was saved, but restart is required for changed field(s): {}; no live changes were applied",
+                fields.join(", ")
+            )),
+        )),
+        Ok(crate::RehashResponse::Rejected(crate::RehashRejection::InvalidConfig)) => Err(Box::new(
+            RehashCommandError::Config(
+                "config was saved, but the daemon rejected the saved config as invalid; no live changes were applied".into(),
+            ),
+        )),
+        Ok(crate::RehashResponse::Rejected(crate::RehashRejection::JobAuthority)) => Err(Box::new(
+            RehashCommandError::Config(
+                "config was saved, but the daemon's scheduled-job authority check failed; no live changes were applied".into(),
+            ),
+        )),
+        Ok(crate::RehashResponse::Rejected(crate::RehashRejection::Scheduler)) => Err(Box::new(
+            RehashCommandError::Runtime(
+                "config was saved, but the daemon could not confirm scheduler reconciliation".into(),
+            ),
+        )),
+        Ok(crate::RehashResponse::Rejected(crate::RehashRejection::ControlUnavailable)) => Err(Box::new(
+            RehashCommandError::Runtime(
+                "config was saved, but daemon rehash control is unavailable".into(),
+            ),
+        )),
+        Ok(crate::RehashResponse::Busy) => Err(Box::new(RehashCommandError::Runtime(
+            "config was saved, but the daemon rehash queue is busy; no request was queued".into(),
+        ))),
+        Ok(crate::RehashResponse::Uncertain) => Err(Box::new(RehashCommandError::Runtime(
+            "config was saved, but rehash outcome is uncertain; the daemon may or may not have applied it".into(),
+        ))),
+        Ok(crate::RehashResponse::Ready) => Err(Box::new(RehashCommandError::Runtime(
+            "config was saved, but daemon returned a check-only result to rehash".into(),
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod rehash_cli_tests {
     use super::*;
     use crate::{RehashRejection, RehashResponse, RehashTransportError};
     use clap::Parser;
+
+    fn temporary_config(label: &str) -> (PathBuf, PathBuf) {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after the epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "greggd-plan198-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).expect("create temporary config directory");
+        let path = directory.join("greggd.toml");
+        (directory, path)
+    }
+
+    fn test_job(name: &str) -> crate::config::ScheduledJobConfig {
+        crate::config::ScheduledJobConfig {
+            name: name.to_owned(),
+            schedule: "0 2 * * *".to_owned(),
+            command: vec!["/usr/bin/true".to_owned()],
+            working_dir: None,
+            max_load: None,
+            load_window: None,
+            retry_interval_ms: None,
+            max_wait_ms: None,
+        }
+    }
+
+    fn add_command(name: &str) -> JobCommand {
+        JobCommand::Add {
+            name: name.to_owned(),
+            schedule: "0 3 * * *".to_owned(),
+            working_dir: None,
+            max_load: None,
+            load_window: None,
+            retry_interval_ms: None,
+            max_wait_ms: None,
+            command: vec!["/usr/bin/true".to_owned()],
+        }
+    }
+
+    #[test]
+    fn configtest_accepts_the_global_config_path_before_or_after_the_command() {
+        for argv in [
+            vec!["greggd", "configtest"],
+            vec!["greggd", "--config", "/tmp/selected.toml", "configtest"],
+            vec!["greggd", "configtest", "--config", "/tmp/selected.toml"],
+        ] {
+            let parsed = Cli::try_parse_from(argv).expect("configtest arguments should parse");
+            assert!(matches!(parsed.command, Command::Configtest));
+            if parsed.config.is_some() {
+                assert_eq!(parsed.config, Some(PathBuf::from("/tmp/selected.toml")));
+            }
+        }
+    }
+
+    #[test]
+    fn job_add_and_remove_attempt_one_rehash_after_the_config_is_saved() {
+        let (directory, path) = temporary_config("mutation");
+        let mut original = Config::default();
+        original.jobs.push(test_job("existing"));
+        original.write_atomic(&path).unwrap();
+
+        let add_calls = std::cell::Cell::new(0);
+        dispatch_job_command_with_rehasher(&add_command("new-job"), &path, true, |sent_path| {
+            add_calls.set(add_calls.get() + 1);
+            assert_eq!(sent_path, path);
+            let saved = Config::load_for_rehash(sent_path).expect("add was saved before rehash");
+            assert!(saved.jobs.iter().any(|job| job.name == "new-job"));
+            Err(RehashTransportError::NotRunning)
+        })
+        .unwrap();
+        assert_eq!(add_calls.get(), 1);
+
+        let remove_calls = std::cell::Cell::new(0);
+        dispatch_job_command_with_rehasher(
+            &JobCommand::Remove {
+                name: Some("new-job".to_owned()),
+            },
+            &path,
+            true,
+            |sent_path| {
+                remove_calls.set(remove_calls.get() + 1);
+                assert_eq!(sent_path, path);
+                let saved =
+                    Config::load_for_rehash(sent_path).expect("remove was saved before rehash");
+                assert!(!saved.jobs.iter().any(|job| job.name == "new-job"));
+                Ok(RehashResponse::Applied)
+            },
+        )
+        .unwrap();
+        assert_eq!(remove_calls.get(), 1);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn post_write_rehash_failure_keeps_saved_config_and_preserves_exit_class() {
+        let (directory, path) = temporary_config("post-write-failure");
+        Config::default().write_atomic(&path).unwrap();
+        let calls = std::cell::Cell::new(0);
+        let result = dispatch_job_command_with_rehasher(
+            &add_command("saved-despite-rejection"),
+            &path,
+            true,
+            |sent_path| {
+                calls.set(calls.get() + 1);
+                let saved = Config::load_for_rehash(sent_path).expect("config is saved first");
+                assert!(saved
+                    .jobs
+                    .iter()
+                    .any(|job| job.name == "saved-despite-rejection"));
+                Ok(RehashResponse::RestartRequired(vec!["port"]))
+            },
+        );
+        let error = result.expect_err("restart-required must be a nonzero outcome");
+        assert_eq!(calls.get(), 1, "uncertain/rejected work is never retried");
+        assert!(matches!(
+            error.downcast_ref::<RehashCommandError>(),
+            Some(RehashCommandError::Config(_))
+        ));
+        assert!(Config::load_for_rehash(&path)
+            .unwrap()
+            .jobs
+            .iter()
+            .any(|job| job.name == "saved-despite-rejection"));
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn post_write_rehash_result_classes_are_distinct() {
+        let path = std::path::Path::new("/tmp/plan198-classification.toml");
+        for response in [RehashResponse::Applied, RehashResponse::Unchanged] {
+            assert!(report_post_write_job_rehash(path, "saved mutation", |_| Ok(response)).is_ok());
+        }
+        assert!(report_post_write_job_rehash(path, "saved mutation", |_| {
+            Err(RehashTransportError::NotRunning)
+        })
+        .is_ok());
+
+        for response in [
+            RehashResponse::RestartRequired(vec!["port"]),
+            RehashResponse::Rejected(RehashRejection::InvalidConfig),
+            RehashResponse::Rejected(RehashRejection::JobAuthority),
+        ] {
+            let error = report_post_write_job_rehash(path, "saved mutation", |_| Ok(response))
+                .expect_err("config policy failures are nonzero");
+            assert!(matches!(
+                error.downcast_ref::<RehashCommandError>(),
+                Some(RehashCommandError::Config(_))
+            ));
+        }
+
+        for response in [
+            RehashResponse::Rejected(RehashRejection::Scheduler),
+            RehashResponse::Rejected(RehashRejection::ControlUnavailable),
+            RehashResponse::Busy,
+            RehashResponse::Uncertain,
+            RehashResponse::Ready,
+        ] {
+            let error = report_post_write_job_rehash(path, "saved mutation", |_| Ok(response))
+                .expect_err("runtime/control failures are nonzero");
+            assert!(matches!(
+                error.downcast_ref::<RehashCommandError>(),
+                Some(RehashCommandError::Runtime(_))
+            ));
+        }
+
+        for error in [
+            RehashTransportError::Uncertain {
+                detail: "lost reply".into(),
+            },
+            RehashTransportError::Io(std::io::Error::other("control I/O")),
+            RehashTransportError::BadResponse,
+        ] {
+            let error = report_post_write_job_rehash(path, "saved mutation", |_| Err(error))
+                .expect_err("transport uncertainty is nonzero");
+            assert!(matches!(
+                error.downcast_ref::<RehashCommandError>(),
+                Some(RehashCommandError::Runtime(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn failed_noop_list_and_cancelled_job_paths_never_rehash() {
+        let (directory, path) = temporary_config("no-op");
+        let mut config = Config::default();
+        config.jobs.push(test_job("existing"));
+        config.write_atomic(&path).unwrap();
+        let calls = std::cell::Cell::new(0);
+        let sender = |_: &std::path::Path| {
+            calls.set(calls.get() + 1);
+            Err(RehashTransportError::NotRunning)
+        };
+
+        dispatch_job_command_with_rehasher(&JobCommand::List, &path, true, sender).unwrap();
+        assert!(
+            dispatch_job_command_with_rehasher(&add_command("existing"), &path, true, sender,)
+                .is_err()
+        );
+        assert!(dispatch_job_command_with_rehasher(
+            &JobCommand::Remove {
+                name: Some("missing".to_owned()),
+            },
+            &path,
+            true,
+            sender,
+        )
+        .is_err());
+        dispatch_job_command_with_rehasher_and_selector(
+            &JobCommand::Remove { name: None },
+            &path,
+            true,
+            sender,
+            |_| Ok(None),
+        )
+        .unwrap();
+
+        let (empty_directory, empty_path) = temporary_config("empty-jobs");
+        Config::default().write_atomic(&empty_path).unwrap();
+        dispatch_job_command_with_rehasher(
+            &JobCommand::Remove { name: None },
+            &empty_path,
+            true,
+            sender,
+        )
+        .unwrap();
+        assert_eq!(calls.get(), 0);
+        let _ = std::fs::remove_dir_all(empty_directory);
+        assert_eq!(calls.get(), 0);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn configtest_local_validation_precedes_daemon_contact_and_offline_is_local_only() {
+        let (directory, path) = temporary_config("configtest");
+        Config::default().write_atomic(&path).unwrap();
+        let calls = std::cell::Cell::new(0);
+        run_configtest_with_sender(&path, |sent_path| {
+            calls.set(calls.get() + 1);
+            assert_eq!(sent_path, path);
+            Err(RehashTransportError::NotRunning)
+        })
+        .unwrap();
+        assert_eq!(calls.get(), 1);
+
+        std::fs::write(&path, b"jobs = [").unwrap();
+        let invalid = run_configtest_with_sender(&path, |_| {
+            panic!("invalid local config must not reach the daemon")
+        })
+        .expect_err("invalid TOML is a config error");
+        assert!(matches!(
+            invalid.downcast_ref::<RehashCommandError>(),
+            Some(RehashCommandError::Config(_))
+        ));
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn configtest_uses_the_rehash_loader_byte_limit() {
+        let (directory, path) = temporary_config("configtest-size");
+        std::fs::write(&path, vec![b'x'; 1_048_577]).unwrap();
+        let error = run_configtest_with_sender(&path, |_| {
+            panic!("oversized local config must not reach the daemon")
+        })
+        .expect_err("config above rehash's byte cap must fail locally");
+        assert!(matches!(
+            error.downcast_ref::<RehashCommandError>(),
+            Some(RehashCommandError::Config(_))
+        ));
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn configtest_ready_and_unchanged_are_success_but_policy_failures_are_classified() {
+        assert!(report_configtest_response(RehashResponse::Ready).is_ok());
+        assert!(report_configtest_response(RehashResponse::Unchanged).is_ok());
+        let restart = report_configtest_response(RehashResponse::RestartRequired(vec!["host"]))
+            .expect_err("restart-only diff is a config failure");
+        assert!(matches!(
+            restart.downcast_ref::<RehashCommandError>(),
+            Some(RehashCommandError::Config(_))
+        ));
+        let busy = report_configtest_response(RehashResponse::Busy)
+            .expect_err("busy is a runtime failure");
+        assert!(matches!(
+            busy.downcast_ref::<RehashCommandError>(),
+            Some(RehashCommandError::Runtime(_))
+        ));
+    }
 
     #[test]
     fn rehash_accepts_the_global_config_path_before_or_after_the_command() {
@@ -227,6 +666,8 @@ pub enum Command {
     Stop,
     /// Apply valid scheduled-job changes from this config to the running daemon.
     Rehash,
+    /// Check config loadability and live rehash eligibility without applying changes.
+    Configtest,
     /// Start the greggd Windows service.
     #[cfg(target_os = "windows")]
     Start,
@@ -261,7 +702,7 @@ pub enum Command {
         /// The new port number (1-65535).
         port: u16,
     },
-    /// Manage local scheduled jobs in this config. Changes do not reload the running daemon automatically; use `rehash` to apply jobs-only changes, otherwise they take effect on the next start.
+    /// Manage local scheduled jobs in this config. Successful add/remove writes attempt a local rehash; if no daemon is running, changes take effect on the next start.
     Job {
         #[command(subcommand)]
         command: JobCommand,
@@ -319,7 +760,7 @@ pub enum Command {
 /// Scheduled-job management commands.
 #[derive(Subcommand)]
 pub enum JobCommand {
-    /// Add one validated local scheduled command.
+    /// Add one validated local scheduled command, then attempt a local rehash after saving.
     Add {
         /// Stable operator-facing job name.
         #[arg(value_name = "NAME")]
@@ -348,7 +789,7 @@ pub enum JobCommand {
     },
     /// List configured jobs and their argv values without changing the config.
     List,
-    /// Remove one job by exact name, or select one interactively when omitted.
+    /// Remove one job by exact name, or select one interactively; successful removal attempts a local rehash.
     Remove {
         /// Exact configured job name; omit to open the terminal selector.
         #[arg(value_name = "NAME")]
@@ -413,6 +854,7 @@ impl From<&ConfigError> for ExitCode {
             }
             ConfigError::AtomicWrite { source, .. } => match source {
                 crate::config::AtomicWriteError::Io(io)
+                | crate::config::AtomicWriteError::CommittedButDurabilityUncertain(io)
                     if io.kind() == std::io::ErrorKind::PermissionDenied =>
                 {
                     Self::PermissionDenied
@@ -582,6 +1024,44 @@ fn dispatch_job_command(
     config_path: &std::path::Path,
     explicit: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    dispatch_job_command_with_rehasher(command, config_path, explicit, send_local_rehash)
+}
+
+fn send_local_rehash(
+    config_path: &std::path::Path,
+) -> Result<crate::RehashResponse, crate::RehashTransportError> {
+    #[cfg(unix)]
+    {
+        crate::control::send_rehash(config_path)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        crate::control_windows::send_rehash(config_path)
+    }
+}
+
+fn dispatch_job_command_with_rehasher(
+    command: &JobCommand,
+    config_path: &std::path::Path,
+    explicit: bool,
+    send: impl FnMut(&std::path::Path) -> Result<crate::RehashResponse, crate::RehashTransportError>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    dispatch_job_command_with_rehasher_and_selector(
+        command,
+        config_path,
+        explicit,
+        send,
+        job_selector::select,
+    )
+}
+
+fn dispatch_job_command_with_rehasher_and_selector(
+    command: &JobCommand,
+    config_path: &std::path::Path,
+    explicit: bool,
+    mut send: impl FnMut(&std::path::Path) -> Result<crate::RehashResponse, crate::RehashTransportError>,
+    select: impl FnOnce(&[crate::config::ScheduledJobConfig]) -> std::io::Result<Option<usize>>,
+) -> Result<(), Box<dyn std::error::Error>> {
     match command {
         JobCommand::Add {
             name,
@@ -613,11 +1093,11 @@ fn dispatch_job_command(
                 config.jobs.push(job);
                 Ok(())
             })?;
-            println!(
-                "Added scheduled job {name:?} in {}. No live reload was requested; run `greggd rehash` to apply jobs-only changes, otherwise changes take effect on the next daemon start.",
-                config_path.display()
-            );
-            Ok(())
+            report_post_write_job_rehash(
+                config_path,
+                &format!("Added scheduled job {name:?}"),
+                &mut send,
+            )
         }
         JobCommand::List => {
             let config = load_config(config_path, explicit)?;
@@ -626,11 +1106,11 @@ fn dispatch_job_command(
         }
         JobCommand::Remove { name: Some(name) } => {
             remove_named_job(config_path, explicit, name)?;
-            println!(
-                "Removed scheduled job {name:?} from {}. No live reload was requested; run `greggd rehash` to apply jobs-only changes, otherwise changes take effect on the next daemon start.",
-                config_path.display()
-            );
-            Ok(())
+            report_post_write_job_rehash(
+                config_path,
+                &format!("Removed scheduled job {name:?}"),
+                &mut send,
+            )
         }
         JobCommand::Remove { name: None } => {
             let config = load_config(config_path, explicit)?;
@@ -638,17 +1118,17 @@ fn dispatch_job_command(
                 println!("No scheduled jobs configured in {}.", config_path.display());
                 return Ok(());
             }
-            let Some(index) = job_selector::select(&config.jobs)? else {
+            let Some(index) = select(&config.jobs)? else {
                 println!("Removal cancelled; configuration unchanged.");
                 return Ok(());
             };
             let name = config.jobs[index].name.clone();
             remove_named_job(config_path, explicit, &name)?;
-            println!(
-                "Removed scheduled job {name:?} from {}. No live reload was requested; run `greggd rehash` to apply jobs-only changes, otherwise changes take effect on the next daemon start.",
-                config_path.display()
-            );
-            Ok(())
+            report_post_write_job_rehash(
+                config_path,
+                &format!("Removed scheduled job {name:?}"),
+                &mut send,
+            )
         }
     }
 }
@@ -1206,6 +1686,9 @@ pub fn dispatch_with_config_intent(
         )) as Box<dyn std::error::Error>),
         Command::Rehash => Err(Box::new(std::io::Error::other(
             "Command::Rehash is handled at the binary boundary",
+        )) as Box<dyn std::error::Error>),
+        Command::Configtest => Err(Box::new(std::io::Error::other(
+            "Command::Configtest is handled at the binary boundary",
         )) as Box<dyn std::error::Error>),
         Command::Stop => {
             // Unix uses the local control socket and is dispatched at the

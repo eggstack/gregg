@@ -533,13 +533,31 @@ impl Config {
     /// 1. Write to a unique temporary file in the same directory.
     /// 2. Flush the file.
     /// 3. Reopen and re-parse the temporary file as verification.
-    /// 4. Rename over the destination.
+    /// 4. Set final permissions on the temporary file, then rename it over
+    ///    the destination.
+    /// 5. Synchronize the parent directory.
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigError`] if any step fails. On failure, the
-    /// temporary file is cleaned up and the original file is left intact.
+    /// Errors before rename leave the destination unchanged. If rename
+    /// succeeds but parent-directory synchronization fails, the returned
+    /// [`ConfigError`] identifies the replacement as committed while its
+    /// crash durability remains uncertain; the destination contains the new
+    /// configuration and is not rolled back.
     pub fn write_atomic(&self, path: &Path) -> Result<(), ConfigError> {
+        self.write_atomic_with_operations(
+            path,
+            |from, to| fs::rename(from, to),
+            sync_parent_directory,
+        )
+    }
+
+    fn write_atomic_with_operations(
+        &self,
+        path: &Path,
+        replace: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+        sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
+    ) -> Result<(), ConfigError> {
         // 1. Resolve and validate the destination directory.
         let dir = path.parent().ok_or_else(|| ConfigError::AtomicWrite {
             path: path.to_path_buf(),
@@ -618,37 +636,35 @@ impl Config {
             });
         }
 
-        // 6. Rename atomically over the destination.
-        fs::rename(&temp_path, path).map_err(|e| {
+        // Set final permissions before rename so every fallible operation
+        // except directory synchronization remains on the uncommitted temp.
+        // The file stays 0600 while being written and verified.
+        #[cfg(unix)]
+        if let Err(error) = fs::set_permissions(&temp_path, {
+            use std::os::unix::fs::PermissionsExt;
+            fs::Permissions::from_mode(0o644)
+        }) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(ConfigError::AtomicWrite {
+                path: path.to_path_buf(),
+                source: AtomicWriteError::Io(error),
+            });
+        }
+
+        // Rename atomically over the destination. An error from the OS
+        // replacement operation is pre-commit; after success, the new file
+        // is live and must never be described as rolled back.
+        replace(&temp_path, path).map_err(|error| {
             let _ = fs::remove_file(&temp_path);
             ConfigError::AtomicWrite {
                 path: path.to_path_buf(),
-                source: AtomicWriteError::Io(e),
+                source: AtomicWriteError::Io(error),
             }
         })?;
 
-        // 6b. Relax the final mode to world-readable. The temp file is
-        // 0600 during the write so partial content is never exposed, but
-        // the daemon config carries no secrets (name/host/port/intervals)
-        // and read-only diagnostics (`croncheck`, `status`, `configprint`)
-        // must work for unprivileged operators and cron. A user-local
-        // parent created 0700 above still protects that case; a system
-        // directory such as /etc/gregg is 0755 so 0644 is actually
-        // readable.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o644)).map_err(|e| {
-                ConfigError::AtomicWrite {
-                    path: path.to_path_buf(),
-                    source: AtomicWriteError::Io(e),
-                }
-            })?;
-        }
-
-        sync_parent_directory(dir).map_err(|e| ConfigError::AtomicWrite {
+        sync_parent(dir).map_err(|error| ConfigError::AtomicWrite {
             path: path.to_path_buf(),
-            source: AtomicWriteError::Io(e),
+            source: AtomicWriteError::CommittedButDurabilityUncertain(error),
         })?;
 
         Ok(())
@@ -1032,8 +1048,13 @@ impl fmt::Display for ConfigError {
             Self::EditorFailed { path, message } => {
                 write!(f, "editor failed for {}: {message}", path.display())
             }
-            Self::AtomicWrite { path, source } => {
-                write!(f, "atomic write to {} failed: {source}", path.display())
+            Self::AtomicWrite { path, source } => match source {
+                AtomicWriteError::CommittedButDurabilityUncertain(error) => write!(
+                    f,
+                    "configuration {} was replaced, but parent-directory synchronization failed; the new file is live, but crash durability is uncertain: {error}",
+                    path.display()
+                ),
+                _ => write!(f, "atomic write to {} failed: {source}", path.display()),
             }
         }
     }
@@ -1058,8 +1079,12 @@ impl std::error::Error for ConfigError {
 pub enum AtomicWriteError {
     /// The path has no parent directory.
     NoParentDirectory,
-    /// An I/O error occurred.
+    /// An I/O error occurred before the destination was replaced.
     Io(std::io::Error),
+    /// The replacement is live, but parent-directory synchronization failed.
+    /// The new configuration must be treated as committed; durability across
+    /// a sudden crash could not be confirmed.
+    CommittedButDurabilityUncertain(std::io::Error),
     /// TOML serialization failed.
     Serialization(toml::ser::Error),
     /// The file was written but verification re-parse failed.
@@ -1070,7 +1095,11 @@ impl fmt::Display for AtomicWriteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoParentDirectory => write!(f, "path has no parent directory"),
-            Self::Io(e) => write!(f, "I/O error: {e}"),
+            Self::Io(e) => write!(f, "I/O error before replacement: {e}"),
+            Self::CommittedButDurabilityUncertain(e) => write!(
+                f,
+                "parent-directory synchronization failed after replacement: {e}"
+            ),
             Self::Serialization(e) => write!(f, "TOML serialization error: {e}"),
             Self::VerificationFailed => write!(f, "verification re-parse failed"),
         }
@@ -1080,7 +1109,7 @@ impl fmt::Display for AtomicWriteError {
 impl std::error::Error for AtomicWriteError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Io(e) => Some(e),
+            Self::Io(e) | Self::CommittedButDurabilityUncertain(e) => Some(e),
             Self::Serialization(e) => Some(e),
             _ => None,
         }
@@ -1972,6 +2001,89 @@ unknown_field = "oops"
         let loaded = Config::load(&path).unwrap();
         assert_eq!(loaded.name, "second");
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_atomic_pre_rename_failure_preserves_original_bytes() {
+        let dir = std::env::temp_dir().join(format!(
+            "greggd-write-precommit-{}-{}",
+            std::process::id(),
+            NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let original = Config::default();
+        original.write_atomic(&path).unwrap();
+        let before = fs::read(&path).unwrap();
+        let replacement = Config {
+            name: "replacement".to_owned(),
+            ..original.clone()
+        };
+
+        let result = replacement.write_atomic_with_operations(
+            &path,
+            |_temp, _destination| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "injected pre-rename failure",
+                ))
+            },
+            |_parent| Ok(()),
+        );
+        assert!(matches!(
+            result,
+            Err(ConfigError::AtomicWrite {
+                source: AtomicWriteError::Io(_),
+                ..
+            })
+        ));
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(Config::load(&path).unwrap(), original);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_atomic_post_rename_failure_reports_committed_uncertain_state() {
+        let dir = std::env::temp_dir().join(format!(
+            "greggd-write-postcommit-{}-{}",
+            std::process::id(),
+            NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let original = Config::default();
+        original.write_atomic(&path).unwrap();
+        let replacement = Config {
+            name: "replacement".to_owned(),
+            ..original.clone()
+        };
+
+        let result = replacement.write_atomic_with_operations(
+            &path,
+            |from, to| fs::rename(from, to),
+            |_parent| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "injected directory sync failure",
+                ))
+            },
+        );
+        let Err(ConfigError::AtomicWrite { source, .. }) = result else {
+            panic!("expected committed durability uncertainty, got {result:?}");
+        };
+        assert!(matches!(
+            &source,
+            AtomicWriteError::CommittedButDurabilityUncertain(_)
+        ));
+        assert_eq!(Config::load(&path).unwrap(), replacement);
+        let message = ConfigError::AtomicWrite {
+            path: path.clone(),
+            source,
+        }
+        .to_string();
+        assert!(message.contains("was replaced"));
+        assert!(message.contains("new file is live"));
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -271,8 +271,8 @@ async fn run_with_shutdown_on_ready_and_control<C, S, F>(
     collector: C,
     config: Config,
     config_path: Option<std::path::PathBuf>,
-    _rehash_keepalive: mpsc::Sender<crate::local_control::RehashRequest>,
-    rehash_rx: mpsc::Receiver<crate::local_control::RehashRequest>,
+    _rehash_keepalive: mpsc::Sender<crate::local_control::ConfigControlRequest>,
+    rehash_rx: mpsc::Receiver<crate::local_control::ConfigControlRequest>,
     shutdown: S,
     on_ready: F,
 ) -> Result<(), Box<dyn std::error::Error>>
@@ -671,7 +671,7 @@ fn wait_for_shutdown_signal(
 #[cfg(unix)]
 fn shutdown_with_control(
     config_path: &std::path::Path,
-    rehash_tx: mpsc::Sender<crate::local_control::RehashRequest>,
+    rehash_tx: mpsc::Sender<crate::local_control::ConfigControlRequest>,
 ) -> Result<
     (
         impl std::future::Future<Output = &'static str>,

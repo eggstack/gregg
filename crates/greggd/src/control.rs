@@ -64,8 +64,8 @@ use thiserror::Error;
 use tracing::warn;
 
 use crate::local_control::{
-    decode_response, encode_response, RehashRejection, RehashRequest, RehashResponse,
-    RehashTransportError, MAX_REHASH_RESPONSE_BYTES,
+    decode_request, decode_response, encode_response, ConfigControlRequest, RehashRejection,
+    RehashResponse, RehashTransportError, MAX_REHASH_RESPONSE_BYTES,
 };
 
 /// Maximum length of the `sun_path` field on Unix-domain sockets.
@@ -100,6 +100,8 @@ pub const OK_RESPONSE: &[u8] = b"OK\n";
 
 /// Wire-level rehash request. It carries no path or config data.
 pub const REHASH_COMMAND: &[u8] = crate::local_control::REHASH_COMMAND;
+/// Wire-level check-only config request. It carries no path or config data.
+pub const CONFIGTEST_COMMAND: &[u8] = crate::local_control::CONFIGTEST_COMMAND;
 
 const REHASH_CLIENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -206,7 +208,11 @@ impl ControlIdentity {
     }
 
     fn fallback(&self) -> Option<PathBuf> {
-        let path = std::env::temp_dir().join(self.socket_file_name());
+        self.fallback_in(&std::env::temp_dir())
+    }
+
+    fn fallback_in(&self, temp_dir: &Path) -> Option<PathBuf> {
+        let path = temp_dir.join(self.socket_file_name());
         if path.as_os_str().len() > UNIX_PATH_MAX {
             return None;
         }
@@ -214,11 +220,15 @@ impl ControlIdentity {
     }
 
     fn stop_candidates(&self) -> Vec<PathBuf> {
+        self.stop_candidates_in(&std::env::temp_dir())
+    }
+
+    fn stop_candidates_in(&self, temp_dir: &Path) -> Vec<PathBuf> {
         let mut out = Vec::with_capacity(2);
         if let Some(primary) = self.primary() {
             out.push(primary);
         }
-        if let Some(fallback) = self.fallback() {
+        if let Some(fallback) = self.fallback_in(temp_dir) {
             if !out.iter().any(|p| p == &fallback) {
                 out.push(fallback);
             }
@@ -406,13 +416,20 @@ fn connect_with_timeout(
 /// process-discovery mechanism. It connects only to local Unix-domain
 /// sockets.
 pub fn send_stop(config_path: &Path) -> Result<StopOutcome, ControlError> {
+    send_stop_with_temp_dir(config_path, &std::env::temp_dir())
+}
+
+fn send_stop_with_temp_dir(
+    config_path: &Path,
+    temp_dir: &Path,
+) -> Result<StopOutcome, ControlError> {
     use std::io::{Read, Write};
     use std::time::Duration;
 
     const IO_TIMEOUT: Duration = Duration::from_millis(1500);
     const CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 
-    let candidates = ControlIdentity::for_path(config_path).stop_candidates();
+    let candidates = ControlIdentity::for_path(config_path).stop_candidates_in(temp_dir);
     let mut last_io_error: Option<std::io::Error> = None;
 
     for candidate in &candidates {
@@ -531,12 +548,35 @@ pub fn send_stop(config_path: &Path) -> Result<StopOutcome, ControlError> {
 /// sockets are reported as `NotRunning`; losing the reply after delivering the
 /// request is explicitly uncertain.
 pub fn send_rehash(config_path: &Path) -> Result<RehashResponse, RehashTransportError> {
+    send_config_request(config_path, REHASH_COMMAND, false)
+}
+
+/// Send one bounded check-only CONFIGTEST request over the selected config's local socket.
+pub fn send_configtest(config_path: &Path) -> Result<RehashResponse, RehashTransportError> {
+    send_config_request(config_path, CONFIGTEST_COMMAND, true)
+}
+
+fn send_config_request(
+    config_path: &Path,
+    request: &[u8],
+    check_only: bool,
+) -> Result<RehashResponse, RehashTransportError> {
+    send_config_request_with_temp_dir(config_path, request, check_only, &std::env::temp_dir())
+}
+
+fn send_config_request_with_temp_dir(
+    config_path: &Path,
+    request: &[u8],
+    check_only: bool,
+    temp_dir: &Path,
+) -> Result<RehashResponse, RehashTransportError> {
     use std::io::{Read, Write};
     use std::time::Duration;
 
     const CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
     const IO_TIMEOUT: Duration = REHASH_CLIENT_TIMEOUT;
-    let candidates = ControlIdentity::for_path(config_path).stop_candidates();
+    let operation = if check_only { "configtest" } else { "rehash" };
+    let candidates = ControlIdentity::for_path(config_path).stop_candidates_in(temp_dir);
     let mut last_error = None;
 
     for candidate in &candidates {
@@ -548,7 +588,7 @@ pub fn send_rehash(config_path: &Path) -> Result<RehashResponse, RehashTransport
             }
         };
         stream.set_write_timeout(Some(IO_TIMEOUT))?;
-        if let Err(error) = stream.write_all(REHASH_COMMAND) {
+        if let Err(error) = stream.write_all(request) {
             return Err(RehashTransportError::Uncertain {
                 detail: format!("request may have been delivered: {error}"),
             });
@@ -564,7 +604,7 @@ pub fn send_rehash(config_path: &Path) -> Result<RehashResponse, RehashTransport
             let remaining = response_deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
                 return Err(RehashTransportError::Uncertain {
-                    detail: "timed out after delivering the rehash request".into(),
+                    detail: format!("timed out after delivering the {operation} request"),
                 });
             }
             if let Err(error) = stream.set_read_timeout(Some(remaining)) {
@@ -575,20 +615,26 @@ pub fn send_rehash(config_path: &Path) -> Result<RehashResponse, RehashTransport
             match stream.read(&mut frame[length..]) {
                 Ok(0) => {
                     return Err(RehashTransportError::Uncertain {
-                        detail: "daemon closed the connection before acknowledging rehash".into(),
+                        detail: format!(
+                            "daemon closed the connection before acknowledging {operation}"
+                        ),
                     });
                 }
                 Ok(read) => {
                     length += read;
                     if frame[..length].contains(&b'\n') {
                         let response = decode_response(&frame[..length])?;
-                        return if response == RehashResponse::Uncertain {
-                            Err(RehashTransportError::Uncertain {
-                                detail: "daemon accepted the request but did not confirm scheduler application".into(),
-                            })
-                        } else {
-                            Ok(response)
-                        };
+                        if response == RehashResponse::Uncertain {
+                            return Err(RehashTransportError::Uncertain {
+                                detail: format!("daemon did not confirm the {operation} result"),
+                            });
+                        }
+                        if (check_only && response == RehashResponse::Applied)
+                            || (!check_only && response == RehashResponse::Ready)
+                        {
+                            return Err(RehashTransportError::BadResponse);
+                        }
+                        return Ok(response);
                     }
                 }
                 Err(error)
@@ -598,7 +644,7 @@ pub fn send_rehash(config_path: &Path) -> Result<RehashResponse, RehashTransport
                     ) =>
                 {
                     return Err(RehashTransportError::Uncertain {
-                        detail: "timed out after delivering the rehash request".into(),
+                        detail: format!("timed out after delivering the {operation} request"),
                     });
                 }
                 Err(error) => {
@@ -681,6 +727,10 @@ pub enum ControlBind {
 /// or directories) and the local connect attempt is classified as
 /// [`stale_connect_error`] rather than a permission or unknown error.
 pub fn bind_listener(config_path: &Path) -> ControlBind {
+    bind_listener_with_temp_dir(config_path, &std::env::temp_dir())
+}
+
+fn bind_listener_with_temp_dir(config_path: &Path, temp_dir: &Path) -> ControlBind {
     use tracing::info;
 
     // One identity per bind attempt: the primary/fallback comparison below
@@ -694,7 +744,7 @@ pub fn bind_listener(config_path: &Path) -> ControlBind {
             return bound;
         }
     }
-    if let Some(fallback) = identity.fallback() {
+    if let Some(fallback) = identity.fallback_in(temp_dir) {
         if Some(&fallback) != primary.as_ref() {
             if let Some(bound) = try_bind_secure(&fallback) {
                 info!(path = %fallback.display(), "control socket bound (fallback)");
@@ -905,7 +955,7 @@ pub fn spawn_stop_task(
 /// the scheduler replies; STOP retains the existing `OK\n` behavior.
 pub(crate) fn spawn_control_task(
     listener: tokio::net::UnixListener,
-    rehash_tx: Option<tokio::sync::mpsc::Sender<RehashRequest>>,
+    rehash_tx: Option<tokio::sync::mpsc::Sender<ConfigControlRequest>>,
     notify: tokio::sync::oneshot::Sender<std::io::Result<&'static str>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -947,7 +997,7 @@ impl Drop for ControlSocketGuard {
 
 async fn stop_loop(
     listener: tokio::net::UnixListener,
-    rehash_tx: Option<tokio::sync::mpsc::Sender<RehashRequest>>,
+    rehash_tx: Option<tokio::sync::mpsc::Sender<ConfigControlRequest>>,
 ) -> std::io::Result<&'static str> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -1015,10 +1065,10 @@ async fn stop_loop(
             .await;
             return Ok("control-stop");
         }
-        if received.as_deref() == Some(REHASH_COMMAND) {
+        if let Some(operation) = received.as_deref().and_then(decode_request) {
             let response = if let Some(sender) = &rehash_tx {
                 let (reply, response_rx) = tokio::sync::oneshot::channel();
-                match sender.try_send(RehashRequest { reply }) {
+                match sender.try_send(ConfigControlRequest { operation, reply }) {
                     Ok(()) => match tokio::time::timeout(CONTROL_CLIENT_TIMEOUT, response_rx).await
                     {
                         Ok(Ok(response)) => response,
@@ -1068,12 +1118,13 @@ pub async fn wait_for_stop_task(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::local_control::ConfigControlOperation;
     use std::os::unix::fs::PermissionsExt;
 
     fn temp_config_path(tag: &str) -> PathBuf {
-        // Keep the path short enough to stay below UNIX_PATH_MAX even after
-        // the `greggd-<id>.control.sock` suffix is appended.
-        std::env::temp_dir().join(format!(
+        // Keep the config directly under /tmp; the primary socket uses its
+        // parent, not the config filename, and remains well below sun_path.
+        PathBuf::from("/tmp").join(format!(
             "gd{tag}-{}-{}.toml",
             std::process::id(),
             std::thread::current().name().unwrap_or("main"),
@@ -1081,6 +1132,8 @@ mod tests {
     }
 
     fn repo_temp_dir(tag: &str) -> PathBuf {
+        // This fixture checks relative/absolute identity only; socket-binding
+        // cases use fresh_temp_dir's guaranteed-short root below.
         let dir = std::env::current_dir()
             .unwrap()
             .join("target")
@@ -1088,6 +1141,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn short_fallback_dir(parent: &Path) -> PathBuf {
+        let dir = parent.join("fb");
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn fallback_path_in(config_path: &Path, temp_dir: &Path) -> PathBuf {
+        ControlIdentity::for_path(config_path)
+            .fallback_in(temp_dir)
+            .expect("test fallback path fits the platform socket limit")
     }
 
     #[test]
@@ -1146,7 +1211,11 @@ mod tests {
             "symlink and target spellings must converge"
         );
         assert_eq!(primary_control_path(&link), primary_control_path(&target));
-        assert_eq!(fallback_control_path(&link), fallback_control_path(&target));
+        let fallback_dir = short_fallback_dir(&dir);
+        assert_eq!(
+            ControlIdentity::for_path(&link).fallback_in(&fallback_dir),
+            ControlIdentity::for_path(&target).fallback_in(&fallback_dir)
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1159,7 +1228,11 @@ mod tests {
 
         assert_ne!(config_id_for_path(&a), config_id_for_path(&b));
         assert_ne!(primary_control_path(&a), primary_control_path(&b));
-        assert_ne!(fallback_control_path(&a), fallback_control_path(&b));
+        let fallback_dir = short_fallback_dir(&dir);
+        assert_ne!(
+            ControlIdentity::for_path(&a).fallback_in(&fallback_dir),
+            ControlIdentity::for_path(&b).fallback_in(&fallback_dir)
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1178,21 +1251,21 @@ mod tests {
 
     #[test]
     fn absent_absolute_path_has_deterministic_identity_without_creation() {
-        let dir = std::env::temp_dir().join(format!("gdmissing-{}", std::process::id()));
+        let dir = PathBuf::from("/tmp").join(format!("gdmissing-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let config = dir.join("greggd.toml");
         assert!(!config.exists());
 
         assert_eq!(config_id_for_path(&config), config_id_for_path(&config));
         let primary = primary_control_path(&config).unwrap();
-        let fallback = fallback_control_path(&config).unwrap();
+        let fallback = fallback_path_in(&config, Path::new("/tmp"));
         assert!(primary.as_os_str().len() <= UNIX_PATH_MAX);
         assert!(fallback.as_os_str().len() <= UNIX_PATH_MAX);
     }
 
     #[test]
     fn primary_path_derives_from_config_path_in_same_directory() {
-        let dir = std::env::temp_dir().join(format!("gd-id-cf-{}", std::process::id()));
+        let dir = PathBuf::from("/tmp").join(format!("gd-id-cf-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -1208,9 +1281,10 @@ mod tests {
             pa, pb,
             "different config files in the same directory must produce different control identities"
         );
+        let fallback_dir = short_fallback_dir(&dir);
         assert_ne!(
-            fallback_control_path(&a),
-            fallback_control_path(&b),
+            ControlIdentity::for_path(&a).fallback_in(&fallback_dir),
+            ControlIdentity::for_path(&b).fallback_in(&fallback_dir),
             "fallback identities must also differ"
         );
 
@@ -1228,12 +1302,15 @@ mod tests {
     }
 
     #[test]
-    fn fallback_path_is_deterministic_and_in_temp_dir() {
-        let cfg_path = temp_config_path("fallback-deterministic");
-        let first = fallback_control_path(&cfg_path).unwrap();
-        let second = fallback_control_path(&cfg_path).unwrap();
+    fn fallback_path_is_deterministic_under_a_short_test_root() {
+        let cfg_path = Path::new("/tmp/gd-fallback-config/greggd.toml");
+        // Use a short explicit root so this test exercises fallback path
+        // construction even when the host TMPDIR itself exceeds sun_path.
+        let first = fallback_path_in(cfg_path, Path::new("/tmp"));
+        let second = fallback_path_in(cfg_path, Path::new("/tmp"));
         assert_eq!(first, second);
-        assert!(first.starts_with(std::env::temp_dir()));
+        assert_ne!(first, primary_control_path(cfg_path).unwrap());
+        assert!(first.starts_with("/tmp"));
         assert!(first.as_os_str().len() <= UNIX_PATH_MAX);
         let name = first.file_name().unwrap().to_str().unwrap();
         assert!(name.starts_with("greggd-"));
@@ -1245,14 +1322,15 @@ mod tests {
         // Use a deep directory so primary (config-adjacent) and fallback
         // (temp-dir root) point at different paths. Putting the file at
         // the temp-dir root directly would alias the two candidates.
-        let parent = std::env::temp_dir().join(format!("gd-cand-{}", std::process::id()));
+        let parent = PathBuf::from("/tmp").join(format!("gd-cand-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&parent);
         std::fs::create_dir_all(&parent).unwrap();
         let cfg_path = parent.join("greggd.toml");
 
-        let candidates = stop_candidates(&cfg_path);
+        let fallback_dir = Path::new("/tmp");
+        let candidates = ControlIdentity::for_path(&cfg_path).stop_candidates_in(fallback_dir);
         let primary = primary_control_path(&cfg_path);
-        let fallback = fallback_control_path(&cfg_path);
+        let fallback = ControlIdentity::for_path(&cfg_path).fallback_in(fallback_dir);
         assert!(
             primary.is_some() && fallback.is_some(),
             "both candidates must fit in UNIX_PATH_MAX; primary={primary:?} fallback={fallback:?}"
@@ -1300,6 +1378,7 @@ mod tests {
         assert_eq!(STOP_COMMAND, b"STOP\n");
         assert_eq!(OK_RESPONSE, b"OK\n");
         assert_eq!(REHASH_COMMAND, b"REHASH\n");
+        assert_eq!(CONFIGTEST_COMMAND, b"CONFIGTEST\n");
     }
 
     #[tokio::test]
@@ -1334,6 +1413,65 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[tokio::test]
+    async fn configtest_waits_for_a_check_only_scheduler_acknowledgment() {
+        let dir = fresh_temp_dir("configtest-ack");
+        let cfg = make_config_file(&dir, "greggd.toml");
+        let ControlBind::Bound { path, listener } = bind_listener(&cfg) else {
+            panic!("control listener must bind");
+        };
+        let _guard = ControlSocketGuard::new(path);
+        let (request_tx, mut request_rx) = tokio::sync::mpsc::channel(1);
+        let (notify_tx, _notify_rx) = tokio::sync::oneshot::channel();
+        let _control = spawn_control_task(listener, Some(request_tx), notify_tx);
+        let scheduler = tokio::spawn(async move {
+            let request = request_rx.recv().await.expect("scheduler receives request");
+            assert_eq!(request.operation, ConfigControlOperation::ConfigTest);
+            request
+                .reply
+                .send(RehashResponse::Ready)
+                .expect("control listener is awaiting the check-only result");
+        });
+
+        let client_path = cfg.clone();
+        let response = tokio::task::spawn_blocking(move || send_configtest(&client_path))
+            .await
+            .expect("client task completes")
+            .expect("well-formed scheduler response");
+        assert_eq!(response, RehashResponse::Ready);
+        scheduler.await.expect("scheduler responder completes");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn configtest_silent_close_names_the_check_only_operation() {
+        let dir = fresh_temp_dir("configtest-silent-close");
+        let cfg = make_config_file(&dir, "greggd.toml");
+        let fallback_dir = short_fallback_dir(&dir);
+        let fallback = fallback_path_in(&cfg, &fallback_dir);
+        let listener = std::os::unix::net::UnixListener::bind(&fallback).unwrap();
+
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                use std::io::Read;
+                let mut request = [0_u8; 32];
+                let _ = stream.read(&mut request);
+            }
+        });
+
+        let error =
+            send_config_request_with_temp_dir(&cfg, CONFIGTEST_COMMAND, true, &fallback_dir)
+                .expect_err("silent close is uncertain");
+        let RehashTransportError::Uncertain { detail } = error else {
+            panic!("expected uncertain configtest result");
+        };
+        assert_eq!(
+            detail,
+            "daemon closed the connection before acknowledging configtest"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn rehash_without_a_listener_is_not_running() {
         let dir = fresh_temp_dir("rehash-missing");
@@ -1358,12 +1496,12 @@ mod tests {
     }
 
     fn fresh_temp_dir(name: &str) -> PathBuf {
-        // Use a short prefix so the resulting control socket path stays
-        // inside the OS-level `sun_path` limit (`UNIX_PATH_MAX = 108`).
+        // Do not inherit the often-long macOS TMPDIR path: a test socket
+        // includes a fixed filename and must fit sun_path.
         use std::sync::atomic::{AtomicUsize, Ordering};
         static NEXT_TEMP_DIR: AtomicUsize = AtomicUsize::new(0);
         let id = NEXT_TEMP_DIR.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("gd{name}-{}-{id}", std::process::id()));
+        let dir = PathBuf::from("/tmp").join(format!("gd{name}-{}-{id}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -1412,22 +1550,44 @@ mod tests {
         // refused and we are forced into the fallback branch.
         std::fs::write(&primary, b"blocker").unwrap();
 
+        let fallback_dir = short_fallback_dir(&dir);
+        let expected_fallback = fallback_path_in(&cfg, &fallback_dir);
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
-        let bound = rt.block_on(async { bind_listener(&cfg) });
+        let bound = rt.block_on(async { bind_listener_with_temp_dir(&cfg, &fallback_dir) });
+        let ControlBind::Bound { path, listener } = bound else {
+            panic!("fallback bind should have succeeded");
+        };
+        assert_eq!(path, expected_fallback);
+        assert!(path.exists());
 
-        match bound {
-            ControlBind::Bound { path, .. } => {
-                assert_eq!(path, fallback_control_path(&cfg).unwrap());
-                assert!(path.exists());
+        let (notify_tx, notify_rx) = tokio::sync::oneshot::channel();
+        let client_cfg = cfg.clone();
+        let client_fallback = fallback_dir.clone();
+        let (outcome, stop_reason) = rt.block_on(async move {
+            let task = spawn_stop_task(listener, path.clone(), notify_tx);
+            let outcome = tokio::task::spawn_blocking(move || {
+                send_stop_with_temp_dir(&client_cfg, &client_fallback)
+            })
+            .await
+            .expect("fallback stop client completes")
+            .expect("fallback stop is acknowledged");
+            let reason = notify_rx.await.expect("stop task signals completion");
+            task.await.expect("fallback stop task joins");
+            (outcome, reason)
+        });
+        assert_eq!(
+            outcome,
+            StopOutcome::Stopped {
+                path: expected_fallback.clone()
             }
-            ControlBind::NotBound => panic!("fallback bind should have succeeded"),
-        }
+        );
+        assert!(stop_reason.is_ok());
 
         let _ = std::fs::remove_file(&primary);
-        remove_control_socket(&fallback_control_path(&cfg).unwrap()).unwrap();
+        remove_control_socket(&expected_fallback).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1438,17 +1598,18 @@ mod tests {
         let primary = primary_control_path(&cfg).unwrap();
         let live = std::os::unix::net::UnixListener::bind(&primary).unwrap();
 
+        let fallback_dir = short_fallback_dir(&dir);
+        let expected_fallback = fallback_path_in(&cfg, &fallback_dir);
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
-        let bound = rt.block_on(async { bind_listener(&cfg) });
+        let bound = rt.block_on(async { bind_listener_with_temp_dir(&cfg, &fallback_dir) });
 
         match bound {
             ControlBind::Bound { path, .. } => {
                 assert_eq!(
-                    path,
-                    fallback_control_path(&cfg).unwrap(),
+                    path, expected_fallback,
                     "live primary listener must be left alone"
                 );
             }
@@ -1457,7 +1618,7 @@ mod tests {
 
         drop(live);
         remove_control_socket(&primary).unwrap();
-        remove_control_socket(&fallback_control_path(&cfg).unwrap()).unwrap();
+        remove_control_socket(&expected_fallback).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1758,8 +1919,6 @@ mod tests {
 
         remove_control_socket(&primary_a).unwrap();
         remove_control_socket(&primary_b).unwrap();
-        remove_control_socket(&fallback_control_path(&cfg_a).unwrap()).unwrap();
-        remove_control_socket(&fallback_control_path(&cfg_b).unwrap()).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1808,7 +1967,6 @@ mod tests {
             "the daemon-owned guard must remove the control socket on exit"
         );
 
-        remove_control_socket(&fallback_control_path(&cfg).unwrap()).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

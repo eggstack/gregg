@@ -597,7 +597,7 @@ fn mounted_filesystems() -> Result<Vec<RawMountedFilesystem>, CollectError> {
         // and returns its element count, selecting the architecture-correct
         // INODE64 symbol. The array remains valid for this call; every
         // accepted record is copied into an owned Rust value before returning.
-        let count = unsafe { libc::getmntinfo(&mut pointer, 0) };
+        let count = unsafe { libc::getmntinfo(std::ptr::addr_of_mut!(pointer), 0) };
         let count = mounted_filesystem_count(count, pointer)?;
         Ok(keep_converted((0..count).map(|index| {
             // Safety: index is bounded by the count returned by getmntinfo and
@@ -870,7 +870,7 @@ fn sysctl_iflist2_buffer() -> Result<Vec<u8>, CollectError> {
             mib.as_mut_ptr(),
             6,
             std::ptr::null_mut(),
-            &mut len,
+            std::ptr::addr_of_mut!(len),
             std::ptr::null_mut(),
             0,
         )
@@ -904,7 +904,7 @@ fn sysctl_iflist2_buffer() -> Result<Vec<u8>, CollectError> {
                 mib.as_mut_ptr(),
                 6,
                 buffer.as_mut_ptr().cast::<libc::c_void>(),
-                &mut out_len,
+                std::ptr::addr_of_mut!(out_len),
                 std::ptr::null_mut(),
                 0,
             )
@@ -929,7 +929,7 @@ fn sysctl_iflist2_buffer() -> Result<Vec<u8>, CollectError> {
                     mib.as_mut_ptr(),
                     6,
                     std::ptr::null_mut(),
-                    &mut len,
+                    std::ptr::addr_of_mut!(len),
                     std::ptr::null_mut(),
                     0,
                 )
@@ -1020,7 +1020,7 @@ fn network_interfaces_getifaddrs() -> Result<Vec<RawNetworkInterface>, CollectEr
     // Safety: getifaddrs initializes an owned linked list on success and
     // reports failure without allocating one; on success the guard below
     // owns it and releases it exactly once on every exit path.
-    let result = unsafe { libc::getifaddrs(&mut head) };
+    let result = unsafe { libc::getifaddrs(std::ptr::addr_of_mut!(head)) };
     if result != 0 {
         return Err(
             CollectError::new(CollectErrorKind::SourceUnavailable, "getifaddrs failed")
@@ -1082,6 +1082,108 @@ fn network_interfaces() -> Result<Vec<RawNetworkInterface>, CollectError> {
     }
 }
 
+/// Create the three CoreFoundation keys used to extract storage counters.
+#[cfg(target_os = "macos")]
+fn disk_io_keys() -> Result<(CfMutableRef, CfMutableRef, CfMutableRef), CollectError> {
+    let statistics_key = cf_string("Statistics")?;
+    let read_key = match cf_string("Bytes (Read)") {
+        Ok(key) => key,
+        Err(error) => {
+            // Safety: both keys are owned CF objects and are released once.
+            unsafe { CFRelease(statistics_key.cast()) };
+            return Err(error);
+        }
+    };
+    let write_key = match cf_string("Bytes (Write)") {
+        Ok(key) => key,
+        Err(error) => {
+            // Safety: both keys are owned CF objects and are released once.
+            unsafe {
+                CFRelease(statistics_key.cast());
+                CFRelease(read_key.cast());
+            }
+            return Err(error);
+        }
+    };
+    Ok((statistics_key, read_key, write_key))
+}
+
+/// Read one `IOKit` service's properties and convert its counters when valid.
+#[cfg(target_os = "macos")]
+fn disk_io_record(
+    service: u32,
+    statistics_key: CfMutableRef,
+    read_key: CfMutableRef,
+    write_key: CfMutableRef,
+) -> Option<RawDiskIo> {
+    let mut properties = std::ptr::null_mut();
+    // Safety: service is a live registry entry from the iterator; properties
+    // is a valid out-pointer for the returned owned property dictionary.
+    let result = unsafe {
+        IORegistryEntryCreateCFProperties(
+            service,
+            std::ptr::addr_of_mut!(properties),
+            std::ptr::null(),
+            0,
+        )
+    };
+    if result != 0 || properties.is_null() {
+        return None;
+    }
+
+    // Safety: properties is the live dictionary returned above and the key is
+    // a live CFString retained for the entire enumeration.
+    let values = unsafe { CFDictionaryGetValue(properties, statistics_key.cast()) };
+    let record = if values.is_null() {
+        None
+    } else {
+        // Safety: values is owned by properties; both keys remain live.
+        let read = unsafe { CFDictionaryGetValue(values, read_key.cast()) };
+        let write = unsafe { CFDictionaryGetValue(values, write_key.cast()) };
+        let mut read_bytes = 0i64;
+        let mut write_bytes = 0i64;
+        // Safety: non-null values are CFNumbers, and the output pointers name
+        // initialized, correctly aligned i64 locals.
+        let read_ok = !read.is_null()
+            && unsafe { CFNumberGetValue(read, 4, std::ptr::addr_of_mut!(read_bytes).cast()) };
+        let write_ok = !write.is_null()
+            && unsafe { CFNumberGetValue(write, 4, std::ptr::addr_of_mut!(write_bytes).cast()) };
+        if !read_ok || !write_ok || read_bytes < 0 || write_bytes < 0 {
+            None
+        } else {
+            let mut name = [0i8; 256];
+            // Safety: service is live and name is a writable fixed-size buffer
+            // for the IOKit registry entry name.
+            let name_ok = unsafe { IORegistryEntryGetName(service, name.as_mut_ptr()) } == 0;
+            let mut registry_id = 0u64;
+            // Safety: service is live and registry_id is a valid output slot.
+            let id_status = unsafe {
+                IORegistryEntryGetRegistryEntryID(service, std::ptr::addr_of_mut!(registry_id))
+            };
+            if !name_ok || id_status != 0 {
+                None
+            } else {
+                // Safety: a successful IORegistryEntryGetName call writes a
+                // NUL-terminated name into the fixed-size buffer.
+                let display = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) }
+                    .to_string_lossy()
+                    .into_owned();
+                Some(RawDiskIo {
+                    id: format!("ioreg-{registry_id}"),
+                    name: display,
+                    read_bytes: u64::try_from(read_bytes).unwrap_or(0),
+                    write_bytes: u64::try_from(write_bytes).unwrap_or(0),
+                })
+            }
+        }
+    };
+
+    // Safety: properties is the owned CF dictionary returned above and must be
+    // released exactly once after its borrowed values are no longer used.
+    unsafe { CFRelease(properties.cast()) };
+    record
+}
+
 /// Read `IOKit` block-storage driver statistics. One malformed service is
 /// skipped, allowing other optional metric families to remain healthy.
 fn disk_io() -> Result<Vec<RawDiskIo>, CollectError> {
@@ -1100,82 +1202,35 @@ fn disk_io() -> Result<Vec<RawDiskIo>, CollectError> {
             ));
         }
         let mut iterator = 0;
-        let status = unsafe { IOServiceGetMatchingServices(0, matching, &mut iterator) };
+        // Safety: iterator is a valid output slot and IOKit consumes the
+        // matching dictionary as documented for this call.
+        let status =
+            unsafe { IOServiceGetMatchingServices(0, matching, std::ptr::addr_of_mut!(iterator)) };
         if status != 0 {
             return Err(CollectError::new(
                 CollectErrorKind::SourceUnavailable,
                 "IOMedia enumeration failed",
             ));
         }
-        let statistics_key = cf_string("Statistics")?;
-        let read_key = match cf_string("Bytes (Read)") {
-            Ok(key) => key,
-            Err(error) => {
-                unsafe { CFRelease(statistics_key.cast()) };
-                return Err(error);
-            }
-        };
-        let write_key = match cf_string("Bytes (Write)") {
-            Ok(key) => key,
-            Err(error) => {
-                unsafe {
-                    CFRelease(statistics_key.cast());
-                    CFRelease(read_key.cast());
-                }
-                return Err(error);
-            }
-        };
+        let (statistics_key, read_key, write_key) = disk_io_keys()?;
         let mut records = Vec::new();
         loop {
+            // Safety: iterator is owned by this function and remains live until
+            // released after the enumeration loop.
             let service = unsafe { IOIteratorNext(iterator) };
             if service == 0 {
                 break;
             }
-            let mut properties = std::ptr::null_mut();
-            let result = unsafe {
-                IORegistryEntryCreateCFProperties(service, &mut properties, std::ptr::null(), 0)
-            };
-            if result == 0 && !properties.is_null() {
-                let values = unsafe { CFDictionaryGetValue(properties, statistics_key.cast()) };
-                if !values.is_null() {
-                    let read = unsafe { CFDictionaryGetValue(values, read_key.cast()) };
-                    let write = unsafe { CFDictionaryGetValue(values, write_key.cast()) };
-                    let mut read_bytes = 0i64;
-                    let mut write_bytes = 0i64;
-                    let read_ok = !read.is_null()
-                        && unsafe {
-                            CFNumberGetValue(read, 4, std::ptr::addr_of_mut!(read_bytes).cast())
-                        };
-                    let write_ok = !write.is_null()
-                        && unsafe {
-                            CFNumberGetValue(write, 4, std::ptr::addr_of_mut!(write_bytes).cast())
-                        };
-                    if read_ok && write_ok && read_bytes >= 0 && write_bytes >= 0 {
-                        let mut name = [0i8; 256];
-                        let name_ok =
-                            unsafe { IORegistryEntryGetName(service, name.as_mut_ptr()) } == 0;
-                        let mut registry_id = 0u64;
-                        let id_status =
-                            unsafe { IORegistryEntryGetRegistryEntryID(service, &mut registry_id) };
-                        if name_ok && id_status == 0 {
-                            let display = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) }
-                                .to_string_lossy()
-                                .into_owned();
-                            records.push(RawDiskIo {
-                                id: format!("ioreg-{registry_id}"),
-                                name: display,
-                                read_bytes: u64::try_from(read_bytes).unwrap_or(0),
-                                write_bytes: u64::try_from(write_bytes).unwrap_or(0),
-                            });
-                        }
-                    }
-                }
-                unsafe { CFRelease(properties.cast()) };
+            if let Some(record) = disk_io_record(service, statistics_key, read_key, write_key) {
+                records.push(record);
             }
+            // Safety: service is the owned object returned by IOIteratorNext.
             unsafe { IOObjectRelease(service) };
         }
-        unsafe { IOObjectRelease(iterator) };
+        // Safety: iterator and the three keys are owned here and each is
+        // released exactly once after the loop completes.
         unsafe {
+            IOObjectRelease(iterator);
             CFRelease(statistics_key.cast());
             CFRelease(read_key.cast());
             CFRelease(write_key.cast());
@@ -1490,11 +1545,11 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].index, 1);
 
-        assert!(parse_iflist2_buffer(&[]).is_empty());
-        assert!(parse_iflist2_buffer(&[0u8]).is_empty());
+        assert_eq!(parse_iflist2_buffer(&[]), Vec::new());
+        assert_eq!(parse_iflist2_buffer(&[0u8]), Vec::new());
         // A lone prefix-sized buffer advertising a longer message is a
         // truncated tail: prior records are kept, nothing is over-read.
-        assert!(parse_iflist2_buffer(&[16u8, 0u8, 5u8, 18u8]).is_empty());
+        assert_eq!(parse_iflist2_buffer(&[16u8, 0u8, 5u8, 18u8]), Vec::new());
 
         // Zero `msglen` terminates safely, preserving earlier interfaces.
         let mut zero_len = encode_ifinfo2(1, libc::IFF_UP, 10, 20, 0);
@@ -1850,8 +1905,14 @@ fn cpu_load_info() -> Result<RawCpuTicks, CollectError> {
     // The return status is validated.
     let mut buf = [0i32; 4];
     let mut count: mach_msg_type_number_t = 4;
-    let kr =
-        unsafe { host_statistics(host.raw(), HOST_CPU_LOAD_INFO, buf.as_mut_ptr(), &mut count) };
+    let kr = unsafe {
+        host_statistics(
+            host.raw(),
+            HOST_CPU_LOAD_INFO,
+            buf.as_mut_ptr(),
+            std::ptr::addr_of_mut!(count),
+        )
+    };
 
     if kr != KERN_SUCCESS {
         return Err(CollectError::new(
@@ -1883,7 +1944,14 @@ fn vm_info64() -> Result<RawVmStats, CollectError> {
     // versions add fields. The return count tells us how many were written.
     let mut buf = [0i32; 64];
     let mut count: mach_msg_type_number_t = 64;
-    let kr = unsafe { host_statistics64(host.raw(), HOST_VM_INFO64, buf.as_mut_ptr(), &mut count) };
+    let kr = unsafe {
+        host_statistics64(
+            host.raw(),
+            HOST_VM_INFO64,
+            buf.as_mut_ptr(),
+            std::ptr::addr_of_mut!(count),
+        )
+    };
 
     if kr != KERN_SUCCESS {
         return Err(CollectError::new(
@@ -1936,7 +2004,7 @@ fn read_page_size_uncached() -> Result<u64, CollectError> {
     // Safety: `host_page_size` writes a single `vm_size_t` (`u32`) value. The
     // pointer is valid, writable, and correctly aligned for that type. The
     // return status is validated.
-    let kr = unsafe { host_page_size(host.raw(), &mut page_size) };
+    let kr = unsafe { host_page_size(host.raw(), std::ptr::addr_of_mut!(page_size)) };
     if kr != KERN_SUCCESS {
         return Err(CollectError::new(
             CollectErrorKind::SourceUnavailable,
@@ -1984,7 +2052,7 @@ fn swap_usage() -> Result<RawSwapUsage, CollectError> {
         sysctlbyname(
             name.as_ptr(),
             std::ptr::addr_of_mut!(data).cast::<std::ffi::c_void>(),
-            &mut len,
+            std::ptr::addr_of_mut!(len),
             std::ptr::null(),
             0,
         )
@@ -2064,7 +2132,7 @@ fn read_string_sysctl(name: &str) -> Result<String, CollectError> {
         sysctlbyname(
             c_name.as_ptr(),
             std::ptr::null_mut(),
-            &mut len,
+            std::ptr::addr_of_mut!(len),
             std::ptr::null(),
             0,
         )
@@ -2083,7 +2151,7 @@ fn read_string_sysctl(name: &str) -> Result<String, CollectError> {
         sysctlbyname(
             c_name.as_ptr(),
             buf.as_mut_ptr().cast::<std::ffi::c_void>(),
-            &mut len,
+            std::ptr::addr_of_mut!(len),
             std::ptr::null(),
             0,
         )
@@ -2126,7 +2194,7 @@ fn read_int_sysctl<T: Copy + Default>(name: &str) -> Result<T, CollectError> {
         sysctlbyname(
             c_name.as_ptr(),
             std::ptr::addr_of_mut!(value).cast::<std::ffi::c_void>(),
-            &mut len,
+            std::ptr::addr_of_mut!(len),
             std::ptr::null(),
             0,
         )
@@ -2413,7 +2481,7 @@ mod native_tests {
 
         let mut collector = MacOsCollector::new(None).expect("collector constructs");
         let identity = collector.identity().expect("identity");
-        assert!(!identity.hostname.is_empty());
+        assert_ne!(identity.hostname, "");
         let warm_err = collector.sample().expect_err("first sample warms");
         assert_eq!(warm_err.kind, CollectErrorKind::Warming);
 
@@ -2428,9 +2496,10 @@ mod native_tests {
             let metrics = match collector.sample() {
                 Ok(metrics) => metrics,
                 Err(error) if error.kind == CollectErrorKind::CounterReset => {
-                    if elapsed >= deadline {
-                        panic!("counter reset persisted past bounded warmup: {error:?}");
-                    }
+                    assert!(
+                        elapsed < deadline,
+                        "counter reset persisted past bounded warmup: {error:?}"
+                    );
                     continue;
                 }
                 Err(error) => panic!("native warmup sample fails: {error:?}"),
@@ -2454,17 +2523,16 @@ mod native_tests {
             if drives_ready && network_ready {
                 break metrics;
             }
-            if elapsed >= deadline {
-                panic!(
-                    "bounded warmup expired without drives+non-loopback network: drives={:?} network_interfaces={:?}",
-                    metrics.drives.as_ref().map(Vec::len),
-                    metrics.network.as_ref().map(|network| network
-                        .interfaces
-                        .iter()
-                        .map(|interface| (interface.id.clone(), interface.is_loopback))
-                        .collect::<Vec<_>>()),
-                );
-            }
+            assert!(
+                elapsed < deadline,
+                "bounded warmup expired without drives+non-loopback network: drives={:?} network_interfaces={:?}",
+                metrics.drives.as_ref().map(Vec::len),
+                metrics.network.as_ref().map(|network| network
+                    .interfaces
+                    .iter()
+                    .map(|interface| (interface.id.clone(), interface.is_loopback))
+                    .collect::<Vec<_>>()),
+            );
         };
         assert!(metrics.cpu_usage_pct.is_some());
         assert!(metrics.cpu_iowait_pct.is_none());

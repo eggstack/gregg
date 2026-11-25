@@ -55,6 +55,15 @@ fn run_main() -> Result<(), Box<dyn Error>> {
             greggd::cli::report_rehash_result(greggd::control_windows::send_rehash(&config_path))
         }
         #[cfg(unix)]
+        greggd::cli::Command::Configtest => {
+            greggd::cli::run_configtest_with_sender(&config_path, greggd::control::send_configtest)
+        }
+        #[cfg(target_os = "windows")]
+        greggd::cli::Command::Configtest => greggd::cli::run_configtest_with_sender(
+            &config_path,
+            greggd::control_windows::send_configtest,
+        ),
+        #[cfg(unix)]
         greggd::cli::Command::Stop => {
             // Control-socket identity is derived from the config *path*
             // alone (FNV-1a of the normalized path; never from host/port),

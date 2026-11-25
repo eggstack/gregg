@@ -9,6 +9,15 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Scheduled-job auto-rehash and configtest (Plan 198):** after a successful
+  `greggd job add/remove` write, make exactly one config-specific local rehash
+  attempt after releasing the config lock. Report persisted config separately
+  from live application; a missing daemon defers to next start, while rejection
+  or uncertainty never rolls back or retries. Add `greggd [--config PATH]
+  configtest` for bounded local load validation plus daemon-side authority and
+  restart-only checks without applying changes; offline success is local-only.
+  Other config edits and `gregg add/remove` are unchanged.
+
 - **Live scheduled-job rehash (Plan 197):** add `greggd [--config PATH] rehash`
   to validate the selected full config and apply jobs-only changes to the
   running daemon through bounded local control. Restart-bound field changes
@@ -20,9 +29,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   and remove local jobs with `greggd job add/list/remove`; omission of the remove
   name opens a small terminal selector. `greggd edit` edits the complete daemon
   config through a private candidate and commits only after validation. Job
-  commands preserve direct argv (no shell), honor `--config`, leave the root-job
-  opt-in unchanged, and do not reload/restart a running daemon implicitly. Use
-  the explicit `greggd rehash` command to apply jobs-only changes; other config
+  commands preserve direct argv (no shell), honor `--config`, and leave the
+  root-job opt-in unchanged. Plan 198 adds one post-write rehash attempt only
+  for successful add/remove; the editor remains explicit and other config
   changes remain restart-required.
 
 - **Interactive CLI removal:** `gregg remove` and `gregg eggpool remove` now
@@ -81,6 +90,12 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   asset contract and updater policy remain unchanged.
 
 ### Fixed
+
+- **Atomic config writes report post-rename durability uncertainty (Plan 199).**
+  Final permissions are applied to the verified temporary file before rename. If
+  parent-directory synchronization then fails, the CLI explicitly says the new
+  file is live and crash durability is uncertain; it does not imply the previous
+  contents remain or attempt a weakening rollback.
 
 - **The privileged config-permission repair follows no links and no foreign
   file (Plan 188).** `startup install` relaxes an old `0600` system config so

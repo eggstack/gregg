@@ -17,7 +17,9 @@ use tokio::sync::{broadcast, mpsc, watch, Semaphore};
 use tokio::time::Instant;
 
 use crate::config::{Config, ScheduledJobConfig, MAX_JOBS};
-use crate::local_control::{RehashRejection, RehashRequest, RehashResponse};
+use crate::local_control::{
+    ConfigControlOperation, ConfigControlRequest, RehashRejection, RehashResponse,
+};
 use observation::{
     drain_into, drain_step, job_state, OutputTail, SchedulerObserver, SchedulerPublisher,
     TerminalRecord,
@@ -893,7 +895,7 @@ async fn settle_output<O, E>(
 
 enum SchedulerWake {
     Child(Option<ChildCompletion>),
-    Rehash(RehashRequest),
+    Rehash(ConfigControlRequest),
     RehashChannelClosed,
     Deadline,
     Shutdown,
@@ -1069,16 +1071,49 @@ where
     }
 }
 
-async fn prepare_rehash(
+/// Local configtest load failures kept separate from daemon-specific policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConfigTestLoadError {
+    InvalidConfig,
+    Busy,
+    TimedOut,
+    Worker,
+}
+
+/// Validate a local file with rehash's exact byte cap, parser, and deadline.
+/// No daemon authority or active-config comparison is implied by this check.
+pub(crate) fn configtest_load_local(path: &std::path::Path) -> Result<(), ConfigTestLoadError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| ConfigTestLoadError::Worker)?;
+    let path = path.to_path_buf();
+    let result = runtime.block_on(bounded_rehash_load(
+        Arc::new(Semaphore::new(1)),
+        REHASH_LOAD_DEADLINE,
+        move || Config::load_for_rehash(&path),
+    ));
+    // A timed-out blocking read may still be parked in the OS. Do not let
+    // runtime teardown turn the explicit 750 ms loader deadline into a wait.
+    runtime.shutdown_timeout(Duration::ZERO);
+    match result {
+        Ok(_) => Ok(()),
+        Err(RehashLoadFailure::Config(_)) => Err(ConfigTestLoadError::InvalidConfig),
+        Err(RehashLoadFailure::Busy) => Err(ConfigTestLoadError::Busy),
+        Err(RehashLoadFailure::TimedOut) => Err(ConfigTestLoadError::TimedOut),
+        Err(RehashLoadFailure::Worker(_)) => Err(ConfigTestLoadError::Worker),
+    }
+}
+
+async fn load_rehash_candidate(
     config_path: Option<&std::path::Path>,
-    active_config: &mut Config,
-    engine: &mut Engine,
-    active_history_id: Option<u64>,
     is_unix_root: bool,
     load_gate: Arc<Semaphore>,
-) -> RehashResponse {
+) -> Result<Config, RehashResponse> {
     let Some(config_path) = config_path else {
-        return RehashResponse::Rejected(RehashRejection::ControlUnavailable);
+        return Err(RehashResponse::Rejected(
+            RehashRejection::ControlUnavailable,
+        ));
     };
     let path = config_path.to_path_buf();
     let candidate = match bounded_rehash_load(load_gate, REHASH_LOAD_DEADLINE, move || {
@@ -1087,22 +1122,57 @@ async fn prepare_rehash(
     .await
     {
         Ok(config) => config,
-        Err(RehashLoadFailure::Busy) => return RehashResponse::Busy,
-        Err(RehashLoadFailure::TimedOut) => return RehashResponse::Uncertain,
+        Err(RehashLoadFailure::Busy) => return Err(RehashResponse::Busy),
+        Err(RehashLoadFailure::TimedOut) => return Err(RehashResponse::Uncertain),
         Err(RehashLoadFailure::Config(error)) => {
-            tracing::info!(error = %error, "scheduled-job rehash config rejected");
-            return RehashResponse::Rejected(RehashRejection::InvalidConfig);
+            tracing::info!(error = %error, "scheduled-job config candidate rejected");
+            return Err(RehashResponse::Rejected(RehashRejection::InvalidConfig));
         }
         Err(RehashLoadFailure::Worker(error)) => {
-            tracing::warn!(%error, "scheduled-job rehash config worker failed");
-            return RehashResponse::Rejected(RehashRejection::Scheduler);
+            tracing::warn!(%error, "scheduled-job config loader failed");
+            return Err(RehashResponse::Rejected(RehashRejection::Scheduler));
         }
     };
-    let authority = candidate.validate_job_authority(is_unix_root);
-    if let Err(error) = authority {
-        tracing::info!(error = %error, "scheduled-job rehash authority rejected");
-        return RehashResponse::Rejected(RehashRejection::JobAuthority);
+    if let Err(error) = candidate.validate_job_authority(is_unix_root) {
+        tracing::info!(error = %error, "scheduled-job config authority rejected");
+        return Err(RehashResponse::Rejected(RehashRejection::JobAuthority));
     }
+    Ok(candidate)
+}
+
+async fn prepare_configtest(
+    config_path: Option<&std::path::Path>,
+    active_config: &Config,
+    is_unix_root: bool,
+    load_gate: Arc<Semaphore>,
+) -> RehashResponse {
+    let candidate = match load_rehash_candidate(config_path, is_unix_root, load_gate).await {
+        Ok(candidate) => candidate,
+        Err(response) => return response,
+    };
+    let restart_only = active_config.restart_only_changes(&candidate);
+    if !restart_only.is_empty() {
+        return RehashResponse::RestartRequired(restart_only);
+    }
+    if active_config.jobs == candidate.jobs {
+        RehashResponse::Unchanged
+    } else {
+        RehashResponse::Ready
+    }
+}
+
+async fn prepare_rehash(
+    config_path: Option<&std::path::Path>,
+    active_config: &mut Config,
+    engine: &mut Engine,
+    active_history_id: Option<u64>,
+    is_unix_root: bool,
+    load_gate: Arc<Semaphore>,
+) -> RehashResponse {
+    let candidate = match load_rehash_candidate(config_path, is_unix_root, load_gate).await {
+        Ok(candidate) => candidate,
+        Err(response) => return response,
+    };
 
     let restart_only = active_config.restart_only_changes(&candidate);
     if !restart_only.is_empty() {
@@ -1137,7 +1207,7 @@ pub(crate) async fn run(
     publisher: SchedulerPublisher,
     mut load_rx: watch::Receiver<LoadGateState>,
     mut shutdown: broadcast::Receiver<()>,
-    mut rehash_rx: mpsc::Receiver<RehashRequest>,
+    mut rehash_rx: mpsc::Receiver<ConfigControlRequest>,
 ) -> Result<(), String> {
     let mut active_config = config;
     let mut engine = Engine::new(
@@ -1262,15 +1332,28 @@ pub(crate) async fn run(
                 let is_unix_root = crate::startup::install::is_privileged();
                 #[cfg(not(unix))]
                 let is_unix_root = false;
-                let response = prepare_rehash(
-                    config_path.as_deref(),
-                    &mut active_config,
-                    &mut engine,
-                    active.as_ref().map(|child| child.history_id),
-                    is_unix_root,
-                    Arc::clone(&rehash_load_gate),
-                )
-                .await;
+                let response = match request.operation {
+                    ConfigControlOperation::Rehash => {
+                        prepare_rehash(
+                            config_path.as_deref(),
+                            &mut active_config,
+                            &mut engine,
+                            active.as_ref().map(|child| child.history_id),
+                            is_unix_root,
+                            Arc::clone(&rehash_load_gate),
+                        )
+                        .await
+                    }
+                    ConfigControlOperation::ConfigTest => {
+                        prepare_configtest(
+                            config_path.as_deref(),
+                            &active_config,
+                            is_unix_root,
+                            Arc::clone(&rehash_load_gate),
+                        )
+                        .await
+                    }
+                };
                 if response == RehashResponse::Applied {
                     engine
                         .publish(
@@ -2129,6 +2212,46 @@ mod tests {
         );
         assert_eq!(current, active_config);
         assert_eq!(engine.configs, Vec::<ScheduledJobConfig>::new());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn configtest_checks_live_policy_without_mutating_config_or_publication() {
+        let dir = std::env::temp_dir().join(format!(
+            "greggd-configtest-policy-{}-{}",
+            std::process::id(),
+            now_unix_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("greggd.toml");
+        let active_config = Config::default();
+        let mut candidate = active_config.clone();
+        candidate.jobs.push(daily_job("checked"));
+        candidate.write_atomic(&path).unwrap();
+        let publisher = SchedulerPublisher::empty();
+        let publication_before = publisher.current().await;
+        let load_gate = Arc::new(Semaphore::new(1));
+
+        assert_eq!(
+            prepare_configtest(Some(&path), &active_config, false, Arc::clone(&load_gate),).await,
+            RehashResponse::Ready
+        );
+        assert_eq!(active_config, Config::default());
+        assert!(Arc::ptr_eq(&publication_before, &publisher.current().await));
+
+        assert_eq!(
+            prepare_configtest(Some(&path), &active_config, true, Arc::clone(&load_gate),).await,
+            RehashResponse::Rejected(RehashRejection::JobAuthority)
+        );
+        let mut restart_candidate = candidate;
+        restart_candidate.port += 1;
+        restart_candidate.write_atomic(&path).unwrap();
+        assert_eq!(
+            prepare_configtest(Some(&path), &active_config, false, load_gate,).await,
+            RehashResponse::RestartRequired(vec!["port"])
+        );
+        assert_eq!(active_config, Config::default());
+        assert!(Arc::ptr_eq(&publication_before, &publisher.current().await));
         let _ = std::fs::remove_dir_all(dir);
     }
 

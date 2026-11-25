@@ -33,6 +33,11 @@ pub const PACKAGE: &str = "greggd";
 #[cfg(target_os = "macos")]
 const MACOS_DAEMON_LOG: &str = "/var/log/greggd.log";
 
+#[cfg(target_os = "macos")]
+fn daemon_log_path() -> PathBuf {
+    MACOS_DAEMON_LOG.into()
+}
+
 /// Errors returned by daemon uninstall planning and execution.
 ///
 /// Library code returns these without printing or exiting; the binary
@@ -723,6 +728,17 @@ fn probe_dir_writable(dir: &Path, exe: &Path, purge: bool) -> Result<(), Uninsta
 /// removed, config/data paths under `--purge`, and cron availability
 /// when a managed block exists.
 fn preflight(plan: &UninstallPlan) -> Result<(), UninstallError> {
+    #[cfg(target_os = "macos")]
+    let log_path = Some(daemon_log_path());
+    #[cfg(not(target_os = "macos"))]
+    let log_path: Option<PathBuf> = None;
+    preflight_with_log_path(plan, log_path.as_deref())
+}
+
+fn preflight_with_log_path(
+    plan: &UninstallPlan,
+    log_path: Option<&Path>,
+) -> Result<(), UninstallError> {
     use crate::startup::{standard_launchd_plist_path, standard_systemd_unit_path};
 
     if plan.blocked_running || plan.blocked_scm_unknown {
@@ -746,14 +762,39 @@ fn preflight(plan: &UninstallPlan) -> Result<(), UninstallError> {
             message: "the Gregg managed cron block exists but `crontab` is unavailable; remove the block manually, then rerun uninstall".to_string(),
         });
     }
-    if plan.purge && plan.config_exists {
-        if let Some(parent) = plan.config_path.parent() {
-            if !parent.as_os_str().is_empty() {
-                probe_dir_writable(parent, &plan.exe_path, plan.purge)?;
-            }
+    if plan.purge {
+        preflight_purge_target(&plan.config_path, &plan.exe_path)?;
+        if let Some(log_path) = log_path {
+            preflight_purge_target(log_path, &plan.exe_path)?;
         }
     }
     Ok(())
+}
+
+/// Preflight an exact file target that --purge may remove.
+///
+/// The parent directory must be writable even when the target is absent,
+/// because a target can appear before execution. Inspect with
+/// `symlink_metadata` so dangling links are covered without following them.
+fn preflight_purge_target(path: &Path, exe: &Path) -> Result<(), UninstallError> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    probe_dir_writable(parent, exe, true)?;
+
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() => Err(UninstallError::Io {
+            path: path.to_path_buf(),
+            message: "purge target is a directory, not a removable file".to_string(),
+        }),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(UninstallError::Io {
+            path: path.to_path_buf(),
+            message: format!("failed to inspect purge target: {error}"),
+        }),
+    }
 }
 
 /// Outcome of the direct-stop decision: proceed to deletion or block.
@@ -841,6 +882,20 @@ fn wait_for_endpoint_absence(plan: &UninstallPlan) -> Result<(), UninstallError>
 /// Removes only the exact file; never recurses into an arbitrary
 /// explicit config parent.
 fn purge_config(plan: &UninstallPlan) -> Result<(), UninstallError> {
+    #[cfg(target_os = "macos")]
+    let log_path = Some(daemon_log_path());
+    #[cfg(not(target_os = "macos"))]
+    let log_path: Option<PathBuf> = None;
+    purge_config_with_log_path(plan, log_path.as_deref())
+}
+
+fn purge_config_with_log_path(
+    plan: &UninstallPlan,
+    log_path: Option<&Path>,
+) -> Result<(), UninstallError> {
+    if !plan.purge {
+        return Ok(());
+    }
     match std::fs::remove_file(&plan.config_path) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -866,22 +921,22 @@ fn purge_config(plan: &UninstallPlan) -> Result<(), UninstallError> {
             let _ = std::fs::remove_dir(&dir);
         }
     }
-    #[cfg(target_os = "macos")]
-    {
-        match std::fs::remove_file(MACOS_DAEMON_LOG) {
+    if let Some(log_path) = log_path {
+        match std::fs::remove_file(log_path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
                 return Err(UninstallError::Permission {
                     message: format!(
-                        "permission denied removing {MACOS_DAEMON_LOG}; rerun: {}",
+                        "permission denied removing {}; rerun: {}",
+                        log_path.display(),
                         gregg_update::elevated_rerun_hint(&plan.exe_path, "uninstall --purge")
                     ),
                 });
             }
             Err(e) => {
                 return Err(UninstallError::Io {
-                    path: PathBuf::from(MACOS_DAEMON_LOG),
+                    path: log_path.to_path_buf(),
                     message: format!("failed to remove daemon log: {e}"),
                 });
             }
@@ -1162,6 +1217,8 @@ mod tests {
         std::fs::create_dir_all(&custom_parent).unwrap();
         let config = custom_parent.join("greggd.toml");
         std::fs::write(&config, b"name = \"x\"\n").unwrap();
+        let log = custom_parent.join("greggd.log");
+        std::fs::write(&log, b"temporary test log").unwrap();
         let sibling = custom_parent.join("keep.conf");
         std::fs::write(&sibling, b"keep").unwrap();
 
@@ -1174,13 +1231,96 @@ mod tests {
             true,
             discovery,
         );
-        purge_config(&plan).unwrap();
+        purge_config_with_log_path(&plan, Some(&log)).unwrap();
         assert!(!config.exists(), "purge must remove the exact config file");
+        assert!(
+            !log.exists(),
+            "purge must remove only the injected test log"
+        );
         assert!(
             custom_parent.exists(),
             "custom parent must never be removed"
         );
         assert!(sibling.exists(), "siblings of the config file must survive");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ordinary_uninstall_preserves_config_and_injected_log() {
+        let dir =
+            std::env::temp_dir().join(format!("greggd_uninstall_preserve_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = dir.join("greggd.toml");
+        let log = dir.join("greggd.log");
+        std::fs::write(&config, b"config stays").unwrap();
+        std::fs::write(&log, b"log stays").unwrap();
+        let plan = plan_from_discovery(
+            Path::new("/tmp/fake-greggd"),
+            &config,
+            true,
+            true,
+            false,
+            test_discovery(),
+        );
+
+        purge_config_with_log_path(&plan, Some(&log)).unwrap();
+
+        assert_eq!(std::fs::read(&config).unwrap(), b"config stays");
+        assert_eq!(std::fs::read(&log).unwrap(), b"log stays");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn purge_preflight_rejects_unusable_log_parent_before_changes() {
+        let dir =
+            std::env::temp_dir().join(format!("greggd_uninstall_preflight_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("greggd");
+        let config = dir.join("greggd.toml");
+        let unusable_parent = dir.join("not-a-directory");
+        let log = unusable_parent.join("greggd.log");
+        std::fs::write(&exe, b"test executable").unwrap();
+        std::fs::write(&config, b"config stays").unwrap();
+        std::fs::write(&unusable_parent, b"parent blocker stays").unwrap();
+        let plan = plan_from_discovery(&exe, &config, true, true, true, test_discovery());
+
+        let error = preflight_with_log_path(&plan, Some(&log))
+            .expect_err("an unusable injected log parent must block before teardown");
+
+        assert!(error.to_string().contains("not-a-directory"));
+        assert_eq!(std::fs::read(&config).unwrap(), b"config stays");
+        assert_eq!(
+            std::fs::read(&unusable_parent).unwrap(),
+            b"parent blocker stays"
+        );
+        assert!(!log.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn purge_preflight_rejects_directory_log_target_before_changes() {
+        let dir = std::env::temp_dir().join(format!(
+            "greggd_uninstall_preflight_target_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("greggd");
+        let config = dir.join("greggd.toml");
+        let log = dir.join("greggd.log");
+        std::fs::write(&exe, b"test executable").unwrap();
+        std::fs::write(&config, b"config stays").unwrap();
+        std::fs::create_dir(&log).unwrap();
+        let plan = plan_from_discovery(&exe, &config, true, true, true, test_discovery());
+
+        let error = preflight_with_log_path(&plan, Some(&log))
+            .expect_err("a directory at a file log target must block before teardown");
+
+        assert!(error.to_string().contains("directory"));
+        assert_eq!(std::fs::read(&config).unwrap(), b"config stays");
+        assert!(log.is_dir());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1201,7 +1341,7 @@ mod tests {
             true,
             discovery,
         );
-        purge_config(&plan).unwrap();
+        purge_config_with_log_path(&plan, None).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

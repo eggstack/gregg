@@ -514,3 +514,17 @@ re-measures and enforces the same number.
 No dependency was added, so MSRV stays 1.89 and no ablation of a candidate
 dependency was required. `cargo test -p gregg-protocol --all-features` and
 `cargo test -p greggd --all-features --lib` are green.
+
+## Subsequent footprint-limit amendment (2026-11-25)
+
+The original 3,400,000-byte rule above is preserved as the historical Plan 162
+contract and is not rewritten. By explicit user approval, the current
+prospective blocking ceiling for Plan 162 and its downstream footprint
+acceptance checks is amended to **3,700,000 bytes**, inclusive. This is a
+policy-limit change, not a source change or a claim that the original historical
+acceptance was met. Measurements recorded against the former ceiling remain
+accurate for their dates; current acceptance uses the amended ceiling.
+
+The restored-default Clap release build for `greggd` on `aarch64-apple-darwin`
+measured 3,555,696 bytes, which is 144,304 bytes below the amended ceiling. The
+Clap feature comparison and behavior tradeoffs are recorded in Plan 199.

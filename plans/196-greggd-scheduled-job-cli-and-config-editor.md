@@ -92,7 +92,7 @@ Preserved exclusions:
 - [ ] `greggd edit` edits the whole selected daemon config transactionally; invalid or failed edits cannot replace the last valid config.
 - [x] Every mutation uses existing validation and atomic persistence; `--config` is honored; no daemon restart/reload is implicit and changes take effect on next daemon start.
 - [x] Existing root-job opt-in and direct-argv scheduler execution remain unchanged; no `gregg` dependency, remote mutation surface, schema migration, or scheduler behavior change is introduced.
-- [ ] The selector adds no Ratatui/UI framework, and stripped `greggd` remains within the Plan-162 3,400,000-byte ceiling; otherwise implementation stops for an explicit measured trade-off.
+- [x] The selector adds no Ratatui/UI framework, and stripped `greggd` remains within the user-approved 3,700,000-byte amended Plan-162 ceiling (matched Plan 196 artifact: 3,472,944 bytes).
 - [ ] Focused tests, local checks, docs inspection, and the existing native CI workflow pass; no new workflow/job/matrix is added.
 
 ## Risks and stop conditions
@@ -118,3 +118,18 @@ Focused checks passed: cargo fmt --all; cargo clippy -p greggd --all-targets --a
 - Existing scheduler behavior and startup config loading: `crates/greggd/src/run.rs` and Plans 157-160.
 - Reference editor behavior and selector interaction: `crates/gregg/src/config/store.rs`, `crates/gregg/src/cli.rs`, and `crates/gregg/src/cli/selector.rs`.
 - Workspace layering and user-visible documentation requirements: `AGENTS.md` and `architecture/workspace.md`.
+
+## Plan 199 corrective qualification (2026-11-24)
+
+Plan 199 corrected the writer contract: final permissions are prepared before rename, and a parent-directory sync failure after rename returns `CommittedButDurabilityUncertain` rather than implying rollback. Deterministic pre-rename preservation and post-rename committed-state regressions pass. The final local `greggd`, workspace, formatting, strict-Clippy, and `check-local` gates pass; see Plan 199 for exact totals.
+
+Plan 196 remains acceptance-blocked. A matched source build of commit `2df76255c9f49a3d465294dd9fd90b7a706dac55` under the current release profile measured 3,472,944 bytes, 72,944 above the then-current 3,400,000-byte ceiling. Native Windows qualification is also outstanding. This follow-up updates the writer and local-gate evidence only; it does not close Plan 196 or alter Plan 162.
+
+## Subsequent footprint-limit amendment (2026-11-25)
+
+Plan 162's original 3,400,000-byte limit remains historical; by explicit user
+approval, the current prospective ceiling is 3,700,000 bytes. The matched Plan
+196 artifact at 3,472,944 bytes is within that limit by 227,056 bytes. This
+updates the footprint criterion only. Plan 196 remains open on its other
+acceptance criteria, including native Windows/PTY qualification; no feature or
+behavior change was made to obtain this result.

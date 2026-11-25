@@ -36,6 +36,7 @@ fail() {
 
 SANDBOX="$(mktemp -d)"
 trap 'rm -rf "$SANDBOX"' EXIT
+HOST_TMPDIR="${TMPDIR:-/tmp}"
 
 export HOME="${SANDBOX}/home"
 mkdir -p "$HOME"
@@ -536,7 +537,7 @@ else
 fi
 if grep -q "\-\-root" "$CARGO_LOG"; then
   STAGING_ROOT="$(grep -o "\-\-root [^ ]*" "$CARGO_LOG" | head -1 | cut -d' ' -f2)"
-  if [[ "$STAGING_ROOT" == "${SANDBOX}"* || "$STAGING_ROOT" == /tmp/* ]]; then
+  if [[ "$STAGING_ROOT" == "${SANDBOX}"* || "$STAGING_ROOT" == /tmp/* || "$STAGING_ROOT" == "${HOST_TMPDIR}"* ]]; then
     ok "Cargo fallback builds under a temporary staging root ($STAGING_ROOT)"
   else
     fail "Cargo root is not staging-private: $STAGING_ROOT"
@@ -711,8 +712,7 @@ fresh_path_home "bash-linux"
 path_without_dest
 export SHELL="/bin/bash"
 unset ZDOTDIR || true
-unset GREGG_TEST_OS || true
-export GREGG_TEST_OS
+export GREGG_TEST_OS="Linux"
 rm -f "${HOME}/.bashrc" "${HOME}/.bash_profile" "${HOME}/.bash_login" "${HOME}/.profile"
 run_install gregg
 if [[ $STATUS -eq 0 && -f "${HOME}/.bashrc" ]] && grep -Fq "added by gregg installer" "${HOME}/.bashrc"; then
@@ -726,7 +726,7 @@ expect_contains "$OUT" ".bashrc" "bash Linux output names the touched profile"
 fresh_path_home "bash-preserve"
 path_without_dest
 export SHELL="/bin/bash"
-unset GREGG_TEST_OS || true
+export GREGG_TEST_OS="Linux"
 printf '%s\n' '# my config' 'alias ll="ls -l"' > "${HOME}/.bashrc"
 cp "${HOME}/.bashrc" "${SANDBOX}/orig-bashrc"
 run_install gregg
