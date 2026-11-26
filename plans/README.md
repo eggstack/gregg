@@ -341,7 +341,7 @@ jobs. The selector uses no Ratatui or gregg dependency.
 
 Plan 197 is complete: explicit local `greggd rehash` validates the full daemon config and root-job authority, applies only job-only changes through a persistent scheduler, preserves active children and history, and waits for a bounded applied/rejected acknowledgment. Host/port and other non-job fields remain restart-only, mixed changes are rejected atomically, and the HTTP scheduler API remains read-only. Hosted CI run 45725598320 is green across all seven jobs; the Windows local path now has native evidence for its restrictive ACL — the attached object DACL and a refused deny-only Administrators connect — in addition to its applied-result acknowledgment. The recorded 3,539,152-byte stage and the 3,555,696-byte build are within the amended 3,700,000-byte ceiling.
 
-Plan 198 is implemented: successful `greggd job add/remove` writes attempt one config-specific local rehash after persistence, and `greggd configtest` distinguishes local load validity from live daemon eligibility without applying changes. Hosted CI run 45725598320 is green across all seven jobs and the ACL half of Windows qualification is evidenced natively. The remote-client rejection half still needs a two-host run, so one acceptance criterion remains open; Plans 196 and 197 are complete and separate.
+Plan 198 is implemented: successful `greggd job add/remove` writes attempt one config-specific local rehash after persistence, and `greggd configtest` distinguishes local load validity from live daemon eligibility without applying changes. Hosted CI run 45725598320 is green across all seven jobs and the ACL half of Windows qualification is evidenced natively. The remote-client rejection half still needs a two-host run — hosted runners are isolated VMs with no inbound path — so one acceptance criterion remains open; Plans 196 and 197 are complete and separate.
 
 Plan 199 is in progress as the corrective pass for Plans 196–198. Its socket
 fixtures, injected purge log path/preflight, truthful post-rename write outcome,
@@ -350,8 +350,8 @@ local package/workspace tests, formatting, strict Clippy, and the complete local
 check pass. The standard restored-default Clap release measures 3,555,696 bytes,
 144,304 below the user-approved 3,700,000-byte Plan 162 ceiling. Hosted CI run
 45725598320 is green across all seven jobs. Eight of nine criteria pass; actual
-remote-client rejection still requires two Windows hosts and is the only open
-item. Plans 196–198 and Plan 162 retain their separate acceptance statuses.
+remote-client rejection still requires two Windows hosts that can reach each
+other, which hosted CI cannot provide, and is the only open item. Plans 196–198 and Plan 162 retain their separate acceptance statuses.
 
 Plan 176 is complete: the Windows EggPool full-result-channel cancellation
 regression no longer synthesizes its own precondition. The worker already

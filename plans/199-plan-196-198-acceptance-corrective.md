@@ -197,3 +197,28 @@ removing these CLI diagnostics.
   dismissed as baseline noise: the first was this plan's own new test, and the
   second now accepts the same adjacent readings its neighbouring assertion
   already accepted.
+
+### Remote-client rejection: hosted-CI feasibility (2026-11-26)
+
+Checked whether the existing hosted workflow can supply the remote client this
+criterion requires, since the stop condition below permits only native Windows
+execution.
+
+- Each GitHub-hosted runner is a new, isolated virtual machine with outbound
+  network access and no inbound path, so one job cannot dial a pipe hosted by
+  another job.
+- The hosted Windows images offer no nested virtualization, so a job cannot
+  start a second Windows guest to act as the remote client.
+- Windows containers on the runner share the host kernel and are not a second
+  host; a connection to the host's own `\\.\pipe\` name is local by
+  construction.
+- Runner private networking exists only as an Azure VNET feature for
+  organization-level hosted runners, which this repository does not use.
+- Connecting to the runner's own machine name would still not be a second host,
+  so even a rejection observed there could not meet the criterion as written.
+
+Conclusion: hosted CI cannot close this item. The criterion stays blocked
+exactly as the stop condition directs. A documented two-host qualification on
+two Windows machines that can reach each other is the only path under the
+current standard; accepting same-host SMB-origin evidence instead would be an
+explicit amendment this plan does not authorize on its own.

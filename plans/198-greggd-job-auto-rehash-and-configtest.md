@@ -158,3 +158,7 @@ recorded.
   it is built, cannot demonstrate that a *remote* client is refused, and Plan
   199 forbids substituting a cross-check for that evidence. This remains the
   only open criterion in Plan 198.
+- Hosted CI cannot supply the missing client: runners are isolated VMs with no
+  inbound path, and the Windows images offer no nested virtualization. Plan 199
+  records the feasibility check; the criterion therefore stays blocked pending
+  a two-host qualification.
