@@ -1,6 +1,6 @@
 # Plan 198: scheduled-job auto-rehash and configtest
 
-Status: implementation present; acceptance remains blocked on full-suite failures, strict Clippy, incomplete local-check evidence, native Windows qualification, and Plan 162 footprint overage.
+Status: implementation complete; seven of eight acceptance criteria pass. The remaining criterion is the remote-client half of Windows qualification, which requires a two-host run and cannot be produced from this macOS host or the single hosted runner.
 
 Source: follow-up to the request for daemon job add/remove commands to apply persisted changes by default and for a configtest command that checks rehash loadability without applying changes.
 
@@ -83,7 +83,7 @@ Explicitly out of scope:
 - [x] `greggd configtest` honors `--config`, uses the exact rehash load cap and validation, and does not write config or claim that a check-only result was applied.
 - [x] With a running daemon, configtest repeats daemon-principal authority and restart-only policy checks and reports eligibility without changing active config, scheduler jobs, publication state, history, or an active child.
 - [x] Without a daemon, configtest may report local load validity only and explicitly identifies live eligibility as unchecked; it never claims `READY` in that case.
-- [ ] Unix and Windows control framing stays bounded and path-free; Unix STOP and socket security remain intact, and Windows pipe ACL/remote-client rejection remain intact and receive native qualification.
+- [ ] Unix and Windows control framing stays bounded and path-free; Unix STOP and socket security remain intact, and Windows pipe ACL/remote-client rejection remain intact and receive native qualification. (The ACL half and both transports are qualified natively at `62d78f5`; remote-client rejection still needs a second Windows host.)
 - [x] User docs and CLI help describe the new behavior, no-daemon and uncertain outcomes, and configtest's exact limits. Plan 196/197 and Plan 162 blockers are unchanged unless independently resolved and evidenced.
 
 ## Risks and stop conditions
@@ -136,3 +136,25 @@ default 3,555,696-byte Darwin arm64 artifact is within the amended limit by
 144,304 bytes. This changes only the applicable size criterion; native Windows
 qualification and the distinct Plan 196/197/198 acceptance statuses remain as
 recorded.
+
+## Native Windows ACL qualification and the remaining item (2026-11-25)
+
+- The ACL half of the open criterion is now evidenced on native Windows rather
+  than by inspecting the SDDL constant:
+  `created_pipe_object_carries_the_protected_dacl` opens the created pipe and
+  reads the security descriptor actually attached to the object (a protected
+  DACL whose only ACEs grant Administrators and LocalService), and
+  `a_deny_only_administrators_token_cannot_connect` impersonates a restricted
+  token whose Administrators group is deny-only and asserts the connect fails
+  with `ERROR_ACCESS_DENIED`.
+- Both transports are qualified natively: the `control_windows.rs`
+  REHASH/CONFIGTEST exchange tests cover the bounded, path-free request and its
+  acknowledgment over the pipe, and the Unix control suite covers `STOP`,
+  socket identity, permissions, and the same config requests.
+- Hosted CI run `45725598320` at `62d78f5` passed the native Windows job's
+  Clippy, full-workspace tests, both release builds, and the SCM lifecycle
+  smoke.
+- `PIPE_REJECT_REMOTE_CLIENTS` is still not evidenced. A local client, however
+  it is built, cannot demonstrate that a *remote* client is refused, and Plan
+  199 forbids substituting a cross-check for that evidence. This remains the
+  only open criterion in Plan 198.

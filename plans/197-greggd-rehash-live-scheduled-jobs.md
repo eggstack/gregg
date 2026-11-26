@@ -1,6 +1,6 @@
 # Plan 197: local greggd rehash for scheduled jobs
 
-Status: implemented; acceptance remains blocked on suite/workspace-Clippy, native Windows, and footprint qualification.
+Status: complete. All eleven acceptance criteria are evidenced at `62d78f5`; see the acceptance closure record at the end of this plan.
 
 Source: user request for an explicit `greggd rehash` command that reloads configuration—especially scheduled jobs—into a running daemon without restarting it. The user explicitly accepts host/port changes as restart-required.
 
@@ -85,17 +85,17 @@ Preserved exclusions:
 
 ## Acceptance criteria
 
-- [ ] `greggd [--config PATH] rehash` sends one bounded local request and distinguishes `APPLIED`, `UNCHANGED`, `RESTART_REQUIRED`, `REJECTED`, and uncertain/not-running outcomes truthfully.
-- [ ] Unix local control remains mode `0600`, config-specific, bounded, and STOP-compatible; Windows has an equivalent config-specific local path with a verified restrictive ACL and applied-result acknowledgment.
-- [ ] The daemon loads only its own config path, validates the full candidate and root-job authority, and applies only job-only diffs. Every restart-only diff (host/port, name, cadence, stale policy, root opt-in, retention, and future unclassified fields) rejects the entire candidate without changing runtime state.
-- [ ] Invalid config, authority failure, unsupported diff, busy channel, or control failure never changes the last-known-good active config or live scheduler; the CLI never reports a queued request as applied.
-- [ ] The scheduler worker accepts the first job set when startup had no jobs, plus transitions to/from zero jobs, without daemon or scheduler-task restart.
-- [ ] Job reconciliation preserves unchanged pending/retry state, resets pending state for changed/removed jobs, starts new jobs only at future schedule occurrences, and publishes no duplicate/immediate execution on rehash.
-- [ ] A running child is never killed or duplicated by rehash; it remains the one active slot, and its final record/output remains attributed to the job definition that launched it.
-- [ ] Existing bounded scheduler history and read-only API remain coherent and retained across accepted job-set reconciliation; no wire/schema/API mutation change is added.
-- [ ] Existing direct argv, same-principal execution, root opt-in, scheduler cadence/load-gate/one-child limit, service sandboxing, and shutdown behavior remain intact.
-- [ ] Docs/help/changelog and the daemon skill describe the implemented job-only reload contract and restart boundary; `job add/remove/edit` never silently restarts, and no command implicitly rehashes except the post-write attempt for a successful `job add`/`job remove` that Plan 198 defines.
-- [ ] Focused tests, local checks, and existing native platform CI pass; the stripped binary meets Plan 162's ceiling as amended to 3,700,000 bytes (the original 3,400,000-byte text remains historical). Plan 196's blockers remain separately recorded until independently resolved.
+- [x] `greggd [--config PATH] rehash` sends one bounded local request and distinguishes `APPLIED`, `UNCHANGED`, `RESTART_REQUIRED`, `REJECTED`, and uncertain/not-running outcomes truthfully.
+- [x] Unix local control remains mode `0600`, config-specific, bounded, and STOP-compatible; Windows has an equivalent config-specific local path with a verified restrictive ACL and applied-result acknowledgment.
+- [x] The daemon loads only its own config path, validates the full candidate and root-job authority, and applies only job-only diffs. Every restart-only diff (host/port, name, cadence, stale policy, root opt-in, retention, and future unclassified fields) rejects the entire candidate without changing runtime state.
+- [x] Invalid config, authority failure, unsupported diff, busy channel, or control failure never changes the last-known-good active config or live scheduler; the CLI never reports a queued request as applied.
+- [x] The scheduler worker accepts the first job set when startup had no jobs, plus transitions to/from zero jobs, without daemon or scheduler-task restart.
+- [x] Job reconciliation preserves unchanged pending/retry state, resets pending state for changed/removed jobs, starts new jobs only at future schedule occurrences, and publishes no duplicate/immediate execution on rehash.
+- [x] A running child is never killed or duplicated by rehash; it remains the one active slot, and its final record/output remains attributed to the job definition that launched it.
+- [x] Existing bounded scheduler history and read-only API remain coherent and retained across accepted job-set reconciliation; no wire/schema/API mutation change is added.
+- [x] Existing direct argv, same-principal execution, root opt-in, scheduler cadence/load-gate/one-child limit, service sandboxing, and shutdown behavior remain intact.
+- [x] Docs/help/changelog and the daemon skill describe the implemented job-only reload contract and restart boundary; `job add/remove/edit` never silently restarts, and no command implicitly rehashes except the post-write attempt for a successful `job add`/`job remove` that Plan 198 defines.
+- [x] Focused tests, local checks, and existing native platform CI pass; the stripped binary meets Plan 162's ceiling as amended to 3,700,000 bytes (the original 3,400,000-byte text remains historical). Plan 196's blockers remain separately recorded until independently resolved.
 
 ## Risks and stop conditions
 
@@ -162,3 +162,44 @@ approval, the current prospective ceiling is 3,700,000 bytes. The recorded Plan
 bytes) are both within the amended limit. This changes only the applicable size
 criterion; native Windows ACL/remote-client/SCM qualification and the distinct
 Plan 196/197/198 acceptance statuses remain as recorded.
+
+## Acceptance closure (2026-11-25)
+
+Criterion-to-evidence map for the checked lines above. All named tests pass on
+`62d78f5`.
+
+- Result classification: `rehash_response_classes_are_truthful_and_nonzero_outcomes_stay_distinct`
+  plus the 13 `cli::rehash_cli_tests` in `crates/greggd/src/cli.rs`.
+- Acknowledgment only after apply, and not-running: `rehash_returns_only_the_scheduler_acknowledgment`
+  and `rehash_without_a_listener_is_not_running` in `crates/greggd/src/control.rs`.
+- Windows local path, framing, and applied-result acknowledgment: the
+  `control_windows.rs` REHASH/CONFIGTEST exchange tests. The restrictive ACL is
+  qualified natively rather than by string inspection:
+  `created_pipe_object_carries_the_protected_dacl` reads the security descriptor
+  attached to the pipe object and
+  `a_deny_only_administrators_token_cannot_connect` proves a deny-only
+  Administrators token is refused with `ERROR_ACCESS_DENIED`.
+- Full-candidate validation and root authority: `rehash_authority_failure_preserves_the_active_configuration`.
+- Restart-only atomicity, host/port included: `rehash_policy_is_atomic_for_mixed_and_invalid_candidates`.
+- First job set from empty, persistent worker, transitions to and from zero:
+  `empty_scheduler_accepts_its_first_job_without_an_immediate_run` and
+  `empty_job_list_builds_a_persistent_idle_engine`.
+- Pending/retry preservation and no immediate run: `reconciliation_preserves_unchanged_pending_and_reinitializes_changed_jobs`.
+- Active child survives and keeps its launch attribution: `active_child_survives_removal_and_keeps_launch_history_identity`.
+- No-op publishes nothing: `unchanged_rehash_returns_unchanged_without_mutating_the_engine`
+  and `an_unchanged_reconciliation_wake_publishes_nothing`.
+- Bounded load gate: `timed_out_rehash_load_does_not_block_or_accumulate_workers`.
+- Verification: `cargo fmt --all -- --check`, `cargo test -p greggd --all-targets
+  --all-features`, `cargo test --workspace --all-targets --all-features`,
+  `cargo clippy --workspace --all-targets --all-features -- -D warnings`, the
+  Windows-target Clippy cross-check, and the complete `./scripts/check-local.sh`
+  pass. Hosted CI run `45725598320` is green across all seven jobs; the native
+  Windows job passed its Clippy, full-workspace tests, both release builds, and
+  the SCM lifecycle smoke.
+- Footprint: Plan 162's ceiling applies as amended to 3,700,000 bytes. The
+  recorded 3,539,152-byte Plan 197 stage and the 3,555,696-byte restored-default
+  build are both within it.
+
+Plan 197's Windows criterion asks for a verified restrictive ACL and an applied
+acknowledgment, both now evidenced. It does not ask for remote-client rejection;
+that criterion belongs to Plans 198 and 199 and stays open there.

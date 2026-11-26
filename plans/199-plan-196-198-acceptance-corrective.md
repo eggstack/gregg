@@ -1,6 +1,6 @@
 # Plan 199: Plans 196–198 acceptance corrective pass
 
-Status: in progress; corrective code and final local tests, formatting, strict Clippy, and check-local pass. The footprint criterion now passes under Plan 162's user-approved 3,700,000-byte amendment; native Windows ACL/remote-client/SCM qualification remains open. The amendment is recorded additively, and Plans 162, 196, 197, and 198 retain distinct acceptance statuses.
+Status: in progress; eight of nine acceptance criteria pass. The effective local pipe ACL, the hosted Windows CI gates, and the footprint criterion are evidenced; the remaining item is the actual remote-client rejection, which requires a two-host Windows run. Plans 162, 196, 197, and 198 retain distinct acceptance statuses.
 
 Source: follow-up to the recorded Plan 198 test, Clippy, local-check, Windows, and footprint failures, plus the independent Plan 196 post-rename atomic-writer error edge and Plan 197 qualification blockers.
 
@@ -103,7 +103,7 @@ The interrupted local-check attempt is not evidence of a pass. If the repository
 - [x] Plan 196’s writer has a tested, truthful pre-/post-rename error contract, and callers preserve that distinction.
 - [x] The 16 known macOS FFI Clippy findings are resolved without broad lint suppression; native macOS tests and workspace strict Clippy pass.
 - [x] `cargo fmt --all -- --check` and a complete `./scripts/check-local.sh` run pass; no interrupted or partial run is counted.
-- [ ] Native Windows CI passes its full-workspace Clippy/tests, release builds, and SCM smoke; effective local pipe ACL enforcement and actual remote-client rejection have evidence from native Windows execution.
+- [ ] Native Windows CI passes its full-workspace Clippy/tests, release builds, and SCM smoke; effective local pipe ACL enforcement and actual remote-client rejection have evidence from native Windows execution. (The CI gates and the effective ACL are evidenced at `62d78f5`; remote-client rejection still needs a second Windows host.)
 - [x] The production-profile stripped Darwin arm64 `greggd` measures no more than the amended 3,700,000-byte ceiling; the exact artifact measurement and Clap feature/behavior tradeoffs are recorded in the 2026-11-25 follow-up below.
 - [x] Plans 196, 197, and 198 retain separate acceptance statuses. Plan 162's original record and historical acceptance status are preserved, with the approved prospective ceiling amendment documented additively; Plan 198 is not used to imply closure of Plan 196 or 197.
 
@@ -168,3 +168,32 @@ test, but the invalid-command diagnostic regression is observable. The manifest
 was restored to Clap defaults; no feature reduction was retained. The selected
 3,700,000-byte limit accommodates the measured production build without
 removing these CLI diagnostics.
+
+## Effective ACL qualification and the remaining remote-client item (2026-11-25)
+
+- Native Windows now evidences effective access control rather than the SDDL
+  string. `created_pipe_object_carries_the_protected_dacl` opens the created
+  pipe and reads its attached security descriptor, which must be a protected
+  DACL granting only Administrators and LocalService (the round-trip renders the
+  generic full-access ACE as the concrete `FA` mask, so both canonical
+  spellings are accepted). `a_deny_only_administrators_token_cannot_connect`
+  impersonates a restricted token whose Administrators group is deny-only and
+  asserts the connect fails with `ERROR_ACCESS_DENIED`, which exercises the
+  access check instead of inspecting the policy text.
+- Hosted CI run `45725598320` at `62d78f5` is green across all seven jobs.
+  The native Windows job passed Clippy, the full-workspace test suite, both
+  release builds, and the SCM lifecycle smoke, so the CI portion of the open
+  criterion is satisfied.
+- The remote-client half is not satisfied and is not substituted. It requires an
+  actual connection attempt from a second Windows host or an existing trusted
+  Windows integration environment, per this plan's stop condition; neither this
+  macOS worktree nor the single hosted runner can provide that. The criterion
+  therefore stays open with only that item outstanding.
+- Two unrelated corrections were needed to obtain a green run: the ACL probe
+  had to create its pipe inside a tokio runtime and read the DACL to its NUL
+  terminator, and `ui::cron::tests::clock_skew_degrades_to_zero_rather_than_wrapping`
+  pinned an exact second against a clock read taken after `now`, so a
+  millisecond of delay rendered `1m29s`. Both are recorded here rather than
+  dismissed as baseline noise: the first was this plan's own new test, and the
+  second now accepts the same adjacent readings its neighbouring assertion
+  already accepted.

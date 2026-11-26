@@ -332,25 +332,26 @@ modified workflow still needs a hosted native CI run. The five-target assets,
 manual draft-only policy, and runtime updater remain unchanged; no public
 manifest or new CI job was added.
 
-Plan 196's local job CLI and full-config editor remain implemented. Plan 199
-corrected the post-rename writer outcome and added deterministic regressions;
-final local package/workspace tests, formatting, strict Clippy, and check-local
-now pass. Its matched 3,472,944-byte artifact is below the user-approved
-3,700,000-byte ceiling. Other acceptance criteria remain open, including native
-Windows qualification. The selector uses no Ratatui or gregg dependency.
+Plan 196 is complete. The local job CLI and full-config editor are implemented;
+Plan 199 corrected the post-rename writer outcome and added deterministic
+regressions; local package/workspace tests, formatting, strict Clippy, and
+check-local pass. Its matched 3,472,944-byte artifact is below the user-approved
+3,700,000-byte ceiling, and hosted CI run 45725598320 is green across all seven
+jobs. The selector uses no Ratatui or gregg dependency.
 
-Plan 197 is implemented in the current uncommitted worktree: explicit local `greggd rehash` validates the full daemon config and root-job authority, applies only job-only changes through a persistent scheduler, preserves active children/history, and waits for a bounded applied/rejected acknowledgment. Host/port and other non-job fields remain restart-only; mixed changes are rejected atomically, and the HTTP scheduler API remains read-only. Plan 199 corrected the local fixture and macOS lint failures; final workspace tests, `greggd` tests, strict Clippy, formatting, and check-local pass. The recorded 3,539,152-byte stage and current 3,555,696-byte build are both within the amended 3,700,000-byte ceiling. Native Windows ACL/remote-client/SCM qualification remains outstanding; Plan 196's acceptance remains separately open.
+Plan 197 is complete: explicit local `greggd rehash` validates the full daemon config and root-job authority, applies only job-only changes through a persistent scheduler, preserves active children and history, and waits for a bounded applied/rejected acknowledgment. Host/port and other non-job fields remain restart-only, mixed changes are rejected atomically, and the HTTP scheduler API remains read-only. Hosted CI run 45725598320 is green across all seven jobs; the Windows local path now has native evidence for its restrictive ACL — the attached object DACL and a refused deny-only Administrators connect — in addition to its applied-result acknowledgment. The recorded 3,539,152-byte stage and the 3,555,696-byte build are within the amended 3,700,000-byte ceiling.
 
-Plan 198 is implemented in the current worktree: successful `greggd job add/remove` writes attempt one config-specific local rehash after persistence, and `greggd configtest` distinguishes local load validity from live daemon eligibility without applying changes. Plan 199 fixed the socket and purge-test isolation issues and cleared the macOS FFI lint findings; final package/workspace tests, strict Clippy, formatting, and check-local pass. The restored-default Darwin arm64 release `greggd` measures 3,555,696 bytes, 144,304 below the amended 3,700,000-byte ceiling. Native Windows ACL/remote-client/SCM qualification remains outstanding; Plan 196 and Plan 197 acceptance remain separate.
+Plan 198 is implemented: successful `greggd job add/remove` writes attempt one config-specific local rehash after persistence, and `greggd configtest` distinguishes local load validity from live daemon eligibility without applying changes. Hosted CI run 45725598320 is green across all seven jobs and the ACL half of Windows qualification is evidenced natively. The remote-client rejection half still needs a two-host run, so one acceptance criterion remains open; Plans 196 and 197 are complete and separate.
 
 Plan 199 is in progress as the corrective pass for Plans 196–198. Its socket
 fixtures, injected purge log path/preflight, truthful post-rename write outcome,
-and macOS FFI cleanup are implemented. Final local package/workspace tests,
-formatting, strict Clippy, and the complete local check pass. The standard
-restored-default Clap release measures 3,555,696 bytes, 144,304 below the
-user-approved 3,700,000-byte Plan 162 ceiling. Matched source builds remain
-recorded; native Windows ACL/remote-client/SCM evidence is still outstanding.
-Plans 196–198 and Plan 162 retain their separate acceptance statuses.
+macOS FFI cleanup, and native Windows effective-ACL tests are implemented. Final
+local package/workspace tests, formatting, strict Clippy, and the complete local
+check pass. The standard restored-default Clap release measures 3,555,696 bytes,
+144,304 below the user-approved 3,700,000-byte Plan 162 ceiling. Hosted CI run
+45725598320 is green across all seven jobs. Eight of nine criteria pass; actual
+remote-client rejection still requires two Windows hosts and is the only open
+item. Plans 196–198 and Plan 162 retain their separate acceptance statuses.
 
 Plan 176 is complete: the Windows EggPool full-result-channel cancellation
 regression no longer synthesizes its own precondition. The worker already
@@ -1026,10 +1027,10 @@ excluded.
 | [`193-windows-ffi-uninitialized-field-writes.md`](193-windows-ffi-uninitialized-field-writes.md) | Replace three uninitialized-field writes in the Windows collector FFI with raw-pointer writes | **complete** — `addr_of_mut!` at `GlobalMemoryStatusEx`, `GetPerformanceInfo`, and `RtlGetVersion`; one SAFETY comment per site; a source-scan test forbids the place-expression form; behavior, sizes, and return-code handling unchanged; native Windows CI is the platform authority |
 | [`194-advisory-policy-and-release-preflight.md`](194-advisory-policy-and-release-preflight.md) | Make `deny.toml` truthful and exercise the advisory policy in release preflight without adding CI | **complete** — remove the stale `RUSTSEC-2026-0185` ignore, record `RUSTSEC-2026-0543`/`0555` as reasoned unmaintained exceptions with a review trigger, and run `cargo deny check advisories` in `--release` when installed (skip notice otherwise); `cargo-deny` stays optional and absent from ordinary CI per Plan 046; chrono replacement is a separate plan |
 | [`195-eggpack-release-contract-adoption.md`](195-eggpack-release-contract-adoption.md) | Adopt Eggpack contract and release-plan validation in the existing five-target draft-release preflight without changing assets or runtime updating | implementation complete; local checks pass, existing native CI pending; depends on 099, 104, 190, 194, and current post-194 main |
-| [`196-greggd-scheduled-job-cli-and-config-editor.md`](196-greggd-scheduled-job-cli-and-config-editor.md) | Add local `greggd job add/list/remove` and full-config `greggd edit` with atomic validation, direct argv, and no implicit daemon restart | Plan 199 corrected the writer outcome and local test gates; the matched 3,472,944-byte artifact is within the amended 3,700,000-byte limit; remaining acceptance criteria, including native Windows qualification, remain open |
-| [`197-greggd-rehash-live-scheduled-jobs.md`](197-greggd-rehash-live-scheduled-jobs.md) | Add explicit local `greggd rehash` with bounded applied-result acknowledgment and in-place scheduled-job reconciliation | local tests/lint now pass after Plan 199; the 3,539,152-byte stage is within the amended 3,700,000-byte limit; native Windows ACL/remote-client/SCM qualification remains open; Plan 196 remains separate |
-| [`198-greggd-job-auto-rehash-and-configtest.md`](198-greggd-job-auto-rehash-and-configtest.md) | Auto-attempt rehash after successful daemon job add/remove and add no-apply `configtest` preflight | local tests/lint/check-local now pass after Plan 199; the current 3,555,696-byte artifact is within the amended 3,700,000-byte limit; native Windows qualification remains open; Plans 196/197 remain separate |
-| [`199-plan-196-198-acceptance-corrective.md`](199-plan-196-198-acceptance-corrective.md) | Correct and independently qualify remaining Plan 196/197/198 acceptance blockers, including test isolation, writer outcomes, macOS lint, native Windows evidence, and footprint qualification | corrective implementation and local gates pass; the standard build is 3,555,696 bytes, within the user-approved 3,700,000-byte ceiling; remains in progress pending native Windows ACL/remote-client/SCM qualification and distinct earlier-plan criteria |
+| [`196-greggd-scheduled-job-cli-and-config-editor.md`](196-greggd-scheduled-job-cli-and-config-editor.md) | Add local `greggd job add/list/remove` and full-config `greggd edit` with atomic validation, direct argv, and no implicit daemon restart | **complete** — transactional editor with the Plan 199 writer-outcome contract and deterministic regressions; matched 3,472,944-byte artifact within the amended 3,700,000-byte limit; hosted CI run 45725598320 green across all seven jobs; PTY selector smoke remains an unexercised caveat |
+| [`197-greggd-rehash-live-scheduled-jobs.md`](197-greggd-rehash-live-scheduled-jobs.md) | Add explicit local `greggd rehash` with bounded applied-result acknowledgment and in-place scheduled-job reconciliation | **complete** — job-only live apply with restart-only rejection, persistent scheduler, preserved active child/history; Windows ACL qualified natively (attached object DACL plus a refused deny-only Administrators connect); 3,539,152-byte stage within the amended 3,700,000-byte limit; CI run 45725598320 green |
+| [`198-greggd-job-auto-rehash-and-configtest.md`](198-greggd-job-auto-rehash-and-configtest.md) | Auto-attempt rehash after successful daemon job add/remove and add no-apply `configtest` preflight | implementation complete; seven of eight criteria pass — CI run 45725598320 green and the ACL half of Windows qualification evidenced natively; remote-client rejection needs a two-host run and is the only open criterion; Plans 196/197 are complete and separate |
+| [`199-plan-196-198-acceptance-corrective.md`](199-plan-196-198-acceptance-corrective.md) | Correct and independently qualify remaining Plan 196/197/198 acceptance blockers, including test isolation, writer outcomes, macOS lint, native Windows evidence, and footprint qualification | in progress; eight of nine criteria pass — socket fixtures, purge injection/preflight, writer outcome, macOS FFI lint, and native Windows effective-ACL tests done; CI run 45725598320 green; 3,555,696 bytes within the amended ceiling; remote-client rejection is the remaining item |
 
 Dependency order:
 

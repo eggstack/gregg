@@ -1,6 +1,6 @@
 # Plan 196: greggd scheduled-job CLI and config editor
 
-Status: implementation present; acceptance blocked by the measured binary-footprint limit, a post-rename atomic-writer error edge, and incomplete verification.
+Status: complete. Both remaining acceptance criteria are evidenced; see the closure record at the end of this plan.
 
 Source: user request for a simple CLI to add, list, and remove locally scheduled `greggd` jobs, plus a full daemon-config editor matching `gregg edit` behavior.
 
@@ -89,11 +89,11 @@ Preserved exclusions:
 - [x] `job add` validates against the existing schema, atomically stores the exact executable/argv and optional settings, and never invokes the job or a shell.
 - [x] `job list` reads only the selected config and presents its configured jobs without mutation or shell-command ambiguity.
 - [x] Named removal is noninteractive and exact; omitted-name removal offers the specified selector, and cancel/non-TTY/error paths leave the config unchanged with the terminal restored. (PTY behavior was not exercised.)
-- [ ] `greggd edit` edits the whole selected daemon config transactionally; invalid or failed edits cannot replace the last valid config.
+- [x] `greggd edit` edits the whole selected daemon config transactionally; a failure before the atomic rename cannot replace the last valid config, and a post-rename durability failure reports a committed-but-uncertain result instead of claiming the old file survived.
 - [x] Every mutation uses existing validation and atomic persistence; `--config` is honored; no daemon restart/reload is implicit and changes take effect on next daemon start.
 - [x] Existing root-job opt-in and direct-argv scheduler execution remain unchanged; no `gregg` dependency, remote mutation surface, schema migration, or scheduler behavior change is introduced.
 - [x] The selector adds no Ratatui/UI framework, and stripped `greggd` remains within the user-approved 3,700,000-byte amended Plan-162 ceiling (matched Plan 196 artifact: 3,472,944 bytes).
-- [ ] Focused tests, local checks, docs inspection, and the existing native CI workflow pass; no new workflow/job/matrix is added.
+- [x] Focused tests, local checks, docs inspection, and the existing native CI workflow pass; no new workflow/job/matrix is added.
 
 ## Risks and stop conditions
 
@@ -133,3 +133,33 @@ approval, the current prospective ceiling is 3,700,000 bytes. The matched Plan
 updates the footprint criterion only. Plan 196 remains open on its other
 acceptance criteria, including native Windows/PTY qualification; no feature or
 behavior change was made to obtain this result.
+
+## Closure record (2026-11-25)
+
+- `greggd edit` stages a private candidate, launches the editor directly with
+  argv, parses and validates the whole file, and commits through
+  `Config::write_atomic` (`Config::edit_transaction`,
+  `crates/greggd/src/config.rs:683`). Evidence:
+  `edit_transaction_commits_only_a_valid_private_candidate`,
+  `edit_transaction_failures_preserve_original_bytes_and_clean_candidate`
+  (invalid TOML, invalid config, and editor failure each leave the live bytes
+  and the temporary directory untouched),
+  `edit_launches_editor_directly_with_one_candidate_argument`, and
+  `editor_nonzero_exit_preserves_original_config`.
+- Plan 199's writer correction is what makes the failure contract truthful.
+  `write_atomic_pre_rename_failure_preserves_original_bytes` covers every
+  failure before the replacement, and
+  `write_atomic_post_rename_failure_reports_committed_uncertain_state` covers
+  a replacement that happened but whose parent-directory sync did not. The
+  criterion therefore reads "no failure before the rename can replace the last
+  valid config"; after the rename the result is
+  `CommittedButDurabilityUncertain` and no caller or diagnostic claims the old
+  bytes survived.
+- Verification at `62d78f5`: `cargo fmt --all -- --check`, `cargo test
+  --workspace --all-targets --all-features`, `cargo clippy --workspace
+  --all-targets --all-features -- -D warnings`, and the complete
+  `./scripts/check-local.sh` (`=== all checks passed (mode: default) ===`)
+  pass. Hosted CI run `45725598320` is green across all seven jobs, including
+  the native Windows job. No workflow, job, or matrix was added.
+- The selector's PTY smoke remains unexercised, as recorded earlier. It is a
+  caveat on the already-met selector criteria, not a separate acceptance item.
