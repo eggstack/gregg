@@ -1731,7 +1731,16 @@ mod tests {
         assert_eq!(elapsed_since(now + 5 * 60_000), "0ms");
         // And the ordinary cases still read correctly.
         assert_eq!(elapsed_since(now.saturating_sub(90_000)), "1m30s");
-        assert_eq!(countdown_to(now + 90_000), "1m30s");
+        // The countdown reads the clock again after `now` was captured, so a
+        // millisecond or two of delay leaves 89_99x ms. Both readings state the
+        // same relation; the exact second is not a thing a live clock lets a
+        // test pin, which is why the neighbouring retry assertion accepts the
+        // same pair.
+        let countdown = countdown_to(now + 90_000);
+        assert!(
+            matches!(countdown.as_str(), "1m30s" | "1m29s"),
+            "a 90-second countdown must read as one: {countdown}"
+        );
     }
 
     #[test]

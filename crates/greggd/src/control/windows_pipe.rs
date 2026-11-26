@@ -436,9 +436,18 @@ mod win32 {
         let rendered = if converted == 0 {
             Err(io::Error::last_os_error())
         } else {
-            // SAFETY: a successful conversion returns a NUL-terminated string of
-            // length characters that stays valid until the LocalFree below.
-            let units = unsafe { std::slice::from_raw_parts(text, length as usize) };
+            // The returned length counts the terminator and any padding, so the
+            // string is measured by scanning to its NUL instead.
+            let mut units_len = 0_usize;
+            // SAFETY: a successful conversion returns a NUL-terminated UTF-16
+            // string, so this scan stops at that terminator and never reads past
+            // it; the buffer stays valid until the LocalFree below.
+            while unsafe { *text.add(units_len) } != 0 {
+                units_len += 1;
+            }
+            // SAFETY: the first units_len code units are initialized by the
+            // conversion and live until the LocalFree below.
+            let units = unsafe { std::slice::from_raw_parts(text, units_len) };
             Ok(String::from_utf16_lossy(units))
         };
         // SAFETY: both pointers were allocated by the calls above and each is
@@ -499,6 +508,13 @@ mod tests {
     async fn created_pipe_object_carries_the_protected_dacl() {
         use std::os::windows::io::AsRawHandle;
 
+        // Windows stores generic access as the concrete file mask, so the
+        // round-trip renders the same full-access ACE as `FA` rather than the
+        // `GA` it was written with. Both spellings describe the policy under
+        // test: a protected DACL that grants only Administrators and
+        // LocalService and nobody else.
+        const ACCEPTED: [&str; 2] = ["D:P(A;;GA;;;BA)(A;;GA;;;LS)", "D:P(A;;FA;;;BA)(A;;FA;;;LS)"];
+
         // The pipe handle is created through tokio, so this must run inside a
         // runtime even though the test itself never awaits.
         let config = test_config("acl-descriptor");
@@ -509,9 +525,9 @@ mod tests {
             .expect("first instance exists")
             .as_raw_handle();
         let effective = super::win32::effective_dacl_sddl(handle).expect("reads effective DACL");
-        assert_eq!(
-            effective, PIPE_SDDL,
-            "the pipe object must carry the protected owner-only DACL"
+        assert!(
+            ACCEPTED.contains(&effective.as_str()),
+            "the pipe object must carry the protected owner-only DACL, got {effective}"
         );
     }
 
